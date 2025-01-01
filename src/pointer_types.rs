@@ -177,4 +177,18 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> NodeRef<K, V> {
             }
         }
     }
+
+    pub fn drop_node(&mut self) {
+        if self.is_internal() {
+            unsafe {
+                let node = Box::from_raw(self.as_internal_node());
+                node.drop_node(self.height);
+            }
+        } else {
+            unsafe {
+                let node = Box::from_raw(self.as_leaf_node());
+                drop(node);
+            }
+        }
+    }
 }

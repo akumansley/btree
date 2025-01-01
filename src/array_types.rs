@@ -1,5 +1,5 @@
 use smallvec::Array;
-pub const ORDER: usize = 2_usize.pow(2);
+pub const ORDER: usize = 2_usize.pow(6);
 pub const MAX_KEYS_PER_NODE: usize = ORDER - 1; // number of search keys per node
 pub const MIN_KEYS_PER_NODE: usize = ORDER / 2; // number of search keys per node
 pub const KV_IDX_CENTER: usize = MAX_KEYS_PER_NODE / 2;

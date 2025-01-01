@@ -8,6 +8,7 @@ use crate::array_types::{
 use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::pointer_types::{NodePtr, NodeRef};
+use crate::search_dequeue::SearchDequeue;
 use smallvec::SmallVec;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -22,10 +23,17 @@ pub enum UnderfullNodePosition {
 /// - bulk loading
 /// - scans
 /// - concurrency
-pub struct BTree<K, V> {
+pub struct BTree<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> {
     height: usize,
     len: usize,
     root: NodePtr<K, V>,
+}
+
+impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> Drop for BTree<K, V> {
+    fn drop(&mut self) {
+        let mut node_ref = NodeRef::new(self.root, self.height);
+        node_ref.drop_node();
+    }
 }
 
 impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
@@ -516,7 +524,7 @@ mod tests {
     #[test]
     fn test_insert_and_get() {
         let mut tree = BTree::new();
-        let n = ORDER.pow(3);
+        let n = ORDER.pow(2);
         for i in 1..=n {
             let value = format!("value{}", i);
             tree.insert(i, value.clone());
@@ -545,4 +553,81 @@ mod tests {
         assert_eq!(tree.get(&2), None);
         assert_eq!(tree.get(&3), None);
     }
+
+    use rand::rngs::StdRng;
+    use rand::seq::IteratorRandom;
+    use rand::{Rng, SeedableRng};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_random_inserts_gets_and_removes_with_seed() {
+        // Test with predefined interesting seeds
+        for &seed in &INTERESTING_SEEDS {
+            run_random_operations_with_seed(seed);
+        }
+
+        // Test with a random seed
+        let random_seed: u64 = rand::thread_rng().gen();
+        println!("Using random seed: {}", random_seed);
+        run_random_operations_with_seed(random_seed);
+    }
+
+    fn run_random_operations_with_seed(seed: u64) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut tree = BTree::new();
+        let mut reference_map = HashMap::new();
+        println!("Using seed: {}", seed);
+
+        // Perform random operations for a while
+        for _ in 0..1000 {
+            let operation = rng.gen_range(0..3);
+            match operation {
+                0 => {
+                    // Random insert
+                    let key = rng.gen_range(0..1000);
+                    let value = format!("value{}", key);
+                    tree.insert(key, value.clone());
+                    reference_map.insert(key, value);
+                }
+                1 => {
+                    // Random get
+                    let key = rng.gen_range(0..1000);
+                    let btree_result = tree.get(&key);
+                    let hashmap_result = reference_map.get(&key);
+                    if btree_result != hashmap_result {
+                        println!("Mismatch for key {}", key);
+                        println!("btree_result: {:?}", btree_result);
+                        println!("hashmap_result: {:?}", hashmap_result);
+                        tree.print_tree();
+                        tree.check_invariants();
+                    }
+                    assert_eq!(btree_result, hashmap_result, "Mismatch for key {}", key);
+                }
+                2 => {
+                    // Random remove
+                    if !reference_map.is_empty() {
+                        let key = *reference_map.keys().choose(&mut rng).unwrap();
+                        tree.remove(&key);
+                        reference_map.remove(&key);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        println!("tree.print_tree()");
+        tree.check_invariants();
+        tree.print_tree();
+        // Verify all keys at the end
+        for key in reference_map.keys() {
+            assert_eq!(
+                tree.get(key),
+                reference_map.get(key),
+                "Final verification failed for key {}",
+                key
+            );
+        }
+    }
+
+    const INTERESTING_SEEDS: [u64; 1] = [13142251578868436595];
 }

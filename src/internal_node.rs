@@ -237,4 +237,11 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
             }
         }
     }
+    pub fn drop_node(self, height: usize) {
+        for child in &self.children {
+            let mut node_ref = NodeRef::new(*child, height - 1);
+            node_ref.drop_node();
+        }
+        drop(self);
+    }
 }
