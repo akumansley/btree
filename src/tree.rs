@@ -1,5 +1,4 @@
 use std::fmt::{Debug, Display};
-use std::ptr::null_mut;
 
 use crate::array_types::{
     ChildTempArray, KeyTempArray, ValueTempArray, KV_IDX_CENTER, MAX_KEYS_PER_NODE,
@@ -46,25 +45,29 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
         }
     }
 
-    fn find_leaf(&self, search_key: &K) -> *mut LeafNode<K, V> {
-        let mut node_ref = NodeRef::new(self.root, self.height);
+    fn find_leaf(&self, search_key: &K) -> SearchDequeue<K, V> {
+        let mut search_stack: SearchDequeue<K, V> = SearchDequeue::new(self.height);
+        search_stack.push_node_on_bottom(self.root);
+        let mut node_ref = search_stack.peek_lowest();
 
         while node_ref.is_internal() {
             unsafe {
                 let current = node_ref.as_internal_node();
                 let found_child = (*current).find_child(search_key);
-                node_ref = NodeRef::new(found_child, node_ref.height() - 1);
+                search_stack.push_node_on_bottom(found_child);
+                node_ref = search_stack.peek_lowest();
             }
         }
-        let leaf_node = node_ref.as_leaf_node();
+        let leaf_node = search_stack.must_get_leaf();
 
         println!("find_leaf {:?} found {:?}", search_key, leaf_node);
-        leaf_node
+        search_stack
     }
 
     pub fn get(&self, search_key: &K) -> Option<&V> {
-        let leaf_ptr = self.find_leaf(search_key);
-        unsafe { (*leaf_ptr).get(search_key) }
+        let search_stack = self.find_leaf(search_key);
+        let leaf_node = search_stack.must_get_leaf();
+        unsafe { (*leaf_node).get(search_key) }
     }
 
     pub fn len(&self) -> usize {
@@ -80,17 +83,18 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
 
     pub fn remove(&mut self, key: &K) {
         println!("top-level remove {}", key);
-        let leaf_ptr = self.find_leaf(key);
+        let search_stack = self.find_leaf(key);
+        let leaf_node = search_stack.must_get_leaf();
         unsafe {
-            (*leaf_ptr).remove(key);
-            if (*leaf_ptr).num_keys() < MIN_KEYS_PER_NODE {
-                self.coalesce_or_redistribute_leaf_node(leaf_ptr);
+            (*leaf_node).remove(key);
+            if (*leaf_node).num_keys() < MIN_KEYS_PER_NODE {
+                self.coalesce_or_redistribute_leaf_node(search_stack);
             }
         }
         println!("top-level remove done -- {}", key);
     }
 
-    fn coalesce_or_redistribute_leaf_node(&mut self, underfull_leaf: *mut LeafNode<K, V>) {
+    fn coalesce_or_redistribute_leaf_node(&mut self, mut search_stack: SearchDequeue<K, V>) {
         println!("coalesce_or_redistribute_leaf_node");
         // if the leaf is the root, we don't need to do anything -- we let it get under-full
         if self.height == 0 {
@@ -98,12 +102,13 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
         }
 
         unsafe {
-            let parent = (*underfull_leaf).parent;
+            let underfull_leaf = search_stack.pop_lowest().as_leaf_node(); // pop -- we're done with this leaf after this
+            let parent = search_stack.peek_lowest().as_internal_node();
 
             // a neighbor is the node to the left, except in the case of the leftmost child,
             // where it's one to the right
             let (full_leaf_node, node_position) =
-                (*parent).get_neighbor_of_underfull_leaf(underfull_leaf.into());
+                (*parent).get_neighbor_of_underfull_leaf(underfull_leaf);
             if (*underfull_leaf).num_keys() + (*full_leaf_node).num_keys() < MAX_KEYS_PER_NODE {
                 match node_position {
                     UnderfullNodePosition::Other => {
@@ -112,6 +117,7 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                         self.coalesce_into_left_leaf_from_right_neighbor(
                             full_leaf_node, // the left-hand leaf
                             underfull_leaf, // its right neighbor, to be absorbed
+                            search_stack,
                         );
                     }
                     UnderfullNodePosition::Leftmost => {
@@ -121,14 +127,18 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                         self.coalesce_into_left_leaf_from_right_neighbor(
                             underfull_leaf, // the left-hand leaf
                             full_leaf_node, // it's right-hand neighbor, to be absorbed
+                            search_stack,
                         );
                     }
                 }
             } else {
+                // no need for the full stack here -- if we're redistributing, the changes are local to the two leaves
+                // TODO(ak): assert that we've unlocked the parents by now
                 self.redistribute_into_underfull_leaf_from_neighbor(
                     underfull_leaf,
                     full_leaf_node,
                     node_position,
+                    parent,
                 );
             }
         }
@@ -138,30 +148,28 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
         &mut self,
         left_leaf: *mut LeafNode<K, V>,
         right_leaf: *mut LeafNode<K, V>,
+        search_stack: SearchDequeue<K, V>, // TODO(ak): this should be a reference, right?
     ) {
         println!("coalesce_into_left_leaf_from_right_neighbor");
         unsafe {
-            let parent = (*left_leaf).parent;
+            let parent = search_stack.peek_lowest().as_internal_node();
             let right_leaf_box = Box::from_raw(right_leaf);
             LeafNode::move_from_right_neighbor_into_left_node(parent, right_leaf_box, left_leaf);
             if (*parent).num_keys() < MIN_KEYS_PER_NODE {
-                self.coalesce_or_redistribute_internal_node(parent, 1);
+                self.coalesce_or_redistribute_internal_node(search_stack);
             }
         }
     }
 
-    fn coalesce_or_redistribute_internal_node(
-        &mut self,
-        underfull_internal: *mut InternalNode<K, V>,
-        height: usize,
-    ) {
+    fn coalesce_or_redistribute_internal_node(&mut self, mut search_stack: SearchDequeue<K, V>) {
         println!("coalesce_or_redistribute_internal_node");
+        let underfull_internal = search_stack.pop_lowest().as_internal_node(); // pop -- we're handling this internal node right here
         if NodePtr::from_internal(underfull_internal) == self.root {
             self.adjust_root();
             return;
         }
         unsafe {
-            let parent = (*underfull_internal).parent;
+            let parent = search_stack.peek_lowest().as_internal_node();
             let (full_internal, node_position) =
                 (*parent).get_neighboring_internal_node(underfull_internal);
             if (*full_internal).num_keys() + (*underfull_internal).num_keys() < MAX_KEYS_PER_NODE {
@@ -171,7 +179,7 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                         self.coalesce_into_left_internal_from_right_neighbor(
                             full_internal,
                             underfull_internal,
-                            height,
+                            search_stack,
                         );
                     }
                     // the leftmost node -- we absorb the full neighbor into the underfull node
@@ -180,7 +188,7 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                         self.coalesce_into_left_internal_from_right_neighbor(
                             underfull_internal,
                             full_internal,
-                            height,
+                            search_stack,
                         );
                     }
                 }
@@ -189,7 +197,7 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                     underfull_internal,
                     full_internal,
                     node_position,
-                    height,
+                    parent,
                 );
             }
         }
@@ -199,20 +207,19 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
         &mut self,
         left_internal: *mut InternalNode<K, V>,
         right_internal: *mut InternalNode<K, V>,
-        height: usize,
+        search_stack: SearchDequeue<K, V>,
     ) {
         println!("coalesce_into_left_internal_from_right_neighbor");
         unsafe {
-            let parent = (*left_internal).parent;
+            let parent = search_stack.peek_lowest().as_internal_node();
             let right_internal_box = Box::from_raw(right_internal);
             InternalNode::move_from_right_neighbor_into_left_node(
                 parent,
-                height,
                 right_internal_box,
                 left_internal,
             );
             if (*parent).num_keys() < MIN_KEYS_PER_NODE {
-                self.coalesce_or_redistribute_internal_node(parent, height + 1);
+                self.coalesce_or_redistribute_internal_node(search_stack);
             }
         }
     }
@@ -222,7 +229,7 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
         underfull_internal: *mut InternalNode<K, V>,
         full_internal: *mut InternalNode<K, V>,
         node_position: UnderfullNodePosition,
-        height: usize,
+        parent: *mut InternalNode<K, V>,
     ) {
         println!("redistribute_into_underfull_internal_from_neighbor");
         match node_position {
@@ -230,14 +237,14 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                 // this is the common case
                 // we have the full left neighbor, and shift a key to the right
                 unsafe {
-                    (*full_internal).move_last_to_front_of(underfull_internal, height);
+                    (*full_internal).move_last_to_front_of(underfull_internal, parent);
                 }
             }
             UnderfullNodePosition::Leftmost => {
                 // this is the uncommon case
                 // we have the full right neighbor, and shift a key to the left
                 unsafe {
-                    (*full_internal).move_first_to_end_of(underfull_internal, height);
+                    (*full_internal).move_first_to_end_of(underfull_internal, parent);
                 }
             }
         }
@@ -248,6 +255,7 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
         underfull_leaf: *mut LeafNode<K, V>,
         full_leaf: *mut LeafNode<K, V>,
         node_position: UnderfullNodePosition,
+        parent: *mut InternalNode<K, V>,
     ) {
         println!("redistribute_into_underfull_leaf_from_neighbor");
         match node_position {
@@ -255,14 +263,14 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                 // this is the common case
                 // we have the full left neighbor, and shift a key to the right
                 unsafe {
-                    (*full_leaf).move_last_to_front_of(underfull_leaf);
+                    (*full_leaf).move_last_to_front_of(underfull_leaf, parent);
                 }
             }
             UnderfullNodePosition::Leftmost => {
                 // this is the uncommon case
                 // we have the full right neighbor, and shift a key to the left
                 unsafe {
-                    (*full_leaf).move_first_to_end_of(underfull_leaf);
+                    (*full_leaf).move_first_to_end_of(underfull_leaf, parent);
                 }
             }
         }
@@ -280,11 +288,9 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                 if (*root_internal_node).num_keys == 0 {
                     println!("root is an internal node with one child");
                     let new_root = (*root_internal_node).children[0];
-                    let new_root_node_ref = NodeRef::new(new_root, self.height - 1);
-                    new_root_node_ref.set_parent(null_mut());
                     self.height -= 1;
                     self.root = new_root;
-                    // TODO: make sure we lock before doing this
+                    // TODO: make sure we've locked before doing this
                     drop(Box::from_raw(root_internal_node));
                 }
             }
@@ -301,14 +307,24 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
 
     pub fn insert(&mut self, key: K, value: V) {
         println!("top-level insert {}", key);
-        let leaf_ptr = self.find_leaf(&key);
+        let search_stack = self.find_leaf(&key);
+        let leaf_node = search_stack.must_get_leaf();
 
         unsafe {
             // this should get us to 3 keys in the leaf
-            if (*leaf_ptr).num_keys() < MAX_KEYS_PER_NODE {
-                (*leaf_ptr).insert(key, value);
+            if (*leaf_node).num_keys() < MAX_KEYS_PER_NODE {
+                (*leaf_node).insert(key, value);
             } else {
-                self.insert_into_leaf_after_splitting(leaf_ptr, key, value);
+                // if the key already exists, we don't need to split
+                // so check for that case and exit early, but only bother checking
+                // in the case where we otherwise would split
+                // this is necessary for correctness, because split doesn't (and shouldn't)
+                // handle the case where the key already exists
+                if (*leaf_node).get(&key).is_some() {
+                    (*leaf_node).insert(key, value);
+                    return;
+                }
+                self.insert_into_leaf_after_splitting(search_stack, key, value);
             }
         }
         self.len += 1;
@@ -317,22 +333,11 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
 
     fn insert_into_leaf_after_splitting(
         &mut self,
-        leaf: *mut LeafNode<K, V>,
+        mut search_stack: SearchDequeue<K, V>,
         key_to_insert: K,
         value: V,
     ) {
-        // if the key already exists, we don't need to split
-        // so check for that case and exit early, but only bother checking
-        // in the case where we otherwise would split
-        // though this is necessary for correctness, because split doesn't (and shouldn't)
-        // handle the case where the key already exists
-        unsafe {
-            if (*leaf).get(&key_to_insert).is_some() {
-                (*leaf).insert(key_to_insert, value);
-                return;
-            }
-        }
-
+        let leaf = search_stack.pop_lowest().as_leaf_node();
         let new_leaf = LeafNode::<K, V>::new();
         let mut temp_key_vec: SmallVec<KeyTempArray<K>> = SmallVec::new();
         let mut temp_value_vec: SmallVec<ValueTempArray<V>> = SmallVec::new();
@@ -373,38 +378,39 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
             (*leaf).values.extend(temp_value_vec.drain(..));
             (*leaf).num_keys = (MAX_KEYS_PER_NODE + 1) / 2;
 
-            (*new_leaf).parent = (*leaf).parent;
-
             // this clone is necessary because the key is moved into the parent
             let split_key = (*new_leaf).keys[0].clone();
 
             self.insert_into_parent(
-                (*leaf).parent,
+                search_stack,
                 NodePtr::from_leaf(leaf),
                 split_key,
                 NodePtr::from_leaf(new_leaf),
-                1, // one up from the leaf, which is always 0
             );
         }
     }
 
     fn insert_into_parent(
         &mut self,
-        parent: *mut InternalNode<K, V>,
+        mut search_stack: SearchDequeue<K, V>,
         left: NodePtr<K, V>,
         split_key: K,
         right: NodePtr<K, V>,
-        height: usize,
     ) {
-        if parent.is_null() {
+        // TODO(ak): is this right?
+        if search_stack.is_empty() {
             self.insert_into_new_root(left, split_key, right);
         } else {
+            let parent = search_stack.pop_lowest().as_internal_node();
             unsafe {
                 if (*parent).num_keys() < MAX_KEYS_PER_NODE {
                     (*parent).insert(split_key, right);
                 } else {
                     self.insert_into_internal_node_after_splitting(
-                        parent, split_key, right, height,
+                        search_stack,
+                        parent,
+                        split_key,
+                        right,
                     );
                 }
             }
@@ -413,10 +419,10 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
 
     fn insert_into_internal_node_after_splitting(
         &mut self,
+        parent_stack: SearchDequeue<K, V>,
         old_internal_node: *mut InternalNode<K, V>, // this is the node we're splitting
         split_key: K,                               // this is the key for the new child
         new_child: NodePtr<K, V>,                   // this is the new child we're inserting
-        height: usize,
     ) {
         let new_internal_node = InternalNode::<K, V>::new();
 
@@ -455,13 +461,6 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
                 .children
                 .extend(temp_children_vec.drain(KV_IDX_CENTER + 1..));
             (*new_internal_node).num_keys = KV_IDX_CENTER + 1;
-            (*new_internal_node).parent = (*old_internal_node).parent;
-
-            // these keys moved into the new internal node, so we need to update their parent pointers
-            for child in (*new_internal_node).children.iter_mut() {
-                let node_ref = NodeRef::new(*child, height - 1);
-                node_ref.set_parent(new_internal_node);
-            }
 
             let new_split_key = temp_keys_vec.pop().unwrap();
 
@@ -472,11 +471,10 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
             (*old_internal_node).num_keys = KV_IDX_CENTER;
 
             self.insert_into_parent(
-                (*old_internal_node).parent,
+                parent_stack,
                 NodePtr::from_internal(old_internal_node),
                 new_split_key,
                 NodePtr::from_internal(new_internal_node),
-                height + 1,
             );
         }
     }
@@ -489,10 +487,6 @@ impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> BTree<K, V> {
             (*new_root).children.push(right);
             (*new_root).num_keys = 1;
         }
-        let left_node_ref = NodeRef::new(left, self.height);
-        let right_node_ref = NodeRef::new(right, self.height);
-        left_node_ref.set_parent(new_root);
-        right_node_ref.set_parent(new_root);
         self.root = NodePtr::from_internal(new_root);
         self.height += 1;
     }

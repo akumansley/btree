@@ -1,12 +1,9 @@
 use crate::{array_types::KeyArray, array_types::ValueArray, internal_node::InternalNode};
 use smallvec::SmallVec;
 use std::fmt::Debug;
-use std::ptr;
 pub struct LeafNode<K, V> {
     pub keys: SmallVec<KeyArray<K>>,
     pub values: SmallVec<ValueArray<V>>,
-    pub parent: *mut InternalNode<K, V>,
-    pub parent_index: Option<u16>,
     pub num_keys: usize,
 }
 
@@ -15,8 +12,6 @@ impl<K, V> LeafNode<K, V> {
         Box::into_raw(Box::new(LeafNode {
             keys: SmallVec::new(),
             values: SmallVec::new(),
-            parent: ptr::null_mut(),
-            parent_index: None,
             num_keys: 0,
         }))
     }
@@ -85,7 +80,11 @@ impl<K: PartialOrd + Clone + Debug, V: Debug> LeafNode<K, V> {
         }
     }
 
-    pub fn move_last_to_front_of(&mut self, other: *mut LeafNode<K, V>) {
+    pub fn move_last_to_front_of(
+        &mut self,
+        other: *mut LeafNode<K, V>,
+        parent: *mut InternalNode<K, V>,
+    ) {
         println!("LeafNode move_last_to_front_of");
         let last_key = self.keys.pop().unwrap();
         let last_value = self.values.pop().unwrap();
@@ -97,13 +96,16 @@ impl<K: PartialOrd + Clone + Debug, V: Debug> LeafNode<K, V> {
         self.num_keys -= 1;
 
         // Update the split key in the parent
-        let parent = self.parent;
         unsafe {
             (*parent).update_split_key(other.into(), last_key);
         }
     }
 
-    pub fn move_first_to_end_of(&mut self, other: *mut LeafNode<K, V>) {
+    pub fn move_first_to_end_of(
+        &mut self,
+        other: *mut LeafNode<K, V>,
+        parent: *mut InternalNode<K, V>,
+    ) {
         println!("LeafNode move_first_to_end_of");
         let first_key = self.keys.remove(0);
         let first_value = self.values.remove(0);
@@ -115,7 +117,6 @@ impl<K: PartialOrd + Clone + Debug, V: Debug> LeafNode<K, V> {
         self.num_keys -= 1;
 
         // Update the split key in the parent for self
-        let parent = self.parent;
         unsafe {
             (*parent).update_split_key(self.into(), self.keys[0].clone());
         }

@@ -6,13 +6,10 @@ use crate::{
 };
 use smallvec::SmallVec;
 use std::fmt::Debug;
-use std::ptr;
 
 pub struct InternalNode<K, V> {
     pub keys: SmallVec<KeyArray<K>>,
     pub children: SmallVec<ChildArray<NodePtr<K, V>>>,
-    pub parent: *mut InternalNode<K, V>,
-    pub parent_index: Option<u16>,
     pub num_keys: usize,
 }
 
@@ -21,8 +18,6 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
         Box::into_raw(Box::new(InternalNode {
             keys: SmallVec::new(),
             children: SmallVec::new(),
-            parent: ptr::null_mut(),
-            parent_index: None,
             num_keys: 0,
         }))
     }
@@ -127,18 +122,16 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
         parent: *mut InternalNode<K, V>,
-        height: usize,
         mut from: Box<InternalNode<K, V>>,
         to: *mut InternalNode<K, V>,
     ) {
         unsafe {
             println!(
-                "moving from {:?} {:?} into {:?} {:?} at height {}",
+                "moving from {:?} {:?} into {:?} {:?}",
                 (*from).keys,
                 (*from).children,
                 (*to).keys,
                 (*to).children,
-                height
             );
             let split_key = (*parent).get_key_for_non_leftmost_child(from.as_ref().into());
             (*to).keys.push(split_key);
@@ -146,10 +139,6 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
             println!("moved keys {:?}", (*to).keys);
             for child in from.children.drain(..) {
                 println!("moving child {:?}", child);
-                // the NodeRef lets us discriminate between internal and leaf nodes
-                // which is why we need the height parameter
-                let child_node_ref = NodeRef::new(child, height - 1);
-                child_node_ref.set_parent(to);
                 (*to).children.push(child);
             }
             (*to).num_keys = (*to).keys.len();
@@ -158,24 +147,23 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
         }
     }
 
-    pub fn move_last_to_front_of(&mut self, other: *mut InternalNode<K, V>, height: usize) {
+    pub fn move_last_to_front_of(
+        &mut self,
+        other: *mut InternalNode<K, V>,
+        parent: *mut InternalNode<K, V>,
+    ) {
         println!("InternalNode move_last_to_front_of");
         unsafe {
             let last_key = self.keys.pop().unwrap(); // if these don't exist, we've got bigger problems
             let last_child = self.children.pop().unwrap();
 
             // last key wants to become the _parent_ split key
-            let parent = self.parent;
             let old_split_key = (*parent).update_split_key(other.into(), last_key);
 
             (*other).keys.insert(0, old_split_key); // and the node's old parent split key is now its first key
             (*other).children.insert(0, last_child);
             self.num_keys -= 1;
             (*other).num_keys += 1;
-
-            // Update the parent pointer of the moved child
-            let child_node_ref = NodeRef::new(last_child, height - 1);
-            child_node_ref.set_parent(other);
         }
     }
 
@@ -191,23 +179,22 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
         new_split_key
     }
 
-    pub fn move_first_to_end_of(&mut self, other: *mut InternalNode<K, V>, height: usize) {
+    pub fn move_first_to_end_of(
+        &mut self,
+        other: *mut InternalNode<K, V>,
+        parent: *mut InternalNode<K, V>,
+    ) {
         println!("InternalNode move_first_to_end_of");
         unsafe {
             let first_key = self.keys.remove(0); // no! this is the split key for ourselves, not the other node
             let first_child = self.children.remove(0);
             // Update the split key in the parent for self
-            let parent = self.parent;
             let old_split_key = (*parent).update_split_key(self.into(), first_key);
 
             (*other).keys.push(old_split_key);
             (*other).children.push(first_child);
             self.num_keys -= 1;
             (*other).num_keys += 1;
-
-            // Update the parent pointer of the moved child
-            let child_node_ref = NodeRef::new(first_child, height - 1);
-            child_node_ref.set_parent(other);
         }
     }
 

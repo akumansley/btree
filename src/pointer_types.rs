@@ -76,6 +76,14 @@ impl<K, V> Clone for NodePtr<K, V> {
 }
 
 impl<K, V> NodePtr<K, V> {
+    pub fn null() -> Self {
+        NodePtr {
+            node: std::ptr::null_mut(),
+            phantom_keys: PhantomData,
+            phantom_values: PhantomData,
+        }
+    }
+
     pub fn from_internal(node: *mut InternalNode<K, V>) -> NodePtr<K, V> {
         let ptr = node as *mut ();
         NodePtr {
@@ -119,6 +127,9 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> NodeRef<K, V> {
             opaque_node_ptr: node_ptr,
         }
     }
+    pub fn is_null(&self) -> bool {
+        self.opaque_node_ptr.is_null()
+    }
 
     pub fn is_internal(&self) -> bool {
         self.height > 0
@@ -140,18 +151,6 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> NodeRef<K, V> {
     pub fn as_leaf_node(&self) -> *mut LeafNode<K, V> {
         debug_assert!(self.height == 0);
         unsafe { self.opaque_node_ptr.as_leaf_node_ptr() }
-    }
-
-    pub fn set_parent(&self, parent: *mut InternalNode<K, V>) {
-        if self.is_internal() {
-            unsafe {
-                (*self.as_internal_node()).parent = parent;
-            }
-        } else {
-            unsafe {
-                (*self.as_leaf_node()).parent = parent;
-            }
-        }
     }
 
     pub fn check_invariants(&self, height: usize) {

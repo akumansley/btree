@@ -1,11 +1,8 @@
 [package]
-name = "aider-tree"
+name = "btree"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 smallvec = "1.11.1"
 rand = "0.8.5"
-
-[profile.test]
-opt-level = 3
