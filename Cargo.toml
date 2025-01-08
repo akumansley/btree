@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 smallvec = "1.11.1"
 rand = "0.8.5"
+parking_lot = "0.12.3"
+tagptr = "0.2.0"

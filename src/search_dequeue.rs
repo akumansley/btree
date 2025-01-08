@@ -1,71 +1,92 @@
 use crate::{
-    leaf_node::LeafNode,
-    pointer_types::{NodePtr, NodeRef},
+    node_ptr::{
+        marker::{self, LockState, NodeType},
+        NodePtr,
+    },
+    tree::{BTreeKey, BTreeValue},
 };
-use std::{
-    fmt::{Debug, Display},
-    mem::MaybeUninit,
-};
+use std::mem::MaybeUninit;
 
 const MAX_STACK_SIZE: usize = 16;
-pub struct SearchDequeue<K, V> {
-    stack: [MaybeUninit<NodePtr<K, V>>; MAX_STACK_SIZE],
-    highest_height: usize,
+pub struct SearchDequeue<K: BTreeKey, V: BTreeValue> {
+    stack: [MaybeUninit<NodePtr<K, V, marker::Unknown, marker::Unknown>>; MAX_STACK_SIZE],
     index_of_highest_node: usize,
     index_after_lowest_node: usize,
 }
 
-impl<K: PartialOrd + Debug + Clone, V: Debug + Display> SearchDequeue<K, V> {
-    pub fn new(height: usize) -> Self {
+impl<K: BTreeKey, V: BTreeValue> SearchDequeue<K, V> {
+    pub fn new() -> Self {
         SearchDequeue {
             stack: [MaybeUninit::uninit(); MAX_STACK_SIZE],
-            highest_height: height,
             index_of_highest_node: 0,
             index_after_lowest_node: 0,
         }
     }
 
-    pub fn pop_highest(&mut self) -> Option<NodeRef<K, V>> {
+    pub fn pop_highest(&mut self) -> NodePtr<K, V, marker::Unknown, marker::Unknown> {
         debug_assert!(self.index_of_highest_node < self.index_after_lowest_node);
-        self.index_of_highest_node -= 1;
+
         unsafe {
             let node_ptr = self.stack[self.index_of_highest_node].assume_init();
-            let node_ref = NodeRef::new(node_ptr, self.highest_height - self.index_of_highest_node);
-            Some(node_ref)
+            self.index_of_highest_node += 1;
+            node_ptr
         }
     }
 
-    pub fn push_node_on_bottom(&mut self, value: NodePtr<K, V>) {
+    pub fn pop_highest_until<'a, L: LockState, N: NodeType>(
+        &'a mut self,
+        node_ptr: NodePtr<K, V, L, N>,
+    ) -> impl Iterator<Item = NodePtr<K, V, marker::Unknown, marker::Unknown>> + 'a {
+        let erased_node_ptr = node_ptr.erase();
+        std::iter::from_fn(move || {
+            if self.peek_highest() != erased_node_ptr {
+                Some(self.pop_highest())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn drain<'a>(
+        &'a mut self,
+    ) -> impl Iterator<Item = NodePtr<K, V, marker::Unknown, marker::Unknown>> + 'a {
+        std::iter::from_fn(move || {
+            if !self.is_empty() {
+                Some(self.pop_highest())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn peek_highest(&self) -> NodePtr<K, V, marker::Unknown, marker::Unknown> {
+        debug_assert!(self.index_of_highest_node < self.index_after_lowest_node);
+        unsafe {
+            let node_ptr = self.stack[self.index_of_highest_node].assume_init();
+            node_ptr
+        }
+    }
+
+    pub fn push_node_on_bottom<L: LockState, N: NodeType>(&mut self, value: NodePtr<K, V, L, N>) {
         debug_assert!(self.index_after_lowest_node < MAX_STACK_SIZE);
-        self.stack[self.index_after_lowest_node].write(value);
+        self.stack[self.index_after_lowest_node].write(value.erase());
         self.index_after_lowest_node += 1;
     }
 
-    pub fn pop_lowest(&mut self) -> NodeRef<K, V> {
+    pub fn pop_lowest(&mut self) -> NodePtr<K, V, marker::Unknown, marker::Unknown> {
         debug_assert!(self.index_after_lowest_node > 0);
         unsafe {
             self.index_after_lowest_node -= 1;
             let node_ptr = self.stack[self.index_after_lowest_node].assume_init();
-            let node_ref =
-                NodeRef::new(node_ptr, self.highest_height - self.index_after_lowest_node);
-            node_ref
+            node_ptr
         }
     }
 
-    pub fn peek_lowest(&self) -> NodeRef<K, V> {
+    pub fn peek_lowest(&self) -> NodePtr<K, V, marker::Unknown, marker::Unknown> {
         unsafe {
             let node_ptr = self.stack[self.index_after_lowest_node - 1].assume_init();
-            NodeRef::new(
-                node_ptr,
-                self.highest_height - (self.index_after_lowest_node - 1),
-            )
+            node_ptr
         }
-    }
-
-    pub fn must_get_leaf(&self) -> *mut LeafNode<K, V> {
-        let node_ref = self.peek_lowest();
-        debug_assert!(node_ref.is_leaf());
-        node_ref.as_leaf_node()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -79,49 +100,64 @@ impl<K: PartialOrd + Debug + Clone, V: Debug + Display> SearchDequeue<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::pointer_types::NodePtr;
+    use std::ptr;
 
-    fn create_dummy_node_ptr<K, V>() -> NodePtr<K, V> {
-        NodePtr::null()
+    use super::*;
+    use crate::{
+        leaf_node::LeafNode,
+        node_ptr::{marker, NodePtr},
+        tree::{BTreeKey, BTreeValue},
+    };
+
+    fn create_dummy_leaf_node_ptr<K: BTreeKey, V: BTreeValue>(
+    ) -> NodePtr<K, V, marker::Unlocked, marker::Leaf> {
+        let node = LeafNode::<K, V>::new();
+        NodePtr::from_leaf_unlocked(node)
     }
 
     #[test]
     fn test_push_and_pop() {
-        let mut dequeue: SearchDequeue<i32, i32> = SearchDequeue::new(1);
-        let node_ptr = create_dummy_node_ptr();
+        let mut dequeue: SearchDequeue<i32, i32> = SearchDequeue::new();
+        let node_ptr = create_dummy_leaf_node_ptr();
+        assert!(node_ptr.is_leaf());
 
-        dequeue.push_node_on_bottom(node_ptr);
+        dequeue.push_node_on_bottom(node_ptr.erase());
         assert_eq!(dequeue.len(), 1);
 
         let popped_node = dequeue.pop_lowest();
         assert_eq!(dequeue.len(), 0);
-        assert!(popped_node.is_null());
+        assert!(popped_node.is_leaf());
+        unsafe {
+            ptr::drop_in_place(popped_node.assert_leaf().to_mut_leaf_ptr());
+        }
     }
 
     #[test]
     fn test_is_empty_behavior() {
-        let mut dequeue: SearchDequeue<i32, i32> = SearchDequeue::new(1);
+        let mut dequeue: SearchDequeue<i32, i32> = SearchDequeue::new();
         assert!(dequeue.is_empty());
 
-        let node_ptr = create_dummy_node_ptr();
-        dequeue.push_node_on_bottom(node_ptr);
+        let node_ptr = create_dummy_leaf_node_ptr();
+        dequeue.push_node_on_bottom(node_ptr.erase());
         assert!(!dequeue.is_empty());
 
         dequeue.pop_lowest();
         assert!(dequeue.is_empty());
+        unsafe {
+            ptr::drop_in_place(node_ptr.to_mut_leaf_ptr());
+        }
     }
 
     #[test]
     fn test_len_behavior() {
-        let mut dequeue: SearchDequeue<i32, i32> = SearchDequeue::new(3);
+        let mut dequeue: SearchDequeue<i32, i32> = SearchDequeue::new();
         assert_eq!(dequeue.len(), 0);
 
-        let node_ptr = create_dummy_node_ptr();
-        dequeue.push_node_on_bottom(node_ptr);
+        let node_ptr = create_dummy_leaf_node_ptr();
+        dequeue.push_node_on_bottom(node_ptr.erase());
         assert_eq!(dequeue.len(), 1);
 
-        dequeue.push_node_on_bottom(node_ptr);
+        dequeue.push_node_on_bottom(node_ptr.erase());
         assert_eq!(dequeue.len(), 2);
 
         dequeue.pop_lowest();
@@ -129,5 +165,8 @@ mod tests {
 
         dequeue.pop_lowest();
         assert_eq!(dequeue.len(), 0);
+        unsafe {
+            ptr::drop_in_place(node_ptr.to_mut_leaf_ptr());
+        }
     }
 }

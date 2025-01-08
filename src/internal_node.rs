@@ -1,32 +1,96 @@
 use crate::{
-    array_types::{ChildArray, KeyArray},
-    leaf_node::LeafNode,
-    pointer_types::{NodePtr, NodeRef},
-    tree::UnderfullNodePosition,
+    array_types::{ChildArray, KeyArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
+    debug_println,
+    node::{Height, NodeHeader},
+    node_ptr::{
+        marker::{self, NodeType},
+        DiscriminatedNode, NodePtr,
+    },
+    tree::{BTreeKey, BTreeValue, ModificationType, UnderfullNodePosition},
 };
 use smallvec::SmallVec;
-use std::fmt::Debug;
+use std::{cell::UnsafeCell, ptr};
 
-pub struct InternalNode<K, V> {
+// this is the shared node data
+pub struct InternalNodeInner<K: BTreeKey, V: BTreeValue> {
     pub keys: SmallVec<KeyArray<K>>,
-    pub children: SmallVec<ChildArray<NodePtr<K, V>>>,
+    pub children: SmallVec<ChildArray<NodePtr<K, V, marker::Unlocked, marker::Unknown>>>,
     pub num_keys: usize,
 }
 
-impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
-    pub fn new() -> *mut Self {
+#[repr(C)]
+pub struct InternalNode<K: BTreeKey, V: BTreeValue> {
+    pub header: NodeHeader,
+    pub inner: UnsafeCell<InternalNodeInner<K, V>>,
+}
+
+impl<K: BTreeKey, V: BTreeValue> InternalNode<K, V> {
+    pub fn new(height: Height) -> *mut InternalNode<K, V> {
         Box::into_raw(Box::new(InternalNode {
-            keys: SmallVec::new(),
-            children: SmallVec::new(),
-            num_keys: 0,
+            header: NodeHeader::new(height),
+            inner: UnsafeCell::new(InternalNodeInner {
+                keys: SmallVec::new(),
+                children: SmallVec::new(),
+                num_keys: 0,
+            }),
         }))
     }
 
+    /// SAFETY: this is only safe to call when dropping the entire tree
+    /// and there are no other live references to any data in the tree -- we don't take locks
+    pub unsafe fn drop_node_recursively(&self) {
+        let height = self.header.height();
+        let child_height = height.one_level_lower();
+        unsafe {
+            for child in (*self.inner.get()).children.iter() {
+                if child_height.is_internal() {
+                    (*child.assert_internal().to_mut_internal_ptr()).drop_node_recursively();
+                } else {
+                    ptr::drop_in_place(child.assert_leaf().to_mut_leaf_ptr());
+                }
+            }
+        }
+        unsafe {
+            ptr::drop_in_place(self as *const _ as *mut InternalNode<K, V>);
+        }
+    }
+}
+
+impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
     pub fn num_keys(&self) -> usize {
         self.num_keys
     }
 
-    pub fn insert(&mut self, key: K, node: NodePtr<K, V>) {
+    pub fn has_capacity_for_modification(&self, modification_type: ModificationType) -> bool {
+        debug_println!(
+            "has_capacity_for_modification - internal node has {:?}",
+            self.num_keys
+        );
+        match modification_type {
+            ModificationType::Insertion => self.num_keys < MAX_KEYS_PER_NODE,
+            ModificationType::Removal => self.num_keys > MIN_KEYS_PER_NODE,
+            ModificationType::NonModifying => true,
+        }
+    }
+
+    // internal top of tree nodes are allowed to be as low as 1 key
+    pub fn has_capacity_for_modification_as_top_of_tree(
+        &self,
+        modification_type: ModificationType,
+    ) -> bool {
+        debug_println!(
+            "has_capacity_for_modification_as_top_of_tree - internal node has {:?}",
+            self.num_keys
+        );
+        match modification_type {
+            ModificationType::Insertion => self.num_keys < MAX_KEYS_PER_NODE,
+            ModificationType::Removal => self.num_keys > 1,
+            ModificationType::NonModifying => true,
+        }
+    }
+
+    pub fn insert(&mut self, key: K, new_child: NodePtr<K, V, marker::Unlocked, marker::Unknown>) {
+        debug_assert!(new_child.is_unlocked());
         let insertion_point = self
             .keys
             .iter()
@@ -34,11 +98,11 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
             .unwrap_or(self.num_keys);
 
         self.keys.insert(insertion_point, key);
-        self.children.insert(insertion_point + 1, node);
+        self.children.insert(insertion_point + 1, new_child);
         self.num_keys += 1;
     }
 
-    pub fn find_child(&self, search_key: &K) -> NodePtr<K, V> {
+    pub fn find_child(&self, search_key: &K) -> NodePtr<K, V, marker::Unlocked, marker::Unknown> {
         let index = self
             .keys
             .iter()
@@ -47,12 +111,15 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
         self.children[index]
     }
 
-    pub fn get_key_for_non_leftmost_child(&self, child: NodePtr<K, V>) -> K {
+    pub fn get_key_for_non_leftmost_child(
+        &self,
+        child: NodePtr<K, V, marker::Unlocked, marker::Unknown>,
+    ) -> K {
         let index = self.children.iter().position(|c| *c == child).unwrap();
         self.keys[index - 1].clone()
     }
 
-    pub fn print_node(&self, height: usize) {
+    pub fn print_node(&self) {
         println!("InternalNode: {:p}", self);
         println!("+----------------------+");
         println!("| Keys and Children:   |");
@@ -68,12 +135,29 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
         println!("| Num Keys: {}           |", self.num_keys);
         println!("+----------------------+");
         for child in self.children.iter() {
-            let node_ref = NodeRef::new(*child, height - 1);
-            node_ref.print_node();
+            match child.force() {
+                DiscriminatedNode::Internal(internal_child) => {
+                    let locked_child = internal_child.lock_shared();
+                    locked_child.print_node();
+                    locked_child.unlock_shared();
+                }
+                DiscriminatedNode::Leaf(leaf_child) => {
+                    let locked_child = leaf_child.lock_shared();
+                    locked_child.print_node();
+                    locked_child.unlock_shared();
+                }
+                _ => panic!("expected untagged internal or leaf node"),
+            }
         }
     }
 
-    fn get_neighbor(&self, child: NodePtr<K, V>) -> (NodePtr<K, V>, UnderfullNodePosition) {
+    fn get_neighbor(
+        &self,
+        child: NodePtr<K, V, marker::Unlocked, marker::Unknown>,
+    ) -> (
+        NodePtr<K, V, marker::Unlocked, marker::Unknown>,
+        UnderfullNodePosition,
+    ) {
         if child == self.children[0] {
             return (self.children[1], UnderfullNodePosition::Leftmost);
         }
@@ -87,25 +171,31 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
 
     pub(crate) fn get_neighboring_internal_node(
         &self,
-        child: *mut InternalNode<K, V>,
-    ) -> (*mut InternalNode<K, V>, UnderfullNodePosition) {
-        let (neighbor, direction) = self.get_neighbor(child.into());
-        unsafe {
-            return (neighbor.as_internal_node_ptr(), direction);
-        }
+        child: NodePtr<K, V, marker::Unlocked, marker::Internal>,
+    ) -> (
+        NodePtr<K, V, marker::Unlocked, marker::Internal>,
+        UnderfullNodePosition,
+    ) {
+        debug_assert!(child.is_internal());
+        let (neighbor, direction) = self.get_neighbor(child.erase_node_type());
+        debug_assert!(neighbor.is_internal());
+        (neighbor.assert_internal(), direction)
     }
 
     pub(crate) fn get_neighbor_of_underfull_leaf(
         &self,
-        child: *mut LeafNode<K, V>,
-    ) -> (*mut LeafNode<K, V>, UnderfullNodePosition) {
-        let (neighbor, direction) = self.get_neighbor(child.into());
-        unsafe {
-            return (neighbor.as_leaf_node_ptr(), direction);
-        }
+        child: NodePtr<K, V, marker::Unlocked, marker::Leaf>,
+    ) -> (
+        NodePtr<K, V, marker::Unlocked, marker::Leaf>,
+        UnderfullNodePosition,
+    ) {
+        debug_assert!(child.is_leaf());
+        let (neighbor, direction) = self.get_neighbor(child.erase_node_type());
+        debug_assert!(neighbor.is_leaf());
+        (neighbor.assert_leaf(), direction)
     }
 
-    pub(crate) fn remove(&mut self, child: NodePtr<K, V>) {
+    pub(crate) fn remove(&mut self, child: NodePtr<K, V, marker::Unlocked, marker::Unknown>) {
         let index = self.children.iter().position(|c| *c == child).unwrap();
         self.children.remove(index);
 
@@ -121,84 +211,94 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
     }
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
-        parent: *mut InternalNode<K, V>,
-        mut from: Box<InternalNode<K, V>>,
-        to: *mut InternalNode<K, V>,
+        mut parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut from: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut to: NodePtr<K, V, marker::Exclusive, marker::Internal>,
     ) {
+        debug_println!(
+            "moving from {:?} {:?} into {:?} {:?}",
+            from.keys,
+            from.children,
+            to.keys,
+            to.children,
+        );
+        let split_key = parent.get_key_for_non_leftmost_child(from.to_unlocked().erase_node_type());
+        to.keys.push(split_key);
+        to.keys.extend(from.keys.drain(..));
+        debug_println!("moved keys {:?}", to.keys);
+
+        for child in from.children.drain(..) {
+            debug_println!("moving child {:?}", child);
+            to.children.push(child);
+        }
+        to.num_keys = to.keys.len();
+        parent.remove(from.to_unlocked().erase_node_type());
         unsafe {
-            println!(
-                "moving from {:?} {:?} into {:?} {:?}",
-                (*from).keys,
-                (*from).children,
-                (*to).keys,
-                (*to).children,
-            );
-            let split_key = (*parent).get_key_for_non_leftmost_child(from.as_ref().into());
-            (*to).keys.push(split_key);
-            (*to).keys.extend(from.keys.drain(..));
-            println!("moved keys {:?}", (*to).keys);
-            for child in from.children.drain(..) {
-                println!("moving child {:?}", child);
-                (*to).children.push(child);
-            }
-            (*to).num_keys = (*to).keys.len();
-            (*parent).remove(from.as_ref().into());
-            drop(from);
+            ptr::drop_in_place(from.to_mut_internal_ptr());
         }
     }
 
     pub fn move_last_to_front_of(
-        &mut self,
-        other: *mut InternalNode<K, V>,
-        parent: *mut InternalNode<K, V>,
+        mut left: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut right: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
     ) {
-        println!("InternalNode move_last_to_front_of");
-        unsafe {
-            let last_key = self.keys.pop().unwrap(); // if these don't exist, we've got bigger problems
-            let last_child = self.children.pop().unwrap();
+        debug_println!("InternalNode move_last_to_front_of");
+        let last_key = left.keys.pop().unwrap(); // if these don't exist, we've got bigger problems
+        let last_child = left.children.pop().unwrap();
 
-            // last key wants to become the _parent_ split key
-            let old_split_key = (*parent).update_split_key(other.into(), last_key);
+        // last key wants to become the _parent_ split key
+        let old_split_key =
+            parent.update_split_key(right.to_unlocked().erase_node_type(), last_key);
 
-            (*other).keys.insert(0, old_split_key); // and the node's old parent split key is now its first key
-            (*other).children.insert(0, last_child);
-            self.num_keys -= 1;
-            (*other).num_keys += 1;
-        }
+        right.keys.insert(0, old_split_key); // and the node's old parent split key is now its first key
+        right.children.insert(0, last_child);
+        left.num_keys -= 1;
+        right.num_keys += 1;
     }
 
     // we'll only call this for children other than the leftmost
-    pub(crate) fn update_split_key(&mut self, node: NodePtr<K, V>, mut new_split_key: K) -> K {
-        println!(
+    pub(crate) fn update_split_key<N: NodeType>(
+        &mut self,
+        node: NodePtr<K, V, marker::Unlocked, N>,
+        mut new_split_key: K,
+    ) -> K {
+        debug_assert!(node.is_unlocked());
+        debug_println!(
             "InternalNode update_split_key of {:?} to {:?}",
-            node, new_split_key
+            node,
+            new_split_key
         );
-        let index = self.children.iter().position(|c| *c == node).unwrap();
+        let stored_node = node.to_stored();
+        let index = self
+            .children
+            .iter()
+            .position(|c| *c == stored_node)
+            .unwrap();
         debug_assert!(index > 0);
         std::mem::swap(&mut self.keys[index - 1], &mut new_split_key);
         new_split_key
     }
 
     pub fn move_first_to_end_of(
-        &mut self,
-        other: *mut InternalNode<K, V>,
-        parent: *mut InternalNode<K, V>,
+        mut right: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut left: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
     ) {
-        println!("InternalNode move_first_to_end_of");
-        unsafe {
-            let first_key = self.keys.remove(0); // no! this is the split key for ourselves, not the other node
-            let first_child = self.children.remove(0);
-            // Update the split key in the parent for self
-            let old_split_key = (*parent).update_split_key(self.into(), first_key);
+        debug_println!("InternalNode move_first_to_end_of");
+        let first_key = right.keys.remove(0);
+        let first_child = right.children.remove(0);
+        // Update the split key in the parent for self
+        let old_split_key =
+            parent.update_split_key(right.to_unlocked().erase_node_type(), first_key);
 
-            (*other).keys.push(old_split_key);
-            (*other).children.push(first_child);
-            self.num_keys -= 1;
-            (*other).num_keys += 1;
-        }
+        left.keys.push(old_split_key);
+        left.children.push(first_child);
+        right.num_keys -= 1;
+        left.num_keys += 1;
     }
 
-    pub fn check_invariants(&self, height: usize) {
+    pub fn check_invariants(&self) {
         assert_eq!(
             self.num_keys,
             self.keys.len(),
@@ -210,25 +310,27 @@ impl<K: PartialOrd + Debug + Clone, V: Debug> InternalNode<K, V> {
             "Number of keys and children are inconsistent"
         );
 
+        // the top of tree is allowed to have as few as 1 key
+        assert!(self.num_keys > 0);
+        assert!(self.num_keys <= MAX_KEYS_PER_NODE);
+
         // Check invariants for each child
         for child in &self.children {
-            let node_ref = NodeRef::new(*child, height - 1);
-            if node_ref.is_internal() {
-                unsafe {
-                    (*node_ref.as_internal_node()).check_invariants(height - 1);
+            match child.force() {
+                DiscriminatedNode::Internal(internal_child) => {
+                    let locked_child = internal_child.lock_shared();
+                    locked_child.check_invariants();
+                    locked_child.unlock_shared();
                 }
-            } else {
-                unsafe {
-                    (*node_ref.as_leaf_node()).check_invariants();
+                DiscriminatedNode::Leaf(leaf_child) => {
+                    let locked_child = leaf_child.lock_shared();
+                    locked_child.check_invariants();
+                    locked_child.unlock_shared();
+                }
+                DiscriminatedNode::Root(_) => {
+                    panic!("expected internal or leaf node");
                 }
             }
         }
-    }
-    pub fn drop_node(self, height: usize) {
-        for child in &self.children {
-            let mut node_ref = NodeRef::new(*child, height - 1);
-            node_ref.drop_node();
-        }
-        drop(self);
     }
 }
