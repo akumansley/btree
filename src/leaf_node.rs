@@ -108,6 +108,8 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         // TODO: factor out the len from the SmallVecs
         to.num_keys = to.keys.len();
         parent.remove(from.to_unlocked().erase_node_type());
+        // this is not necessary, but it lets is track the lock count correctly
+        from.unlock_exclusive();
         // TODO: make sure there's no live sibling reference to left
         // when we implement concurrency
         unsafe {

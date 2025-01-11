@@ -5,7 +5,7 @@ use crate::array_types::{
 use crate::debug_println;
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};
-use crate::node::{Height, NodeHeader};
+use crate::node::{assert_no_locks_held, assert_one_exclusive_lock_held, Height, NodeHeader};
 use crate::node_ptr::marker::NodeType;
 use crate::node_ptr::{marker, DiscriminatedNode, NodePtr};
 use crate::reference::Ref;
@@ -34,6 +34,7 @@ pub enum UnderfullNodePosition {
 /// Todo
 /// - share lock for get
 /// - optimistic locking for insert/remove
+/// - concurrency benchmark
 /// - iter
 /// - bulk loading
 
@@ -192,6 +193,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         let leaf_node_exclusive = search_stack.pop_lowest().assert_leaf().assert_exclusive();
         debug_assert!(search_stack.is_empty());
         debug_println!("top-level get {:?} done", search_key);
+        assert_one_exclusive_lock_held();
         match leaf_node_exclusive.get(search_key) {
             Some(v_ptr) => Some(Ref::new(leaf_node_exclusive, v_ptr)),
             None => {
@@ -227,6 +229,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             });
         }
         debug_println!("top-level remove {:?} done", key);
+        assert_no_locks_held();
     }
 
     fn coalesce_or_redistribute_leaf_node(&self, mut search_stack: SearchDequeue<K, V>) {
@@ -235,14 +238,10 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
         // if the leaf is the top_of_tree, we don't need to do anything -- we let it get under-full
         if search_stack.peek_lowest().is_root() {
-            // unlock the root
-            search_stack
-                .pop_lowest()
-                .assert_root()
-                .assert_exclusive()
-                .unlock_exclusive();
+            debug_println!("not coalescing or redistributing leaf at top of tree");
             // unlock the leaf (which is top of tree)
             locked_underfull_leaf.unlock_exclusive();
+            debug_assert!(search_stack.is_empty());
             return;
         }
 
@@ -330,10 +329,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
         // if the underfull node is the top_of_tree, we need to adjust the root
         if search_stack.peek_lowest().is_root() {
-            self.adjust_top_of_tree(
-                search_stack.pop_lowest().assert_root().assert_exclusive(),
-                underfull_internal.erase_node_type(),
-            );
+            self.adjust_top_of_tree(search_stack, underfull_internal.erase_node_type());
             return;
         }
         let parent = search_stack
@@ -453,7 +449,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     fn adjust_top_of_tree(
         &self,
-        mut root: NodePtr<K, V, marker::Exclusive, marker::Root>,
+        mut search_stack: SearchDequeue<K, V>,
         top_of_tree: NodePtr<K, V, marker::Exclusive, marker::Unknown>,
     ) {
         debug_println!("adjust_top_of_tree");
@@ -463,20 +459,22 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             let top_of_tree = top_of_tree.assert_internal();
             // if the (internal node) root has only one child, it's the new root
             if top_of_tree.num_keys == 0 {
-                debug_println!("root is an internal node with one child");
+                let mut root = search_stack.pop_lowest().assert_root().assert_exclusive();
+                debug_println!("top_of_tree is an internal node with one child");
                 let new_top_of_tree = top_of_tree.children[0];
                 root.top_of_tree = new_top_of_tree;
-                // TODO: make sure we've locked before doing this
+                // not necessary, but it lets us track the lock count correctly
+                top_of_tree.unlock_exclusive();
                 unsafe {
                     ptr::drop_in_place(top_of_tree.to_mut_internal_ptr());
                 }
+                root.unlock_exclusive();
             } else {
                 top_of_tree.unlock_exclusive();
             }
         } else {
             top_of_tree.unlock_exclusive();
         }
-        root.unlock_exclusive();
     }
     /**
      * Insertion methods:
@@ -515,6 +513,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         }
         self.len.fetch_add(1, Ordering::Relaxed);
         debug_println!("top-level insert done");
+        assert_no_locks_held();
     }
 
     fn insert_into_leaf_after_splitting(

@@ -8,4 +8,4 @@ pub mod reference;
 pub mod search_dequeue;
 pub mod tree;
 
-pub use tree::RootNode;
+pub use tree::{BTree, BTreeKey, BTreeValue};

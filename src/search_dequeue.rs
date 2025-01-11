@@ -75,6 +75,7 @@ impl<K: BTreeKey, V: BTreeValue> SearchDequeue<K, V> {
 
     pub fn pop_lowest(&mut self) -> NodePtr<K, V, marker::Unknown, marker::Unknown> {
         debug_assert!(self.index_after_lowest_node > 0);
+        debug_assert!(self.index_after_lowest_node > self.index_of_highest_node);
         unsafe {
             self.index_after_lowest_node -= 1;
             let node_ptr = self.stack[self.index_after_lowest_node].assume_init();

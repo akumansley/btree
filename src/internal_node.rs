@@ -233,6 +233,8 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         }
         to.num_keys = to.keys.len();
         parent.remove(from.to_unlocked().erase_node_type());
+        // this is not necessary, but it lets is track the lock count correctly
+        from.unlock_exclusive();
         unsafe {
             ptr::drop_in_place(from.to_mut_internal_ptr());
         }

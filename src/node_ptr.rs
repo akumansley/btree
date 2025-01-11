@@ -6,11 +6,11 @@ use std::ptr::NonNull;
 use marker::{LockState, NodeType};
 use tagptr::TagNonNull;
 
+use crate::debug_println;
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};
 use crate::node::{Height, NodeHeader};
-use crate::tree::{BTreeKey, BTreeValue, RootNodeInner};
-use crate::{debug_println, RootNode};
+use crate::tree::{BTreeKey, BTreeValue, RootNode, RootNodeInner};
 
 pub enum DiscriminatedNode<K: BTreeKey, V: BTreeValue, L: LockState> {
     Leaf(NodePtr<K, V, L, marker::Leaf>),
