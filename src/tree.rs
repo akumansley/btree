@@ -5,7 +5,9 @@ use crate::array_types::{
 use crate::debug_println;
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};
-use crate::node::{assert_no_locks_held, assert_one_exclusive_lock_held, Height, NodeHeader};
+use crate::node::{
+    debug_assert_no_locks_held, debug_assert_one_exclusive_lock_held, Height, NodeHeader,
+};
 use crate::node_ptr::marker::NodeType;
 use crate::node_ptr::{marker, DiscriminatedNode, NodePtr};
 use crate::reference::Ref;
@@ -193,7 +195,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         let leaf_node_exclusive = search_stack.pop_lowest().assert_leaf().assert_exclusive();
         debug_assert!(search_stack.is_empty());
         debug_println!("top-level get {:?} done", search_key);
-        assert_one_exclusive_lock_held();
+        debug_assert_one_exclusive_lock_held();
         match leaf_node_exclusive.get(search_key) {
             Some(v_ptr) => Some(Ref::new(leaf_node_exclusive, v_ptr)),
             None => {
@@ -222,14 +224,14 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
             self.coalesce_or_redistribute_leaf_node(search_stack);
         } else {
-            // it's possible the stack still has nodes -- we could have conservatively locked
-            // the root expecting to modify it, but don't end up doing that
+            // the remove might not actually remove the key (it might be not found)
+            // so the stack may still contain nodes -- unlock them
             search_stack.drain().for_each(|n| {
                 n.assert_exclusive().unlock_exclusive();
             });
         }
         debug_println!("top-level remove {:?} done", key);
-        assert_no_locks_held();
+        debug_assert_no_locks_held::<'r'>();
     }
 
     fn coalesce_or_redistribute_leaf_node(&self, mut search_stack: SearchDequeue<K, V>) {
@@ -394,6 +396,8 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         left_internal.unlock_exclusive();
         if parent.num_keys() < MIN_KEYS_PER_NODE {
             self.coalesce_or_redistribute_internal_node(search_stack);
+        } else {
+            parent.unlock_exclusive();
         }
     }
 
@@ -513,7 +517,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         }
         self.len.fetch_add(1, Ordering::Relaxed);
         debug_println!("top-level insert done");
-        assert_no_locks_held();
+        debug_assert_no_locks_held::<'i'>();
     }
 
     fn insert_into_leaf_after_splitting(

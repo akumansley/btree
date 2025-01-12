@@ -9,44 +9,63 @@ thread_local! {
 
 // Function to increment the shared lock counter
 fn increment_shared_lock_count() {
-    SHARED_LOCK_COUNT.with(|count| {
-        count.set(count.get() + 1);
-    });
+    #[cfg(debug_assertions)]
+    {
+        SHARED_LOCK_COUNT.with(|count| {
+            count.set(count.get() + 1);
+        });
+    }
 }
 
 // Function to decrement the shared lock counter
 fn decrement_shared_lock_count() {
-    SHARED_LOCK_COUNT.with(|count| {
-        count.set(count.get() - 1);
-    });
+    #[cfg(debug_assertions)]
+    {
+        SHARED_LOCK_COUNT.with(|count| {
+            count.set(count.get() - 1);
+        });
+    }
 }
 
 // Function to increment the exclusive lock counter
 fn increment_exclusive_lock_count() {
-    EXCLUSIVE_LOCK_COUNT.with(|count| {
-        count.set(count.get() + 1);
-    });
+    #[cfg(debug_assertions)]
+    {
+        EXCLUSIVE_LOCK_COUNT.with(|count| {
+            count.set(count.get() + 1);
+        });
+    }
 }
 
 // Function to decrement the exclusive lock counter
 fn decrement_exclusive_lock_count() {
-    EXCLUSIVE_LOCK_COUNT.with(|count| {
-        count.set(count.get() - 1);
-    });
+    #[cfg(debug_assertions)]
+    {
+        EXCLUSIVE_LOCK_COUNT.with(|count| {
+            count.set(count.get() - 1);
+        });
+    }
 }
 
-pub fn assert_no_locks_held() {
-    let (shared_count, exclusive_count) = get_lock_counts();
-    assert_eq!(shared_count, 0);
-    assert_eq!(exclusive_count, 0);
-}
-pub fn assert_one_exclusive_lock_held() {
-    let (shared_count, exclusive_count) = get_lock_counts();
-    assert_eq!(shared_count, 0);
-    assert_eq!(exclusive_count, 1);
+pub fn debug_assert_no_locks_held<const METHOD: char>() {
+    #[cfg(debug_assertions)]
+    {
+        let (shared_count, exclusive_count) = get_lock_counts();
+        assert_eq!(shared_count, 0);
+        assert_eq!(exclusive_count, 0, "method: {:?}", METHOD);
+    }
 }
 
-// Function to get the current lock counts
+pub fn debug_assert_one_exclusive_lock_held() {
+    #[cfg(debug_assertions)]
+    {
+        let (shared_count, exclusive_count) = get_lock_counts();
+        assert_eq!(shared_count, 0);
+        assert_eq!(exclusive_count, 1);
+    }
+}
+
+#[cfg(debug_assertions)]
 fn get_lock_counts() -> (usize, usize) {
     let shared_count = SHARED_LOCK_COUNT.with(|count| count.get());
     let exclusive_count = EXCLUSIVE_LOCK_COUNT.with(|count| count.get());
