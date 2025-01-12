@@ -6,7 +6,7 @@ use crate::debug_println;
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};
 use crate::node::{
-    debug_assert_no_locks_held, debug_assert_one_exclusive_lock_held, Height, NodeHeader,
+    debug_assert_no_locks_held, debug_assert_one_shared_lock_held, Height, NodeHeader,
 };
 use crate::node_ptr::marker::NodeType;
 use crate::node_ptr::{marker, DiscriminatedNode, NodePtr};
@@ -36,9 +36,10 @@ pub enum UnderfullNodePosition {
 /// Todo
 /// - share lock for get
 /// - optimistic locking for insert/remove
-/// - concurrency benchmark
 /// - iter
 /// - bulk loading
+/// Perf ideas:
+/// - merge root and top_of_tree
 
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
     root: RootNode<K, V>,
@@ -117,6 +118,25 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         NodePtr::from_root_unlocked(self as *const _ as *mut _)
     }
 
+    fn find_leaf_shared(&self, search_key: &K) -> NodePtr<K, V, marker::Shared, marker::Leaf> {
+        let locked_root = self.as_node_ptr().lock_shared();
+
+        let top_of_tree = locked_root.top_of_tree;
+        let top_of_tree = top_of_tree.lock_shared();
+        locked_root.unlock_shared();
+
+        let mut current_node = top_of_tree;
+        while current_node.is_internal() {
+            let current_shared = current_node.assert_internal();
+            let found_child = current_shared.find_child(search_key);
+            let locked_found_child = found_child.lock_shared();
+            current_node.unlock_shared();
+            current_node = locked_found_child;
+        }
+
+        current_node.assert_leaf()
+    }
+
     fn find_leaf_pessimistic(
         &self,
         search_key: &K,
@@ -185,21 +205,17 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         search
     }
 
-    /// Locks the leaf node and returns a reference to the value
+    /// Locks the leaf node (shared) and returns a reference to the value
     /// The leaf will be unlocked when the reference is dropped
-    /// NOCOMMIT: this currently is an exclusive lock
     pub fn get(&self, search_key: &K) -> Option<Ref<K, V>> {
         debug_println!("top-level get {:?}", search_key);
-        let mut search_stack =
-            self.find_leaf_pessimistic(search_key, ModificationType::NonModifying);
-        let leaf_node_exclusive = search_stack.pop_lowest().assert_leaf().assert_exclusive();
-        debug_assert!(search_stack.is_empty());
+        let leaf_node_shared = self.find_leaf_shared(search_key);
         debug_println!("top-level get {:?} done", search_key);
-        debug_assert_one_exclusive_lock_held();
-        match leaf_node_exclusive.get(search_key) {
-            Some(v_ptr) => Some(Ref::new(leaf_node_exclusive, v_ptr)),
+        debug_assert_one_shared_lock_held();
+        match leaf_node_shared.get(search_key) {
+            Some(v_ptr) => Some(Ref::new(leaf_node_shared, v_ptr)),
             None => {
-                leaf_node_exclusive.unlock_exclusive();
+                leaf_node_shared.unlock_shared();
                 None
             }
         }
