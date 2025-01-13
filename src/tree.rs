@@ -34,12 +34,11 @@ pub enum UnderfullNodePosition {
 
 /// B+Tree
 /// Todo
-/// - share lock for get
-/// - optimistic locking for insert/remove
 /// - iter
 /// - bulk loading
 /// Perf ideas:
-/// - merge root and top_of_tree
+/// - merge root and top_of_tree?
+/// - try the "no coalescing" or "relaxed" btreeidea
 
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
     root: RootNode<K, V>,
