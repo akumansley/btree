@@ -17,6 +17,7 @@ opt-level = 3
 debug = false
 debug-assertions = false
 overflow-checks = false
+lto = true
 
 [[bench]]
 name = "concurrent_write"
