@@ -103,11 +103,10 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
     }
 
     pub fn find_child(&self, search_key: &K) -> NodePtr<K, V, marker::Unlocked, marker::Unknown> {
-        let index = self
-            .keys
-            .iter()
-            .position(|k| k > &search_key)
-            .unwrap_or(self.num_keys); // self.children has one more element than self.keys, so the len is the index
+        let index = match self.keys.binary_search(search_key) {
+            Ok(index) => index + 1,
+            Err(index) => index,
+        };
         self.children[index]
     }
 

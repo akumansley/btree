@@ -35,11 +35,10 @@ impl<K: BTreeKey, V: BTreeValue> LeafNode<K, V> {
 impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
     pub fn get(&self, search_key: &K) -> Option<*const V> {
         debug_println!("LeafNode get {:?}", search_key);
-        self.keys
-            .iter()
-            .zip(self.values.iter())
-            .find(|(k, _)| k == &search_key)
-            .map(|(_, v)| v as *const V)
+        match self.keys.binary_search(search_key) {
+            Ok(index) => Some(&self.values[index] as *const V),
+            Err(_) => None,
+        }
     }
 
     pub fn insert(&mut self, key_to_insert: K, value: V) {

@@ -20,10 +20,10 @@ use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-pub trait BTreeKey: PartialOrd + Clone + Debug + Display {}
+pub trait BTreeKey: PartialOrd + Ord + Clone + Debug + Display {}
 pub trait BTreeValue: Debug + Display {}
 
-impl<K: PartialOrd + Clone + Debug + Display> BTreeKey for K {}
+impl<K: PartialOrd + Ord + Clone + Debug + Display> BTreeKey for K {}
 impl<V: Debug + Display> BTreeValue for V {}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -74,11 +74,11 @@ pub struct RootNode<K: BTreeKey, V: BTreeValue> {
     pub len: AtomicUsize,
 }
 
-pub struct RootNodeInner<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> {
+pub struct RootNodeInner<K: BTreeKey, V: BTreeValue> {
     top_of_tree: NodePtr<K, V, marker::Unlocked, marker::Unknown>,
 }
 
-impl<K: PartialOrd + Clone + Debug + Display, V: Debug + Display> Drop for RootNodeInner<K, V> {
+impl<K: BTreeKey, V: BTreeValue> Drop for RootNodeInner<K, V> {
     fn drop(&mut self) {
         match self.top_of_tree.force() {
             DiscriminatedNode::Leaf(leaf) => unsafe {
