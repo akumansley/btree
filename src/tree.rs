@@ -120,21 +120,41 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     fn find_leaf_shared(&self, search_key: &K) -> NodePtr<K, V, marker::Shared, marker::Leaf> {
         let locked_root = self.as_node_ptr().lock_shared();
-
         let top_of_tree = locked_root.top_of_tree;
-        let top_of_tree = top_of_tree.lock_shared();
-        locked_root.unlock_shared();
 
+        let mut prev_node = locked_root.erase_node_type();
         let mut current_node = top_of_tree;
         while current_node.is_internal() {
-            let current_shared = current_node.assert_internal();
-            let found_child = current_shared.find_child(search_key);
-            let locked_found_child = found_child.lock_shared();
-            current_node.unlock_shared();
-            current_node = locked_found_child;
+            let locked_current_node = current_node.lock_shared().assert_internal();
+            prev_node.unlock_shared();
+            current_node = locked_current_node.find_child(search_key);
+            prev_node = locked_current_node.erase_node_type();
         }
 
-        current_node.assert_leaf()
+        let leaf = current_node.lock_shared().assert_leaf();
+        prev_node.unlock_shared();
+        leaf
+    }
+
+    fn find_leaf_optimistic(
+        &self,
+        search_key: &K,
+    ) -> NodePtr<K, V, marker::Exclusive, marker::Leaf> {
+        let locked_root = self.as_node_ptr().lock_shared();
+        let top_of_tree = locked_root.top_of_tree;
+
+        let mut prev_node = locked_root.erase_node_type();
+        let mut current_node = top_of_tree;
+        while current_node.is_internal() {
+            let locked_current_node = current_node.lock_shared().assert_internal();
+            prev_node.unlock_shared();
+            current_node = locked_current_node.find_child(search_key);
+            prev_node = locked_current_node.erase_node_type();
+        }
+
+        let leaf = current_node.lock_exclusive().assert_leaf();
+        prev_node.unlock_shared();
+        leaf
     }
 
     fn find_leaf_pessimistic(
@@ -234,6 +254,16 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     pub fn remove(&self, key: &K) {
         debug_println!("top-level remove {:?}", key);
+        let mut optimistic_leaf = self.find_leaf_optimistic(&key);
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal)
+            || optimistic_leaf.get(&key).is_none()
+        {
+            optimistic_leaf.remove(key);
+            optimistic_leaf.unlock_exclusive();
+            debug_assert_no_locks_held::<'r'>();
+            return;
+        }
+        optimistic_leaf.unlock_exclusive();
         let mut search_stack = self.find_leaf_pessimistic(key, ModificationType::Removal);
         let mut leaf_node_exclusive = search_stack.peek_lowest().assert_leaf().assert_exclusive();
         leaf_node_exclusive.remove(key);
@@ -507,6 +537,17 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     pub fn insert(&self, key: K, value: V) {
         debug_println!("top-level insert {:?}", key);
+        let mut optimistic_leaf = self.find_leaf_optimistic(&key);
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
+            || optimistic_leaf.get(&key).is_some()
+        {
+            optimistic_leaf.insert(key, value);
+            optimistic_leaf.unlock_exclusive();
+            debug_assert_no_locks_held::<'i'>();
+            return;
+        }
+        optimistic_leaf.unlock_exclusive();
+
         let mut search_stack = self.find_leaf_pessimistic(&key, ModificationType::Insertion);
         let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
