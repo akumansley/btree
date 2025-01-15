@@ -1,16 +1,16 @@
 use std::ops::Deref;
 
-use crate::node_ptr::{marker, NodePtr};
+use crate::node_ptr::{marker, NodeRef};
 use crate::tree::{BTreeKey, BTreeValue};
 
 #[derive(Debug)]
 pub struct Ref<K: BTreeKey, V: BTreeValue> {
-    node_ptr: NodePtr<K, V, marker::Shared, marker::Leaf>,
+    node_ptr: NodeRef<K, V, marker::Shared, marker::Leaf>,
     value: *const V,
 }
 
 impl<K: BTreeKey, V: BTreeValue> Ref<K, V> {
-    pub fn new(node_ptr: NodePtr<K, V, marker::Shared, marker::Leaf>, value: *const V) -> Self {
+    pub fn new(node_ptr: NodeRef<K, V, marker::Shared, marker::Leaf>, value: *const V) -> Self {
         Ref { node_ptr, value }
     }
 }

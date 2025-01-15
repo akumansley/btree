@@ -1,5 +1,6 @@
 pub mod array_types;
 pub mod debug;
+pub mod hybrid_latch;
 pub mod internal_node;
 pub mod leaf_node;
 pub mod node;

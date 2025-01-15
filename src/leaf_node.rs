@@ -2,7 +2,7 @@ use crate::{
     array_types::{KeyArray, ValueArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
     debug_println,
     node::{Height, NodeHeader},
-    node_ptr::{marker, NodePtr},
+    node_ptr::{marker, NodeRef},
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
 use smallvec::SmallVec;
@@ -98,28 +98,28 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
     }
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
-        mut parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
-        mut from: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        mut to: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
+        mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        mut from: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        mut to: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
     ) {
         to.keys.extend(from.keys.drain(..));
         to.values.extend(from.values.drain(..));
         // TODO: factor out the len from the SmallVecs
         to.num_keys = to.keys.len();
-        parent.remove(from.to_unlocked().erase_node_type());
+        parent.remove(from.node_ptr());
         // this is not necessary, but it lets is track the lock count correctly
         from.unlock_exclusive();
         // TODO: make sure there's no live sibling reference to left
         // when we implement concurrency
         unsafe {
-            ptr::drop_in_place(from.to_mut_leaf_ptr());
+            ptr::drop_in_place(from.to_raw_leaf_ptr());
         }
     }
 
     pub fn move_last_to_front_of(
-        mut left: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        mut right: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        mut parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        mut right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
         debug_println!("LeafNode move_last_to_front_of");
         let last_key = left.keys.pop().unwrap();
@@ -130,13 +130,13 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         left.num_keys -= 1;
 
         // Update the split key in the parent
-        parent.update_split_key(right.to_stored(), last_key);
+        parent.update_split_key(right.node_ptr(), last_key);
     }
 
     pub fn move_first_to_end_of(
-        mut right: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        mut left: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        mut parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        mut right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        mut left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
         debug_println!("LeafNode move_first_to_end_of");
         let first_key = right.keys.remove(0);
@@ -148,7 +148,7 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         right.num_keys -= 1;
 
         // Update the split key in the parent for self
-        parent.update_split_key(right.to_stored(), right.keys[0].clone());
+        parent.update_split_key(right.node_ptr(), right.keys[0].clone());
     }
 
     pub fn print_node(&self) {

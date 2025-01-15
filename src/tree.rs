@@ -9,14 +9,15 @@ use crate::node::{
     debug_assert_no_locks_held, debug_assert_one_shared_lock_held, Height, NodeHeader,
 };
 use crate::node_ptr::marker::NodeType;
-use crate::node_ptr::{marker, DiscriminatedNode, NodePtr};
+use crate::node_ptr::{marker, DiscriminatedNode, NodePtr, NodeRef};
 use crate::reference::Ref;
 use crate::search_dequeue::SearchDequeue;
 use smallvec::SmallVec;
 use std::cell::UnsafeCell;
 use std::fmt::{Debug, Display};
+use std::marker::PhantomData;
 use std::ops::Deref;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -37,8 +38,8 @@ pub enum UnderfullNodePosition {
 /// - iter
 /// - bulk loading
 /// Perf ideas:
-/// - merge root and top_of_tree?
-/// - try the "no coalescing" or "relaxed" btreeidea
+/// - use hybrid latch
+/// - try the "no coalescing" or "relaxed" btree idea
 
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
     root: RootNode<K, V>,
@@ -74,17 +75,22 @@ pub struct RootNode<K: BTreeKey, V: BTreeValue> {
 }
 
 pub struct RootNodeInner<K: BTreeKey, V: BTreeValue> {
-    top_of_tree: NodePtr<K, V, marker::Unlocked, marker::Unknown>,
+    top_of_tree: NodePtr,
+    phantom: PhantomData<(K, V)>,
 }
 
 impl<K: BTreeKey, V: BTreeValue> Drop for RootNodeInner<K, V> {
     fn drop(&mut self) {
-        match self.top_of_tree.force() {
+        let top_of_tree_ref =
+            NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
+                self.top_of_tree,
+            );
+        match top_of_tree_ref.force() {
             DiscriminatedNode::Leaf(leaf) => unsafe {
-                ptr::drop_in_place(leaf.to_mut_leaf_ptr());
+                ptr::drop_in_place(leaf.to_raw_leaf_ptr());
             },
             DiscriminatedNode::Internal(internal) => {
-                let internal_node_ptr = internal.to_mut_internal_ptr();
+                let internal_node_ptr = internal.to_raw_internal_ptr();
                 unsafe {
                     internal_node_ptr.as_ref().unwrap().drop_node_recursively();
                 }
@@ -103,30 +109,32 @@ pub enum ModificationType {
 
 impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     pub fn new() -> Self {
-        let top_of_tree = LeafNode::new();
+        let top_of_tree = LeafNode::<K, V>::new();
         RootNode {
             header: NodeHeader::new(Height::Root),
             inner: UnsafeCell::new(RootNodeInner {
-                top_of_tree: NodePtr::from_leaf_unlocked(top_of_tree).erase_node_type(),
+                top_of_tree: NodePtr(NonNull::new(top_of_tree as *mut NodeHeader).unwrap()),
+                phantom: PhantomData,
             }),
             len: AtomicUsize::new(0),
         }
     }
 
-    fn as_node_ptr(&self) -> NodePtr<K, V, marker::Unlocked, marker::Root> {
-        NodePtr::from_root_unlocked(self as *const _ as *mut _)
+    fn as_node_ptr(&self) -> NodeRef<K, V, marker::Unlocked, marker::Root> {
+        NodeRef::from_root_unlocked(self as *const _ as *mut _)
     }
 
-    fn find_leaf_shared(&self, search_key: &K) -> NodePtr<K, V, marker::Shared, marker::Leaf> {
+    fn find_leaf_shared(&self, search_key: &K) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
         let locked_root = self.as_node_ptr().lock_shared();
-        let top_of_tree = locked_root.top_of_tree;
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
 
         let mut prev_node = locked_root.erase_node_type();
         let mut current_node = top_of_tree;
         while current_node.is_internal() {
             let locked_current_node = current_node.lock_shared().assert_internal();
             prev_node.unlock_shared();
-            current_node = locked_current_node.find_child(search_key);
+            current_node =
+                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
             prev_node = locked_current_node.erase_node_type();
         }
 
@@ -138,16 +146,17 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     fn find_leaf_optimistic(
         &self,
         search_key: &K,
-    ) -> NodePtr<K, V, marker::Exclusive, marker::Leaf> {
+    ) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
         let locked_root = self.as_node_ptr().lock_shared();
-        let top_of_tree = locked_root.top_of_tree;
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
 
         let mut prev_node = locked_root.erase_node_type();
         let mut current_node = top_of_tree;
         while current_node.is_internal() {
             let locked_current_node = current_node.lock_shared().assert_internal();
             prev_node.unlock_shared();
-            current_node = locked_current_node.find_child(search_key);
+            current_node =
+                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
             prev_node = locked_current_node.erase_node_type();
         }
 
@@ -165,7 +174,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         let locked_root = self.as_node_ptr().lock_exclusive();
 
         search.push_node_on_bottom(locked_root);
-        let top_of_tree = locked_root.top_of_tree;
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
         let top_of_tree = top_of_tree.lock_exclusive();
         search.push_node_on_bottom(top_of_tree);
         match top_of_tree.force() {
@@ -194,7 +203,8 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
         while current_node.is_internal() {
             let current_exclusive = current_node.assert_internal().assert_exclusive();
-            let found_child = current_exclusive.find_child(search_key);
+            let found_child =
+                NodeRef::from_unknown_node_ptr(current_exclusive.find_child(search_key));
             let found_child = found_child.lock_exclusive();
             search.push_node_on_bottom(found_child);
             match found_child.force() {
@@ -300,7 +310,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         // a neighbor is the node to the left, except in the case of the leftmost child,
         // where it's one to the right
         let (full_leaf_node, node_position) =
-            locked_parent.get_neighbor_of_underfull_leaf(locked_underfull_leaf.to_unlocked());
+            locked_parent.get_neighbor_of_underfull_leaf(locked_underfull_leaf);
 
         // we always need to lock the neighbor exclusive -- we're either coalescing or redistributing
         // both of which modify the neighbor
@@ -348,13 +358,13 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     fn coalesce_into_left_leaf_from_right_neighbor(
         &self,
-        left_leaf: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        right_leaf: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        left_leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        right_leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
         search_stack: SearchDequeue<K, V>, // TODO(ak): this should be a reference, right?
     ) {
         debug_println!("coalesce_into_left_leaf_from_right_neighbor");
-        debug_assert!(search_stack.peek_lowest() == parent.erase());
+        debug_assert!(search_stack.peek_lowest().node_ptr() == parent.node_ptr());
 
         // this drops the right_leaf
         LeafNodeInner::move_from_right_neighbor_into_left_node(parent, right_leaf, left_leaf);
@@ -385,7 +395,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             .assert_exclusive();
 
         let (full_internal, node_position) =
-            parent.get_neighboring_internal_node(underfull_internal.to_unlocked());
+            parent.get_neighboring_internal_node(underfull_internal);
 
         let full_internal = full_internal.lock_exclusive();
         if full_internal.num_keys() + underfull_internal.num_keys() < MAX_KEYS_PER_NODE {
@@ -425,9 +435,9 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     fn coalesce_into_left_internal_from_right_neighbor(
         &self,
-        left_internal: NodePtr<K, V, marker::Exclusive, marker::Internal>,
-        right_internal: NodePtr<K, V, marker::Exclusive, marker::Internal>,
-        parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        left_internal: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        right_internal: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
         search_stack: SearchDequeue<K, V>,
     ) {
         debug_println!("coalesce_into_left_internal_from_right_neighbor");
@@ -448,10 +458,10 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     fn redistribute_into_underfull_internal_from_neighbor(
         &self,
-        underfull_internal: NodePtr<K, V, marker::Exclusive, marker::Internal>,
-        full_internal: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        underfull_internal: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        full_internal: NodeRef<K, V, marker::Exclusive, marker::Internal>,
         node_position: UnderfullNodePosition,
-        parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
         debug_println!("redistribute_into_underfull_internal_from_neighbor");
         match node_position {
@@ -473,10 +483,10 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     fn redistribute_into_underfull_leaf_from_neighbor(
         &self,
-        underfull_leaf: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
-        full_leaf: NodePtr<K, V, marker::Exclusive, marker::Leaf>,
+        underfull_leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        full_leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
         node_position: UnderfullNodePosition,
-        parent: NodePtr<K, V, marker::Exclusive, marker::Internal>,
+        parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
         debug_println!("redistribute_into_underfull_leaf_from_neighbor");
         match node_position {
@@ -499,7 +509,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     fn adjust_top_of_tree(
         &self,
         mut search_stack: SearchDequeue<K, V>,
-        top_of_tree: NodePtr<K, V, marker::Exclusive, marker::Unknown>,
+        top_of_tree: NodeRef<K, V, marker::Exclusive, marker::Unknown>,
     ) {
         debug_println!("adjust_top_of_tree");
         if top_of_tree.is_internal() {
@@ -515,7 +525,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
                 // not necessary, but it lets us track the lock count correctly
                 top_of_tree.unlock_exclusive();
                 unsafe {
-                    ptr::drop_in_place(top_of_tree.to_mut_internal_ptr());
+                    ptr::drop_in_place(top_of_tree.to_raw_internal_ptr());
                 }
                 root.unlock_exclusive();
             } else {
@@ -584,7 +594,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     ) {
         debug_println!("insert_into_leaf_after_splitting");
         let mut leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
-        let mut new_leaf = NodePtr::from_leaf_unlocked(LeafNode::<K, V>::new()).lock_exclusive();
+        let mut new_leaf = NodeRef::from_leaf_unlocked(LeafNode::<K, V>::new()).lock_exclusive();
 
         let mut temp_key_vec: SmallVec<KeyTempArray<K>> = SmallVec::new();
         let mut temp_value_vec: SmallVec<ValueTempArray<V>> = SmallVec::new();
@@ -634,9 +644,9 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     fn insert_into_parent<N: NodeType>(
         &self,
         mut search_stack: SearchDequeue<K, V>,
-        left: NodePtr<K, V, marker::Exclusive, N>,
+        left: NodeRef<K, V, marker::Exclusive, N>,
         split_key: K,
-        right: NodePtr<K, V, marker::Exclusive, N>,
+        right: NodeRef<K, V, marker::Exclusive, N>,
     ) {
         debug_println!("insert_into_parent");
         // if the parent is the root, we need to create a top of tree
@@ -656,7 +666,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
                 .assert_exclusive();
 
             if parent.num_keys() < MAX_KEYS_PER_NODE {
-                parent.insert(split_key, right.to_stored());
+                parent.insert(split_key, right.node_ptr());
                 parent.unlock_exclusive();
                 right.unlock_exclusive();
                 // we may still have a root / top of tree node on the stack
@@ -678,19 +688,17 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     fn insert_into_internal_node_after_splitting<ChildType: NodeType>(
         &self,
         parent_stack: SearchDequeue<K, V>,
-        mut old_internal_node: NodePtr<K, V, marker::Exclusive, marker::Internal>, // this is the node we're splitting
+        mut old_internal_node: NodeRef<K, V, marker::Exclusive, marker::Internal>, // this is the node we're splitting
         split_key: K, // this is the key for the new child
-        new_child: NodePtr<K, V, marker::Exclusive, ChildType>, // this is the new child we're inserting
+        new_child: NodeRef<K, V, marker::Exclusive, ChildType>, // this is the new child we're inserting
     ) {
         debug_println!("insert_into_internal_node_after_splitting");
         let mut new_internal_node =
-            NodePtr::from_internal_unlocked(InternalNode::<K, V>::new(old_internal_node.height()))
+            NodeRef::from_internal_unlocked(InternalNode::<K, V>::new(old_internal_node.height()))
                 .lock_exclusive();
 
         let mut temp_keys_vec: SmallVec<KeyTempArray<K>> = SmallVec::new();
-        let mut temp_children_vec: SmallVec<
-            ChildTempArray<NodePtr<K, V, marker::Unlocked, marker::Unknown>>,
-        > = SmallVec::new();
+        let mut temp_children_vec: SmallVec<ChildTempArray<NodePtr>> = SmallVec::new();
 
         let new_key_index = (*old_internal_node)
             .keys
@@ -703,7 +711,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         // you always split to the right, so the leftmost child is always included
         temp_children_vec.extend((*old_internal_node).children.drain(..new_key_index + 1));
         temp_keys_vec.push(split_key);
-        temp_children_vec.push(new_child.to_stored());
+        temp_children_vec.push(new_child.node_ptr());
 
         // now take the rest
         temp_keys_vec.extend((*old_internal_node).keys.drain(..));
@@ -744,21 +752,22 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     fn insert_into_new_top_of_tree<N: NodeType>(
         &self,
-        mut root: NodePtr<K, V, marker::Exclusive, marker::Root>,
-        left: NodePtr<K, V, marker::Exclusive, N>,
+        mut root: NodeRef<K, V, marker::Exclusive, marker::Root>,
+        left: NodeRef<K, V, marker::Exclusive, N>,
         split_key: K,
-        right: NodePtr<K, V, marker::Exclusive, N>,
+        right: NodeRef<K, V, marker::Exclusive, N>,
     ) {
         debug_println!("insert_into_new_top_of_tree");
-        let mut new_top_of_tree =
-            NodePtr::from_internal_unlocked(InternalNode::new(left.height().one_level_higher()))
-                .lock_exclusive();
+        let mut new_top_of_tree = NodeRef::from_internal_unlocked(InternalNode::<K, V>::new(
+            left.height().one_level_higher(),
+        ))
+        .lock_exclusive();
         new_top_of_tree.keys.push(split_key);
-        new_top_of_tree.children.push(left.to_stored());
-        new_top_of_tree.children.push(right.to_stored());
+        new_top_of_tree.children.push(left.node_ptr());
+        new_top_of_tree.children.push(right.node_ptr());
         new_top_of_tree.num_keys = 1;
 
-        root.top_of_tree = new_top_of_tree.to_stored();
+        root.top_of_tree = new_top_of_tree.node_ptr();
         root.unlock_exclusive();
         new_top_of_tree.unlock_exclusive();
         left.unlock_exclusive();
@@ -771,7 +780,11 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         println!("+----------------------+");
         println!("| Tree length: {}      |", self.len.load(Ordering::Relaxed));
         println!("+----------------------+");
-        match root.top_of_tree.force() {
+        match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
+            root.top_of_tree,
+        )
+        .force()
+        {
             DiscriminatedNode::Internal(internal) => {
                 let internal = internal.lock_shared();
                 internal.print_node();
@@ -790,7 +803,11 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     pub fn check_invariants(&self) {
         debug_println!("checking invariants");
         let root = self.as_node_ptr().lock_shared();
-        match root.top_of_tree.force() {
+        match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
+            root.top_of_tree,
+        )
+        .force()
+        {
             DiscriminatedNode::Internal(internal) => {
                 let internal = internal.lock_shared();
                 internal.check_invariants();

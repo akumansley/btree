@@ -1,4 +1,4 @@
-use parking_lot::lock_api::RawRwLock;
+use crate::hybrid_latch::HybridLatch;
 use std::cell::Cell;
 
 // Define thread-local counters for shared and exclusive locks
@@ -120,14 +120,14 @@ pub fn debug_perchance_yield() {}
 #[repr(C)]
 pub struct NodeHeader {
     height: Height,
-    lock: parking_lot::RawRwLock,
+    lock: HybridLatch,
 }
 
 impl NodeHeader {
     pub fn new(height: Height) -> Self {
         Self {
             height,
-            lock: parking_lot::RawRwLock::INIT,
+            lock: HybridLatch::new(),
         }
     }
     pub fn lock_exclusive(&self) {
@@ -137,9 +137,7 @@ impl NodeHeader {
         increment_exclusive_lock_count();
     }
     pub fn unlock_exclusive(&self) {
-        unsafe {
-            self.lock.unlock_exclusive();
-        }
+        self.lock.unlock_exclusive();
         decrement_exclusive_lock_count();
     }
     pub fn lock_shared(&self) {
@@ -149,9 +147,7 @@ impl NodeHeader {
         increment_shared_lock_count();
     }
     pub fn unlock_shared(&self) {
-        unsafe {
-            self.lock.unlock_shared();
-        }
+        self.lock.unlock_shared();
         decrement_shared_lock_count();
     }
     pub fn height(&self) -> Height {
