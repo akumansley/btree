@@ -71,7 +71,7 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                                 for _ in start..end {
                                     let key = rng.gen_range(0..NUM_OPERATIONS);
                                     let value = format!("value{}", key);
-                                    tree.insert(key, value);
+                                    tree.insert(Box::new(key), Box::new(value));
                                 }
                                 debug_println!("pure_insert_benchmark: thread done");
                                 threads_done.fetch_add(1, Ordering::Relaxed);
@@ -105,7 +105,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
 
                     // Pre-populate the tree with some data
                     for i in 0..NUM_OPERATIONS / 10 {
-                        tree.insert(i, format!("value{}", i));
+                        tree.insert(Box::new(i), Box::new(format!("value{}", i)));
                     }
 
                     let start = std::time::Instant::now();
@@ -123,7 +123,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                         0 => {
                                             // Insert/Update (40%)
                                             let value = format!("value{}", key);
-                                            tree.insert(key, value);
+                                            tree.insert(Box::new(key), Box::new(value));
                                         }
                                         1 => {
                                             // Remove (30%)
@@ -169,7 +169,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
 
                     // Pre-populate the tree with some data
                     for i in 0..NUM_OPERATIONS / 10 {
-                        tree.insert(i, format!("value{}", i));
+                        tree.insert(Box::new(i), Box::new(format!("value{}", i)));
                     }
 
                     let start = std::time::Instant::now();
@@ -189,7 +189,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                         0 => {
                                             // Insert (1%)
                                             let value = format!("value{}", key);
-                                            tree.insert(key, value);
+                                            tree.insert(Box::new(key), Box::new(value));
                                         }
                                         1 => {
                                             // Remove (1%)
@@ -198,7 +198,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                         2 => {
                                             // Update (1%)
                                             let value = format!("newvalue{}", key);
-                                            tree.insert(key, value);
+                                            tree.insert(Box::new(key), Box::new(value));
                                         }
                                         _ => {
                                             // Get (97%)
@@ -230,8 +230,8 @@ fn bench(c: &mut Criterion) {
     group.sampling_mode(SamplingMode::Flat);
     group.sample_size(10);
     for num_threads in [1, 2, 4, 8] {
-        pure_insert_benchmark(&mut group, num_threads);
         mixed_operations_benchmark(&mut group, num_threads);
+        pure_insert_benchmark(&mut group, num_threads);
         read_heavy_benchmark(&mut group, num_threads);
     }
 }

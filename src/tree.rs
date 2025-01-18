@@ -1,5 +1,5 @@
 use crate::array_types::{
-    ChildTempArray, KeyTempArray, ValueTempArray, KV_IDX_CENTER, MAX_KEYS_PER_NODE,
+    InternalChildTempArray, InternalKeyTempArray, LeafTempArray, KV_IDX_CENTER, MAX_KEYS_PER_NODE,
     MIN_KEYS_PER_NODE,
 };
 use crate::debug_println;
@@ -12,6 +12,7 @@ use crate::node_ptr::marker::NodeType;
 use crate::node_ptr::{marker, DiscriminatedNode, NodePtr, NodeRef};
 use crate::reference::Ref;
 use crate::search_dequeue::SearchDequeue;
+use crate::util::UnwrapEither;
 use smallvec::SmallVec;
 use std::cell::UnsafeCell;
 use std::fmt::{Debug, Display};
@@ -35,11 +36,19 @@ pub enum UnderfullNodePosition {
 
 /// B+Tree
 /// Todo
-/// - iter
+/// - implement EBR for keys, values and nodes
+/// - try inlined key descriminator with node-level key prefixes
+/// - implement iterators
 /// - bulk loading
 /// Perf ideas:
-/// - use hybrid latch
+/// - experiment with hybrid latch strategies:
+///   - how many tries should we give optimistic locks?
+///   - try being more pessimistic once we're close to the leaves
+///   - try switching between shared and optimstic as we descend
 /// - try the "no coalescing" or "relaxed" btree idea
+/// - experiment with blockId/offset-based key storage and use that to avoid atomics since we're bounds-checking the result
+///
+///   Problems and answers:
 
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
     root: RootNode<K, V>,
@@ -124,7 +133,30 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         NodeRef::from_root_unlocked(self as *const _ as *mut _)
     }
 
-    fn find_leaf_shared(&self, search_key: &K) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
+    fn get_leaf_shared_using_optimistic_search(
+        &self,
+        search_key: &K,
+    ) -> Result<NodeRef<K, V, marker::Shared, marker::Leaf>, ()> {
+        let locked_root = self.as_node_ptr().lock_optimistic()?;
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
+
+        let mut prev_node = locked_root.erase_node_type();
+        let mut current_node = top_of_tree;
+        while current_node.is_internal() {
+            let locked_current_node = current_node.lock_optimistic()?.assert_internal();
+            prev_node.unlock_optimistic()?;
+            current_node =
+                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
+            prev_node = locked_current_node.erase_node_type();
+        }
+        let leaf = current_node.lock_shared();
+        Ok(leaf.assert_leaf())
+    }
+
+    fn get_leaf_shared_using_shared_serach(
+        &self,
+        search_key: &K,
+    ) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
         let locked_root = self.as_node_ptr().lock_shared();
         let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
 
@@ -143,7 +175,34 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         leaf
     }
 
-    fn find_leaf_optimistic(
+    fn get_leaf_exclusively_using_optimistic_search(
+        &self,
+        search_key: &K,
+    ) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
+        let locked_root = self.as_node_ptr().lock_optimistic()?;
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
+
+        let mut prev_node = locked_root.erase_node_type();
+        let mut current_node = top_of_tree;
+        while current_node.is_internal() {
+            let locked_current_node = current_node.lock_optimistic()?.assert_internal();
+            prev_node.unlock_optimistic()?;
+            current_node =
+                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
+            prev_node = locked_current_node.erase_node_type();
+        }
+
+        let leaf = current_node.lock_exclusive().assert_leaf();
+        match prev_node.unlock_optimistic() {
+            Ok(_) => Ok(leaf),
+            Err(_) => {
+                leaf.unlock_exclusive();
+                Err(())
+            }
+        }
+    }
+
+    fn get_leaf_exclusively_using_shared_search(
         &self,
         search_key: &K,
     ) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
@@ -165,7 +224,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         leaf
     }
 
-    fn find_leaf_pessimistic(
+    fn get_leaf_exclusively_using_exclusive_search(
         &self,
         search_key: &K,
         modification_type: ModificationType,
@@ -238,7 +297,17 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     /// The leaf will be unlocked when the reference is dropped
     pub fn get(&self, search_key: &K) -> Option<Ref<K, V>> {
         debug_println!("top-level get {:?}", search_key);
-        let leaf_node_shared = self.find_leaf_shared(search_key);
+        if let Ok(leaf_node_shared) = self.get_leaf_shared_using_optimistic_search(search_key) {
+            match leaf_node_shared.get(search_key) {
+                Some(v_ptr) => return Some(Ref::new(leaf_node_shared, v_ptr)),
+                None => {
+                    leaf_node_shared.unlock_shared();
+                    return None;
+                }
+            }
+        }
+
+        let leaf_node_shared = self.get_leaf_shared_using_shared_serach(search_key);
         debug_println!("top-level get {:?} done", search_key);
         debug_assert_one_shared_lock_held();
         match leaf_node_shared.get(search_key) {
@@ -263,19 +332,30 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     pub fn remove(&self, key: &K) {
         debug_println!("top-level remove {:?}", key);
-        let mut optimistic_leaf = self.find_leaf_optimistic(&key);
+        let mut optimistic_leaf = match self.get_leaf_exclusively_using_optimistic_search(&key) {
+            Ok(leaf) => leaf,
+            Err(_) => self.get_leaf_exclusively_using_shared_search(&key),
+        };
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal)
             || optimistic_leaf.get(&key).is_none()
         {
-            optimistic_leaf.remove(key);
+            let removed = optimistic_leaf.remove(key);
+            if removed {
+                self.len.fetch_sub(1, Ordering::Relaxed);
+            }
+            debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
             optimistic_leaf.unlock_exclusive();
             debug_assert_no_locks_held::<'r'>();
             return;
         }
         optimistic_leaf.unlock_exclusive();
-        let mut search_stack = self.find_leaf_pessimistic(key, ModificationType::Removal);
+        let mut search_stack =
+            self.get_leaf_exclusively_using_exclusive_search(key, ModificationType::Removal);
         let mut leaf_node_exclusive = search_stack.peek_lowest().assert_leaf().assert_exclusive();
-        leaf_node_exclusive.remove(key);
+        let removed = leaf_node_exclusive.remove(key);
+        if removed {
+            self.len.fetch_sub(1, Ordering::Relaxed);
+        }
         if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
             self.coalesce_or_redistribute_leaf_node(search_stack);
         } else {
@@ -285,7 +365,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
                 n.assert_exclusive().unlock_exclusive();
             });
         }
-        debug_println!("top-level remove {:?} done", key);
+        debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
         debug_assert_no_locks_held::<'r'>();
     }
 
@@ -517,10 +597,10 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             // root is an internal node
             let top_of_tree = top_of_tree.assert_internal();
             // if the (internal node) root has only one child, it's the new root
-            if top_of_tree.num_keys == 0 {
+            if top_of_tree.num_keys() == 0 {
                 let mut root = search_stack.pop_lowest().assert_root().assert_exclusive();
                 debug_println!("top_of_tree is an internal node with one child");
-                let new_top_of_tree = top_of_tree.children[0];
+                let new_top_of_tree = top_of_tree.storage.get_child(0);
                 root.top_of_tree = new_top_of_tree;
                 // not necessary, but it lets us track the lock count correctly
                 top_of_tree.unlock_exclusive();
@@ -529,6 +609,9 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
                 }
                 root.unlock_exclusive();
             } else {
+                debug_println!(
+                    "top_of_tree is an internal node with multiple children -- we're done"
+                );
                 top_of_tree.unlock_exclusive();
             }
         } else {
@@ -544,25 +627,31 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
      * - insert_into_new_root - create a new root
      */
 
-    pub fn insert(&self, key: K, value: V) {
+    pub fn insert(&self, key: Box<K>, value: Box<V>) {
         debug_println!("top-level insert {:?}", key);
-        let mut optimistic_leaf = self.find_leaf_optimistic(&key);
+        // TODO(ak): should we try a few times optimistically?
+        let mut optimistic_leaf = match self.get_leaf_exclusively_using_optimistic_search(&key) {
+            Ok(leaf) => leaf,
+            Err(_) => self.get_leaf_exclusively_using_shared_search(&key),
+        };
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
             || optimistic_leaf.get(&key).is_some()
         {
-            optimistic_leaf.insert(key, value);
+            optimistic_leaf.insert(Box::into_raw(key), Box::into_raw(value));
             optimistic_leaf.unlock_exclusive();
+            self.len.fetch_add(1, Ordering::Relaxed);
             debug_assert_no_locks_held::<'i'>();
             return;
         }
         optimistic_leaf.unlock_exclusive();
 
-        let mut search_stack = self.find_leaf_pessimistic(&key, ModificationType::Insertion);
+        let mut search_stack =
+            self.get_leaf_exclusively_using_exclusive_search(&key, ModificationType::Insertion);
         let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
         // this should get us to 3 keys in the leaf
         if leaf_node.num_keys() < MAX_KEYS_PER_NODE {
-            leaf_node.insert(key, value);
+            leaf_node.insert(Box::into_raw(key), Box::into_raw(value));
             search_stack.drain().for_each(|n| {
                 n.assert_exclusive().unlock_exclusive();
             });
@@ -573,13 +662,19 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             // this is necessary for correctness, because split doesn't (and shouldn't)
             // handle the case where the key already exists
             if leaf_node.get(&key).is_some() {
-                leaf_node.insert(key, value);
+                leaf_node.insert(Box::into_raw(key), Box::into_raw(value));
                 search_stack.drain().for_each(|n| {
                     n.assert_exclusive().unlock_exclusive();
                 });
+                debug_assert_no_locks_held::<'i'>();
                 return;
+            } else {
+                self.insert_into_leaf_after_splitting(
+                    search_stack,
+                    Box::into_raw(key),
+                    Box::into_raw(value),
+                );
             }
-            self.insert_into_leaf_after_splitting(search_stack, key, value);
         }
         self.len.fetch_add(1, Ordering::Relaxed);
         debug_println!("top-level insert done");
@@ -589,54 +684,45 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     fn insert_into_leaf_after_splitting(
         &self,
         mut search_stack: SearchDequeue<K, V>,
-        key_to_insert: K,
-        value: V,
+        key_to_insert: *mut K,
+        value_to_insert: *mut V,
     ) {
         debug_println!("insert_into_leaf_after_splitting");
-        let mut leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
-        let mut new_leaf = NodeRef::from_leaf_unlocked(LeafNode::<K, V>::new()).lock_exclusive();
+        let leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
+        let new_leaf = NodeRef::from_leaf_unlocked(LeafNode::<K, V>::new()).lock_exclusive();
 
-        let mut temp_key_vec: SmallVec<KeyTempArray<K>> = SmallVec::new();
-        let mut temp_value_vec: SmallVec<ValueTempArray<V>> = SmallVec::new();
+        let mut temp_leaf_vec: SmallVec<LeafTempArray<(*mut K, *mut V)>> = SmallVec::new();
 
         let mut key_to_insert = Some(key_to_insert);
-        let mut value = Some(value);
+        let mut value_to_insert = Some(value_to_insert);
 
-        // this is a hack for the borrow checker
-        let mut values = leaf.values.drain(..).collect::<Vec<_>>();
-        leaf.keys
-            .drain(..)
-            .zip(values.drain(..))
-            .for_each(|(k, v)| {
-                if let Some(key) = &key_to_insert {
-                    if *key < k {
-                        temp_key_vec.push(key_to_insert.take().unwrap());
-                        temp_value_vec.push(value.take().unwrap());
-                    }
+        leaf.storage.drain().for_each(|(k, v)| {
+            if let Some(key) = key_to_insert {
+                if unsafe { &*key < &*k } {
+                    temp_leaf_vec.push((
+                        key_to_insert.take().unwrap(),
+                        value_to_insert.take().unwrap(),
+                    ));
                 }
-                temp_key_vec.push(k);
-                temp_value_vec.push(v);
-            });
+            }
+            temp_leaf_vec.push((k, v));
+        });
 
         if let Some(_) = &key_to_insert {
-            temp_key_vec.push(key_to_insert.take().unwrap());
-            temp_value_vec.push(value.take().unwrap());
+            temp_leaf_vec.push((
+                key_to_insert.take().unwrap(),
+                value_to_insert.take().unwrap(),
+            ));
         }
 
         new_leaf
-            .keys
-            .extend(temp_key_vec.drain(KV_IDX_CENTER + 1..));
-        new_leaf
-            .values
-            .extend(temp_value_vec.drain(KV_IDX_CENTER + 1..));
-        new_leaf.num_keys = (MAX_KEYS_PER_NODE + 1) / 2;
+            .storage
+            .extend(temp_leaf_vec.drain(KV_IDX_CENTER + 1..));
 
-        leaf.keys.extend(temp_key_vec.drain(..));
-        leaf.values.extend(temp_value_vec.drain(..));
-        leaf.num_keys = (MAX_KEYS_PER_NODE + 1) / 2;
+        leaf.storage.extend(temp_leaf_vec.drain(..));
 
         // this clone is necessary because the key is moved into the parent
-        let split_key = (*new_leaf).keys[0].clone();
+        let split_key = new_leaf.storage.get_key(0);
 
         self.insert_into_parent(search_stack, leaf, split_key, new_leaf);
     }
@@ -645,7 +731,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         &self,
         mut search_stack: SearchDequeue<K, V>,
         left: NodeRef<K, V, marker::Exclusive, N>,
-        split_key: K,
+        split_key: *mut K,
         right: NodeRef<K, V, marker::Exclusive, N>,
     ) {
         debug_println!("insert_into_parent");
@@ -666,6 +752,12 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
                 .assert_exclusive();
 
             if parent.num_keys() < MAX_KEYS_PER_NODE {
+                debug_println!(
+                    "{:?} inserting split key {:?} for {:?} into existing parent",
+                    parent.node_ptr(),
+                    unsafe { &*split_key },
+                    right.node_ptr()
+                );
                 parent.insert(split_key, right.node_ptr());
                 parent.unlock_exclusive();
                 right.unlock_exclusive();
@@ -688,34 +780,45 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     fn insert_into_internal_node_after_splitting<ChildType: NodeType>(
         &self,
         parent_stack: SearchDequeue<K, V>,
-        mut old_internal_node: NodeRef<K, V, marker::Exclusive, marker::Internal>, // this is the node we're splitting
-        split_key: K, // this is the key for the new child
+        old_internal_node: NodeRef<K, V, marker::Exclusive, marker::Internal>, // this is the node we're splitting
+        split_key: *mut K, // this is the key for the new child
         new_child: NodeRef<K, V, marker::Exclusive, ChildType>, // this is the new child we're inserting
     ) {
         debug_println!("insert_into_internal_node_after_splitting");
-        let mut new_internal_node =
+        let new_internal_node =
             NodeRef::from_internal_unlocked(InternalNode::<K, V>::new(old_internal_node.height()))
                 .lock_exclusive();
 
-        let mut temp_keys_vec: SmallVec<KeyTempArray<K>> = SmallVec::new();
-        let mut temp_children_vec: SmallVec<ChildTempArray<NodePtr>> = SmallVec::new();
+        let mut temp_keys_vec: SmallVec<InternalKeyTempArray<*mut K>> = SmallVec::new();
+        let mut temp_children_vec: SmallVec<InternalChildTempArray<NodePtr>> = SmallVec::new();
 
-        let new_key_index = (*old_internal_node)
-            .keys
-            .iter()
-            .position(|k| k > &split_key)
-            .unwrap_or(MAX_KEYS_PER_NODE);
+        let new_key_index = old_internal_node
+            .storage
+            .binary_search_keys(unsafe { &*split_key })
+            .unwrap_either();
 
-        // drain both vectors, inserting the new child and split key in the right place
-        temp_keys_vec.extend((*old_internal_node).keys.drain(..new_key_index));
-        // you always split to the right, so the leftmost child is always included
-        temp_children_vec.extend((*old_internal_node).children.drain(..new_key_index + 1));
-        temp_keys_vec.push(split_key);
-        temp_children_vec.push(new_child.node_ptr());
+        let is_last_element = new_key_index == old_internal_node.storage.num_keys();
 
-        // now take the rest
-        temp_keys_vec.extend((*old_internal_node).keys.drain(..));
-        temp_children_vec.extend((*old_internal_node).children.drain(..));
+        for (i, key) in old_internal_node.storage.iter_keys().enumerate() {
+            if i == new_key_index {
+                temp_keys_vec.push(split_key);
+            }
+            temp_keys_vec.push(key);
+        }
+
+        for (i, child) in old_internal_node.storage.iter_children().enumerate() {
+            if i == new_key_index + 1 {
+                temp_children_vec.push(new_child.node_ptr());
+            }
+            temp_children_vec.push(child);
+        }
+
+        if is_last_element {
+            temp_keys_vec.push(split_key);
+            temp_children_vec.push(new_child.node_ptr());
+        }
+
+        old_internal_node.storage.truncate();
 
         // we have 4 keys and 5 children (1, "A", 2, "B", 3, "C", 4, "D", 5)
         // or [1, 2, 3, 4, 5] and ["A", "B", "C", "D"]
@@ -723,22 +826,21 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         // we need to split that into two nodes, one with (1, "A", 2) and one with (3, "C", 4, "D", 5)
         // or equivalently [1, 2] and [3, 4, 5] and ["A"] and ["C", "D"]
         // and "B" gets hoisted up to the parent (which was the minimum value for 3)
-
         new_internal_node
-            .keys
-            .extend(temp_keys_vec.drain(KV_IDX_CENTER + 1..));
+            .storage
+            .extend_children(temp_children_vec.drain(KV_IDX_CENTER + 1..));
         new_internal_node
-            .children
-            .extend(temp_children_vec.drain(KV_IDX_CENTER + 1..));
-        new_internal_node.num_keys = KV_IDX_CENTER + 1;
+            .storage
+            .extend_keys(temp_keys_vec.drain(KV_IDX_CENTER + 1..));
 
         let new_split_key = temp_keys_vec.pop().unwrap();
 
-        old_internal_node.keys.extend(temp_keys_vec.drain(..));
         old_internal_node
-            .children
-            .extend(temp_children_vec.drain(..));
-        old_internal_node.num_keys = KV_IDX_CENTER;
+            .storage
+            .extend_children(temp_children_vec.drain(..));
+        old_internal_node
+            .storage
+            .extend_keys(temp_keys_vec.drain(..));
 
         new_child.unlock_exclusive();
 
@@ -754,18 +856,17 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         &self,
         mut root: NodeRef<K, V, marker::Exclusive, marker::Root>,
         left: NodeRef<K, V, marker::Exclusive, N>,
-        split_key: K,
+        split_key: *mut K,
         right: NodeRef<K, V, marker::Exclusive, N>,
     ) {
         debug_println!("insert_into_new_top_of_tree");
-        let mut new_top_of_tree = NodeRef::from_internal_unlocked(InternalNode::<K, V>::new(
+        let new_top_of_tree = NodeRef::from_internal_unlocked(InternalNode::<K, V>::new(
             left.height().one_level_higher(),
         ))
         .lock_exclusive();
-        new_top_of_tree.keys.push(split_key);
-        new_top_of_tree.children.push(left.node_ptr());
-        new_top_of_tree.children.push(right.node_ptr());
-        new_top_of_tree.num_keys = 1;
+
+        new_top_of_tree.storage.push_extra_child(left.node_ptr());
+        new_top_of_tree.storage.push(split_key, right.node_ptr());
 
         root.top_of_tree = new_top_of_tree.node_ptr();
         root.unlock_exclusive();
@@ -836,7 +937,7 @@ mod tests {
         let n = ORDER.pow(2);
         for i in 1..=n {
             let value = format!("value{}", i);
-            tree.insert(i, value.clone());
+            tree.insert(Box::new(i), Box::new(value.clone()));
             tree.check_invariants();
             let result = tree.get(&i);
             assert_eq!(result.as_deref(), Some(&value));
@@ -901,8 +1002,9 @@ mod tests {
                     // Random insert
                     let key = rng.gen_range(0..1000);
                     let value = format!("value{}", key);
-                    tree.insert(key, value.clone());
+                    tree.insert(Box::new(key), Box::new(value.clone()));
                     reference_map.insert(key, value);
+                    tree.check_invariants();
                 }
                 1 => {
                     // Random get
@@ -929,6 +1031,7 @@ mod tests {
                         let key = *reference_map.keys().choose(&mut rng).unwrap();
                         tree.remove(&key);
                         reference_map.remove(&key);
+                        tree.check_invariants();
                     }
                 }
                 _ => unreachable!(),
@@ -984,7 +1087,7 @@ mod tests {
                             0 => {
                                 let key = rng.gen_range(0..1000);
                                 let value = format!("value{}", key);
-                                tree_ref.insert(key, value);
+                                tree_ref.insert(Box::new(key), Box::new(value.clone()));
                             }
                             1 => {
                                 let key = rng.gen_range(0..1000);

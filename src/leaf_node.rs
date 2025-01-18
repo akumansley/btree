@@ -1,12 +1,14 @@
 use crate::{
-    array_types::{KeyArray, ValueArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
+    array_types::{LeafNodeStorageArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
     debug_println,
     node::{Height, NodeHeader},
-    node_ptr::{marker, NodeRef},
+    node_ptr::{
+        marker::{self},
+        NodeRef,
+    },
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
-use smallvec::SmallVec;
-use std::{cell::UnsafeCell, ptr};
+use std::{cell::UnsafeCell, ptr, sync::atomic::Ordering};
 
 #[repr(C)]
 pub struct LeafNode<K: BTreeKey, V: BTreeValue> {
@@ -14,9 +16,7 @@ pub struct LeafNode<K: BTreeKey, V: BTreeValue> {
     pub inner: UnsafeCell<LeafNodeInner<K, V>>,
 }
 pub struct LeafNodeInner<K: BTreeKey, V: BTreeValue> {
-    pub keys: SmallVec<KeyArray<K>>,
-    pub values: SmallVec<ValueArray<V>>,
-    pub num_keys: usize,
+    pub storage: LeafNodeStorageArray<K, V>,
 }
 
 impl<K: BTreeKey, V: BTreeValue> LeafNode<K, V> {
@@ -24,63 +24,60 @@ impl<K: BTreeKey, V: BTreeValue> LeafNode<K, V> {
         Box::into_raw(Box::new(LeafNode {
             header: NodeHeader::new(Height::Leaf),
             inner: UnsafeCell::new(LeafNodeInner {
-                keys: SmallVec::new(),
-                values: SmallVec::new(),
-                num_keys: 0,
+                storage: LeafNodeStorageArray::new(),
             }),
         }))
     }
 }
 
 impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
+    fn binary_search_key(&self, search_key: &K) -> Result<usize, usize> {
+        self.storage.binary_search_keys(search_key)
+    }
+
     pub fn get(&self, search_key: &K) -> Option<*const V> {
         debug_println!("LeafNode get {:?}", search_key);
-        match self.keys.binary_search(search_key) {
-            Ok(index) => Some(&self.values[index] as *const V),
-            Err(_) => None,
+        match self.binary_search_key(search_key) {
+            Ok(index) => Some(self.storage.values()[index].load(Ordering::Relaxed) as *const V),
+            Err(_) => {
+                debug_println!("LeafNode get {:?} not found", search_key);
+                None
+            }
         }
     }
 
-    pub fn insert(&mut self, key_to_insert: K, value: V) {
-        debug_println!("LeafNode insert {:?} {:?}", key_to_insert, value);
-        let mut insertion_point = None;
-        for (i, k) in self.keys.iter().enumerate() {
-            if k == &key_to_insert {
-                debug_println!("LeafNode insert {:?} already exists", key_to_insert);
-                self.values[i] = value;
-                return;
-            }
-            if k > &key_to_insert && insertion_point.is_none() {
-                insertion_point = Some(i);
+    pub fn insert(&mut self, key_to_insert: *mut K, value: *mut V) {
+        unsafe {
+            match self.binary_search_key(&*key_to_insert) {
+                Ok(index) => {
+                    // NOCOMMIT: need to push a guard through here and protect the dropped key in the replacement case
+                    self.storage.set(index, value);
+                }
+                Err(index) => {
+                    self.storage.insert(key_to_insert, value, index);
+                }
             }
         }
-
-        let insertion_point = insertion_point.unwrap_or(self.num_keys);
-        self.keys.insert(insertion_point, key_to_insert);
-        self.values.insert(insertion_point, value);
-        self.num_keys += 1;
-        debug_println!("LeafNode inserted at {:?} ", insertion_point);
     }
 
-    pub fn remove(&mut self, key: &K) {
-        debug_println!("LeafNode remove {:?}", key);
-        if let Some(index) = self.keys.iter().position(|k| k == key) {
-            self.keys.remove(index);
-            self.values.remove(index);
-            self.num_keys -= 1;
-        } else {
-            debug_println!("LeafNode remove {:?} not found", key);
+    pub fn remove(&mut self, key: &K) -> bool {
+        match self.binary_search_key(key) {
+            Ok(index) => {
+                self.storage.remove(index);
+                true
+            }
+            Err(_) => false,
         }
     }
 
     pub fn num_keys(&self) -> usize {
-        self.num_keys
+        self.storage.num_keys()
     }
 
     pub fn has_capacity_for_modification(&self, modification_type: ModificationType) -> bool {
         match modification_type {
-            ModificationType::Insertion => self.num_keys < MAX_KEYS_PER_NODE,
-            ModificationType::Removal => self.num_keys > MIN_KEYS_PER_NODE,
+            ModificationType::Insertion => self.num_keys() < MAX_KEYS_PER_NODE,
+            ModificationType::Removal => self.num_keys() > MIN_KEYS_PER_NODE,
             ModificationType::NonModifying => true,
         }
     }
@@ -91,7 +88,7 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         modification_type: ModificationType,
     ) -> bool {
         match modification_type {
-            ModificationType::Insertion => self.num_keys < MAX_KEYS_PER_NODE,
+            ModificationType::Insertion => self.num_keys() < MAX_KEYS_PER_NODE,
             ModificationType::Removal => true,
             ModificationType::NonModifying => true,
         }
@@ -99,83 +96,72 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
         mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
-        mut from: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        mut to: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        from: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        to: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
     ) {
-        to.keys.extend(from.keys.drain(..));
-        to.values.extend(from.values.drain(..));
-        // TODO: factor out the len from the SmallVecs
-        to.num_keys = to.keys.len();
+        debug_println!("LeafNode move_from_right_neighbor_into_left_node");
+        to.storage.extend(from.storage.drain());
+
         parent.remove(from.node_ptr());
         // this is not necessary, but it lets is track the lock count correctly
         from.unlock_exclusive();
         // TODO: make sure there's no live sibling reference to left
         // when we implement concurrency
+        // NOCOMMIT: EBR THIS
         unsafe {
             ptr::drop_in_place(from.to_raw_leaf_ptr());
         }
     }
 
     pub fn move_last_to_front_of(
-        mut left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        mut right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
         mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
         debug_println!("LeafNode move_last_to_front_of");
-        let last_key = left.keys.pop().unwrap();
-        let last_value = left.values.pop().unwrap();
-        right.keys.insert(0, last_key.clone());
-        right.values.insert(0, last_value);
-        right.num_keys += 1;
-        left.num_keys -= 1;
+
+        let (last_key, last_value) = left.storage.pop();
+
+        right.storage.insert(last_key, last_value, 0);
 
         // Update the split key in the parent
         parent.update_split_key(right.node_ptr(), last_key);
     }
 
     pub fn move_first_to_end_of(
-        mut right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        mut left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
         mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
-        debug_println!("LeafNode move_first_to_end_of");
-        let first_key = right.keys.remove(0);
-        let first_value = right.values.remove(0);
-
-        left.keys.push(first_key);
-        left.values.push(first_value);
-        left.num_keys += 1;
-        right.num_keys -= 1;
+        debug_println!("LeafNode move_first_to_end_of ");
+        let (first_key, first_value) = right.storage.remove(0);
+        left.storage.push(first_key, first_value);
 
         // Update the split key in the parent for self
-        parent.update_split_key(right.node_ptr(), right.keys[0].clone());
+        let new_split_key = right.storage.keys()[0].load(Ordering::Relaxed);
+        parent.update_split_key(right.node_ptr(), new_split_key);
     }
 
     pub fn print_node(&self) {
         println!("LeafNode: {:p}", self);
         println!("+----------------------+");
-        println!("| Num Keys: {}           |", self.num_keys);
+        println!("| Num Keys: {}           |", self.num_keys());
         println!("+----------------------+");
         println!("| Keys and Values:     |");
-        if self.num_keys > 0 {
-            for i in 0..self.num_keys {
-                println!("|  - Key: {:?}         |", self.keys[i]);
-                println!("|  - Value: {:?}       |", self.values[i]);
+        if self.num_keys() > 0 {
+            for i in 0..self.num_keys() {
+                println!("|  - Key: {:?}         |", unsafe {
+                    &*self.storage.keys()[i].load(Ordering::Relaxed)
+                });
+                println!("|  - Value: {:?}       |", unsafe {
+                    &*self.storage.values()[i].load(Ordering::Relaxed)
+                });
             }
         }
         println!("+----------------------+");
     }
 
     pub fn check_invariants(&self) {
-        assert_eq!(
-            self.num_keys,
-            self.keys.len(),
-            "num_keys does not match the actual number of keys"
-        );
-        assert_eq!(
-            self.num_keys,
-            self.values.len(),
-            "Number of keys and values are inconsistent"
-        );
+        self.storage.check_invariants();
     }
 }

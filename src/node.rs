@@ -1,4 +1,4 @@
-use crate::hybrid_latch::HybridLatch;
+use crate::hybrid_latch::{HybridLatch, LockInfo};
 use std::cell::Cell;
 
 // Define thread-local counters for shared and exclusive locks
@@ -150,6 +150,21 @@ impl NodeHeader {
         self.lock.unlock_shared();
         decrement_shared_lock_count();
     }
+    pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {
+        self.lock.lock_optimistic()
+    }
+    pub fn unlock_optimistic(&self) {
+        self.lock.unlock_exclusive();
+    }
+
+    pub fn validate_optimistic(&self, version: LockInfo) -> Result<(), ()> {
+        if self.lock.validate_optimistic_read(version) {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
     pub fn height(&self) -> Height {
         self.height
     }

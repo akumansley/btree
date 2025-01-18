@@ -1,5 +1,7 @@
 use crate::{
-    array_types::{ChildArray, KeyArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
+    array_types::{
+        InternalNodeStorage, MAX_CHILDREN_PER_NODE, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE,
+    },
     debug_println,
     node::{Height, NodeHeader},
     node_ptr::{
@@ -7,15 +9,13 @@ use crate::{
         DiscriminatedNode, NodePtr, NodeRef,
     },
     tree::{BTreeKey, BTreeValue, ModificationType, UnderfullNodePosition},
+    util::UnwrapEither,
 };
-use smallvec::SmallVec;
 use std::{cell::UnsafeCell, marker::PhantomData, ptr};
 
 // this is the shared node data
 pub struct InternalNodeInner<K: BTreeKey, V: BTreeValue> {
-    pub keys: SmallVec<KeyArray<K>>,
-    pub children: SmallVec<ChildArray<NodePtr>>,
-    pub num_keys: usize,
+    pub storage: InternalNodeStorage<MAX_KEYS_PER_NODE, MAX_CHILDREN_PER_NODE, K, V>,
     pub phantom: PhantomData<V>,
 }
 
@@ -30,9 +30,8 @@ impl<K: BTreeKey, V: BTreeValue> InternalNode<K, V> {
         Box::into_raw(Box::new(InternalNode {
             header: NodeHeader::new(height),
             inner: UnsafeCell::new(InternalNodeInner {
-                keys: SmallVec::new(),
-                children: SmallVec::new(),
-                num_keys: 0,
+                storage: InternalNodeStorage::<MAX_KEYS_PER_NODE, MAX_CHILDREN_PER_NODE, K, V>::new(
+                ),
                 phantom: PhantomData,
             }),
         }))
@@ -44,10 +43,10 @@ impl<K: BTreeKey, V: BTreeValue> InternalNode<K, V> {
         let height = self.header.height();
         let child_height = height.one_level_lower();
         unsafe {
-            for child in (*self.inner.get()).children.iter() {
+            for child in (*self.inner.get()).storage.iter_children() {
                 let child_ref =
                     NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
-                        *child,
+                        child,
                     );
                 if child_height.is_internal() {
                     let child_ref = child_ref.assert_internal();
@@ -66,17 +65,18 @@ impl<K: BTreeKey, V: BTreeValue> InternalNode<K, V> {
 
 impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
     pub fn num_keys(&self) -> usize {
-        self.num_keys
+        self.storage.num_keys()
     }
 
     pub fn has_capacity_for_modification(&self, modification_type: ModificationType) -> bool {
+        let num_keys = self.num_keys();
         debug_println!(
             "has_capacity_for_modification - internal node has {:?}",
-            self.num_keys
+            num_keys
         );
         match modification_type {
-            ModificationType::Insertion => self.num_keys < MAX_KEYS_PER_NODE,
-            ModificationType::Removal => self.num_keys > MIN_KEYS_PER_NODE,
+            ModificationType::Insertion => num_keys < MAX_KEYS_PER_NODE,
+            ModificationType::Removal => num_keys > MIN_KEYS_PER_NODE,
             ModificationType::NonModifying => true,
         }
     }
@@ -86,60 +86,71 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         &self,
         modification_type: ModificationType,
     ) -> bool {
+        let num_keys = self.num_keys();
         debug_println!(
             "has_capacity_for_modification_as_top_of_tree - internal node has {:?}",
-            self.num_keys
+            num_keys
         );
         match modification_type {
-            ModificationType::Insertion => self.num_keys < MAX_KEYS_PER_NODE,
-            ModificationType::Removal => self.num_keys > 1,
+            ModificationType::Insertion => num_keys < MAX_KEYS_PER_NODE,
+            ModificationType::Removal => num_keys > 1,
             ModificationType::NonModifying => true,
         }
     }
 
-    pub fn insert(&mut self, key: K, new_child: NodePtr) {
+    pub fn insert(&mut self, key: *mut K, new_child: NodePtr) {
         let insertion_point = self
-            .keys
-            .iter()
-            .position(|k| k > &key)
-            .unwrap_or(self.num_keys);
+            .storage
+            .binary_search_keys(unsafe { &*key })
+            .unwrap_either();
 
-        self.keys.insert(insertion_point, key);
-        self.children.insert(insertion_point + 1, new_child);
-        self.num_keys += 1;
+        self.storage
+            .insert_child_with_split_key(key, new_child, insertion_point);
     }
 
     pub fn find_child(&self, search_key: &K) -> NodePtr {
-        let index = match self.keys.binary_search(search_key) {
+        let index = match self.storage.binary_search_keys(search_key) {
             Ok(index) => index + 1,
             Err(index) => index,
         };
-        self.children[index]
+        self.storage.get_child(index)
     }
 
-    pub fn get_key_for_non_leftmost_child(&self, child: NodePtr) -> K {
-        let index = self.children.iter().position(|c| *c == child).unwrap();
-        self.keys[index - 1].clone()
-    }
+    pub fn get_key_for_non_leftmost_child(&self, child: NodePtr) -> *mut K {
+        let index = self
+            .storage
+            .iter_children()
+            .position(|c| c == child)
+            .unwrap();
 
-    pub fn print_node(&self) {
+        self.storage.get_key(index - 1)
+    }
+    pub fn print_node_without_children(&self) {
         println!("InternalNode: {:p}", self);
         println!("+----------------------+");
         println!("| Keys and Children:   |");
-        for i in 0..self.num_keys {
-            println!("|  - NodePtr: {:?}     |", self.children[i]);
-            println!("|  - Key: {:?}         |", self.keys[i]);
+        for i in 0..self.num_keys() {
+            println!("|  - NodePtr: {:?}     |", self.storage.get_child(i));
+            println!("|  - Key: {:?}         |", unsafe {
+                &*self.storage.get_key(i)
+            });
         }
         // Print the last child
-        if self.num_keys < self.children.len() {
-            println!("|  - NodePtr: {:?}     |", self.children[self.num_keys]);
+        if self.num_keys() < self.storage.num_children() {
+            println!(
+                "|  - NodePtr: {:?}     |",
+                self.storage.get_child(self.num_keys())
+            );
         }
         println!("+----------------------+");
-        println!("| Num Keys: {}           |", self.num_keys);
+        println!("| Num Keys: {}           |", self.num_keys());
         println!("+----------------------+");
-        for child in self.children.iter() {
+    }
+
+    pub fn print_node(&self) {
+        for child in self.storage.iter_children() {
             let child_ref =
-                NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(*child);
+                NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(child);
             match child_ref.force() {
                 DiscriminatedNode::Internal(internal_child) => {
                     let locked_child = internal_child.lock_shared();
@@ -157,12 +168,12 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
     }
 
     fn get_neighbor(&self, child: NodePtr) -> (NodePtr, UnderfullNodePosition) {
-        if child == self.children[0] {
-            return (self.children[1], UnderfullNodePosition::Leftmost);
+        if child == self.storage.get_child(0) {
+            return (self.storage.get_child(1), UnderfullNodePosition::Leftmost);
         }
-        for i in 1..self.num_keys + 1 {
-            if self.children[i] == child {
-                return (self.children[i - 1], UnderfullNodePosition::Other);
+        for i in 1..self.num_keys() + 1 {
+            if self.storage.get_child(i) == child {
+                return (self.storage.get_child(i - 1), UnderfullNodePosition::Other);
             }
         }
         panic!("expected to find child in internal node");
@@ -179,6 +190,12 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         let (neighbor, direction) = self.get_neighbor(child.node_ptr());
         let neighbor_ref =
             NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(neighbor);
+        debug_println!(
+            "InternalNode get_neighboring_internal_node on parent node {:?} for child {:?} found neighbor {:?}",
+            self as *const _,
+            child.node_ptr(),
+            neighbor_ref.node_ptr()
+        );
         (neighbor_ref.assert_internal(), direction)
     }
 
@@ -196,44 +213,35 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
     }
 
     pub(crate) fn remove(&mut self, child: NodePtr) {
-        let index = self.children.iter().position(|c| *c == child).unwrap();
-        self.children.remove(index);
+        debug_println!(
+            "removing child {:?} from internal node {:?}",
+            child,
+            self as *const _
+        );
+        let index = self
+            .storage
+            .iter_children()
+            .position(|c| c == child)
+            .unwrap();
+
+        self.storage.remove_child_at_index(index);
 
         // we don't remove the leftmost element
         debug_assert!(index > 0);
-
-        // we remove the split key for the removed node
-        // one index to the left of the removed child
-        // (1 "A" 2 "B" 3 "C" 4) -> remove 2 "A" -> (1 "B" 3 "C" 4)
-        // or equivalently, [1, 2, 3, 4], ["A", "B", "C"] -> remove 2 -> [1, 3, 4], ["B", "C"]
-        self.keys.remove(index - 1);
-        self.num_keys -= 1;
     }
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
         mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
-        mut from: NodeRef<K, V, marker::Exclusive, marker::Internal>,
-        mut to: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        from: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        to: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
-        debug_println!(
-            "moving from {:?} {:?} into {:?} {:?}",
-            from.keys,
-            from.children,
-            to.keys,
-            to.children,
-        );
-        let split_key = parent.get_key_for_non_leftmost_child(from.node_ptr());
-        to.keys.push(split_key);
-        to.keys.extend(from.keys.drain(..));
-        debug_println!("moved keys {:?}", to.keys);
+        debug_println!("InternalNode move_from_right_neighbor_into_left_node");
 
-        for child in from.children.drain(..) {
-            debug_println!("moving child {:?}", child);
-            to.children.push(child);
-        }
-        to.num_keys = to.keys.len();
+        let split_key = parent.get_key_for_non_leftmost_child(from.node_ptr());
+        to.storage.extend(from.storage.drain(split_key));
+
         parent.remove(from.node_ptr());
-        // this is not necessary, but it lets is track the lock count correctly
+        // this is not necessary, but it lets us track the lock count correctly
         from.unlock_exclusive();
         unsafe {
             ptr::drop_in_place(from.to_raw_internal_ptr());
@@ -241,81 +249,132 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
     }
 
     pub fn move_last_to_front_of(
-        mut left: NodeRef<K, V, marker::Exclusive, marker::Internal>,
-        mut right: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        left: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        right: NodeRef<K, V, marker::Exclusive, marker::Internal>,
         mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
         debug_println!("InternalNode move_last_to_front_of");
-        let last_key = left.keys.pop().unwrap(); // if these don't exist, we've got bigger problems
-        let last_child = left.children.pop().unwrap();
+        let (last_key, last_child) = left.storage.pop();
 
         // last key wants to become the _parent_ split key
         let old_split_key = parent.update_split_key(right.node_ptr(), last_key);
 
-        right.keys.insert(0, old_split_key); // and the node's old parent split key is now its first key
-        right.children.insert(0, last_child);
-        left.num_keys -= 1;
-        right.num_keys += 1;
+        right.storage.insert(old_split_key, last_child, 0);
     }
 
     // we'll only call this for children other than the leftmost
-    pub(crate) fn update_split_key(&mut self, node: NodePtr, mut new_split_key: K) -> K {
+    pub(crate) fn update_split_key(&mut self, node: NodePtr, new_split_key: *mut K) -> *mut K {
         debug_println!(
-            "InternalNode update_split_key of {:?} to {:?}",
+            "InternalNode update_split_key on parent node {:?} for child {:?} num_keys: {:?}",
+            self as *const _,
             node,
-            new_split_key
+            self.num_keys()
         );
-        let index = self.children.iter().position(|c| *c == node).unwrap();
-        debug_assert!(index > 0);
-        std::mem::swap(&mut self.keys[index - 1], &mut new_split_key);
-        new_split_key
+
+        let child_index = self
+            .storage
+            .iter_children()
+            .position(|c| c == node)
+            .unwrap();
+
+        debug_println!(
+            "InternalNode {:?} update_split_key of {:?} to {:?} at key index {:?}",
+            self as *const _,
+            node,
+            unsafe { &*new_split_key },
+            child_index - 1
+        );
+
+        debug_assert!(child_index > 0);
+
+        let old_split_key = self.storage.get_key(child_index - 1);
+        self.storage.set_key(child_index - 1, new_split_key);
+        old_split_key
     }
 
     pub fn move_first_to_end_of(
-        mut right: NodeRef<K, V, marker::Exclusive, marker::Internal>,
-        mut left: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        right: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        left: NodeRef<K, V, marker::Exclusive, marker::Internal>,
         mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
     ) {
-        debug_println!("InternalNode move_first_to_end_of");
-        let first_key = right.keys.remove(0);
-        let first_child = right.children.remove(0);
-        // Update the split key in the parent for self
+        debug_println!(
+            "InternalNode move_first_to_end_of from first of right: {:?} to left:{:?} to parent:{:?}",
+            right.node_ptr(),
+            left.node_ptr(),
+            parent.node_ptr()
+        );
+        let (first_key, first_child) = right.storage.remove(0);
+        // Update the split key in the parent for the right child
+
         let old_split_key = parent.update_split_key(right.node_ptr(), first_key);
 
-        left.keys.push(old_split_key);
-        left.children.push(first_child);
-        right.num_keys -= 1;
-        left.num_keys += 1;
+        left.storage.push(old_split_key, first_child);
     }
 
     pub fn check_invariants(&self) {
-        assert_eq!(
-            self.num_keys,
-            self.keys.len(),
-            "num_keys does not match the actual number of keys"
-        );
-        assert_eq!(
-            self.num_keys + 1,
-            self.children.len(),
-            "Number of keys and children are inconsistent"
-        );
-
-        // the top of tree is allowed to have as few as 1 key
-        assert!(self.num_keys > 0);
-        assert!(self.num_keys <= MAX_KEYS_PER_NODE);
+        debug_println!("InternalNode check_invariants {:?}", self as *const _);
+        self.storage.check_invariants();
 
         // Check invariants for each child
-        for child in &self.children {
+        for (child_index, child) in self.storage.iter_children().enumerate() {
             let child_ref =
-                NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(*child);
+                NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(child);
             match child_ref.force() {
                 DiscriminatedNode::Internal(internal_child) => {
                     let locked_child = internal_child.lock_shared();
+
+                    if child_index > 0 {
+                        assert!(
+                            unsafe {
+                                &*locked_child.storage.get_key(0)
+                                    >= &*self.storage.get_key(child_index - 1)
+                            },
+                            "internal child {:?} first key {:?} is greater or equal to the parent's split key {:?} for that child",
+                            locked_child.node_ptr(),
+                            unsafe { &*locked_child.storage.get_key(0) },
+                            unsafe { &*self.storage.get_key(child_index - 1) }
+                        );
+                    }
+                    if child_index < self.num_keys() - 1 {
+                        assert!(
+                            unsafe {
+                                &*locked_child.storage.get_key(locked_child.num_keys() - 1)
+                                    <= &*self.storage.get_key(child_index)
+                            },
+                            "internal child {:?} last key {:?} is greater than the parent's split key {:?} for the next child",
+                            locked_child.node_ptr(),
+                            unsafe { &*locked_child.storage.get_key(locked_child.num_keys() - 1) },
+                            unsafe { &*self.storage.get_key(child_index) }
+                        );
+                    }
+
                     locked_child.check_invariants();
                     locked_child.unlock_shared();
                 }
                 DiscriminatedNode::Leaf(leaf_child) => {
                     let locked_child = leaf_child.lock_shared();
+                    // assert that the child's first key is after the child's split key
+                    if child_index > 0 {
+                        assert!(
+                            unsafe { &*locked_child.storage.get_key(0) }
+                                >= unsafe { &*self.storage.get_key(child_index - 1) },
+                            "leaf child {:?} 's first key {:?} is before the child's split key {:?}",
+                            leaf_child.node_ptr(),
+                            unsafe { &*locked_child.storage.get_key(0) },
+                            unsafe { &*self.storage.get_key(child_index - 1) }
+                        );
+                    }
+                    // assert that the child's last key is before the next child's split key
+                    if child_index < self.num_keys() - 1 {
+                        assert!(
+                            unsafe { &*locked_child.storage.get_key(locked_child.num_keys() - 1) }
+                                <= unsafe { &*self.storage.get_key(child_index) },
+                            "leaf child {:?} 's last key {:?} is after the next child's split key {:?}",
+                            leaf_child.node_ptr(),
+                            unsafe { &*locked_child.storage.get_key(locked_child.num_keys() - 1) },
+                            unsafe { &*self.storage.get_key(child_index) }
+                        );
+                    }
                     locked_child.check_invariants();
                     locked_child.unlock_shared();
                 }

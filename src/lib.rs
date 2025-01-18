@@ -8,5 +8,5 @@ pub mod node_ptr;
 pub mod reference;
 pub mod search_dequeue;
 pub mod tree;
-
+pub mod util;
 pub use tree::{BTree, BTreeKey, BTreeValue};

@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -36,6 +37,17 @@ impl LockInfo {
     }
 }
 
+impl Display for LockInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            LockInfo::UNLOCKED => write!(f, "UNLOCKED"),
+            LockInfo::EXCLUSIVE => write!(f, "EXCLUSIVE"),
+            LockInfo::SHARED => write!(f, "SHARED"),
+            LockInfo::LOWEST_VERSION => write!(f, "LOWEST_VERSION"),
+            _ => write!(f, "{}", self.0),
+        }
+    }
+}
 // doesn't handle poisoning
 pub(crate) struct HybridLatch {
     rw_lock: parking_lot::RawRwLock,
@@ -73,18 +85,17 @@ impl HybridLatch {
         }
     }
 
-    pub fn try_optimistic_read(&self) -> LockInfo {
+    pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {
         if self.rw_lock.is_locked_exclusive() {
-            return LockInfo::exclusive();
+            return Err(());
         }
-        LockInfo::from_version(self.version.load(Ordering::Acquire))
+        Ok(LockInfo::from_version(self.version.load(Ordering::Acquire)))
     }
 
-    fn validate_optimistic_read(&self, version: LockInfo) -> bool {
+    pub fn validate_optimistic_read(&self, version: LockInfo) -> bool {
+        if self.rw_lock.is_locked_exclusive() {
+            return false;
+        }
         self.version.load(Ordering::Acquire) == version.0
-    }
-
-    fn acquire_version(&self) -> u64 {
-        self.version.load(Ordering::Acquire)
     }
 }

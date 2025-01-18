@@ -21,8 +21,8 @@ impl<K: BTreeKey, V: BTreeValue, L: LockState, N: NodeType> Debug for NodeRef<K,
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{{ node: {:?} tag: {:?} }}",
-            self.node.0, self.lock_info.0,
+            "{{ node: {:?} lock_info: {:} }}",
+            self.node.0, self.lock_info,
         )
     }
 }
@@ -35,6 +35,8 @@ pub mod marker {
     impl LockState for Exclusive {}
     pub struct Shared;
     impl LockState for Shared {}
+    pub struct Optimistic;
+    impl LockState for Optimistic {}
     pub trait NodeType {}
     pub struct Internal;
     impl NodeType for Internal {}
@@ -49,6 +51,16 @@ pub mod marker {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodePtr(pub NonNull<NodeHeader>);
+
+impl NodePtr {
+    pub fn from_raw_ptr(ptr: *mut NodeHeader) -> Self {
+        NodePtr(NonNull::new(ptr).unwrap())
+    }
+
+    pub fn as_raw_ptr(&self) -> *mut NodeHeader {
+        self.0.as_ptr() as *mut NodeHeader
+    }
+}
 
 impl AsRef<NodeHeader> for NodePtr {
     fn as_ref(&self) -> &NodeHeader {
@@ -178,6 +190,16 @@ impl<K: BTreeKey, V: BTreeValue, N: NodeType> NodeRef<K, V, marker::Unlocked, N>
             phantom: PhantomData,
         }
     }
+    pub fn lock_optimistic(self) -> Result<NodeRef<K, V, marker::Optimistic, N>, ()> {
+        debug_println!("locking {:?} {:?} optimistic", self, self.header().height());
+        let lock_info = self.header().lock_optimistic()?;
+        debug_println!("locked {:?} {:?} optimistic", self, self.header().height());
+        Ok(NodeRef {
+            node: self.node,
+            lock_info,
+            phantom: PhantomData,
+        })
+    }
 
     pub fn lock_shared(self) -> NodeRef<K, V, marker::Shared, N> {
         debug_println!("locking {:?} {:?} shared", self, self.header().height());
@@ -220,6 +242,22 @@ impl<K: BTreeKey, V: BTreeValue, N: NodeType> NodeRef<K, V, marker::Shared, N> {
             lock_info: LockInfo::unlocked(),
             phantom: PhantomData,
         }
+    }
+}
+
+impl<K: BTreeKey, V: BTreeValue, N: NodeType> NodeRef<K, V, marker::Optimistic, N> {
+    pub fn unlock_optimistic(self) -> Result<NodeRef<K, V, marker::Unlocked, N>, ()> {
+        self.header()
+            .validate_optimistic(self.lock_info)
+            .map(|_| NodeRef {
+                node: self.node,
+                lock_info: LockInfo::unlocked(),
+                phantom: PhantomData,
+            })
+    }
+
+    pub fn validate_lock(&self) -> Result<(), ()> {
+        self.header().validate_optimistic(self.lock_info)
     }
 }
 
@@ -266,6 +304,33 @@ impl<K: BTreeKey, V: BTreeValue> Deref for NodeRef<K, V, marker::Shared, marker:
 
     fn deref(&self) -> &Self::Target {
         let raw_ptr = self.to_raw_internal_ptr();
+        unsafe { &*(*raw_ptr).inner.get() }
+    }
+}
+
+// optimistic reads
+impl<K: BTreeKey, V: BTreeValue> Deref for NodeRef<K, V, marker::Optimistic, marker::Internal> {
+    type Target = InternalNodeInner<K, V>;
+
+    fn deref(&self) -> &Self::Target {
+        let raw_ptr = self.to_raw_internal_ptr();
+        unsafe { &*(*raw_ptr).inner.get() }
+    }
+}
+
+impl<K: BTreeKey, V: BTreeValue> Deref for NodeRef<K, V, marker::Optimistic, marker::Leaf> {
+    type Target = LeafNodeInner<K, V>;
+
+    fn deref(&self) -> &Self::Target {
+        let raw_ptr = self.to_raw_leaf_ptr();
+        unsafe { &*(*raw_ptr).inner.get() }
+    }
+}
+impl<K: BTreeKey, V: BTreeValue> Deref for NodeRef<K, V, marker::Optimistic, marker::Root> {
+    type Target = RootNodeInner<K, V>;
+
+    fn deref(&self) -> &Self::Target {
+        let raw_ptr = self.to_raw_root_ptr();
         unsafe { &*(*raw_ptr).inner.get() }
     }
 }
