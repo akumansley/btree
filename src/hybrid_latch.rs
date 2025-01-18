@@ -58,8 +58,6 @@ impl HybridLatch {
     pub fn new() -> Self {
         Self {
             rw_lock: parking_lot::RawRwLock::INIT,
-
-            // 0 is unlocked, 1 is exclusive, 2 is shared -- see LockInfo in node_ptr.rs
             version: AtomicU64::new(LockInfo::LOWEST_VERSION),
         }
     }
