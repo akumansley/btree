@@ -87,12 +87,12 @@ impl<const CAPACITY: usize, T> NodeStorageArray<CAPACITY, T> {
         }
     }
 
-    fn set(&self, index: usize, ptr: *mut T) {
+    fn set(&self, index: usize, ptr: *mut T) -> *mut T {
         unsafe {
             self.array
                 .get_unchecked(index)
                 .assume_init_ref()
-                .store(ptr, Ordering::Relaxed);
+                .swap(ptr, Ordering::Relaxed)
         }
     }
 
@@ -429,8 +429,13 @@ impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY
         self.keys.iter(num_keys).zip(self.values.iter(num_keys))
     }
 
-    pub fn set(&self, index: usize, value: *mut V) {
-        self.values.set(index, value);
+    pub fn set(&self, index: usize, value: *mut V) -> *mut V {
+        let old_value = self.values.set(index, value);
+        if index < self.num_keys() {
+            old_value
+        } else {
+            ptr::null_mut()
+        }
     }
 
     pub fn insert(&self, key: *mut K, value: *mut V, index: usize) {
@@ -452,7 +457,12 @@ impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY
         assert!(self.num_keys() <= CAPACITY);
         for (key1, key2) in self.keys().into_iter().zip(self.keys().into_iter().skip(1)) {
             unsafe {
-                assert!(&*key1.load(Ordering::Relaxed) < &*key2.load(Ordering::Relaxed));
+                assert!(
+                    &*key1.load(Ordering::Relaxed) < &*key2.load(Ordering::Relaxed),
+                    "key1: {:?} key2: {:?}",
+                    &*key1.load(Ordering::Relaxed),
+                    &*key2.load(Ordering::Relaxed)
+                );
             }
         }
     }

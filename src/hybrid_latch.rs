@@ -11,7 +11,8 @@ impl LockInfo {
     const UNLOCKED: u64 = 0;
     const EXCLUSIVE: u64 = 1;
     const SHARED: u64 = 2;
-    const LOWEST_VERSION: u64 = 3;
+    const RETIRED: u64 = 3;
+    const LOWEST_VERSION: u64 = 4;
 
     pub fn from_version(version: u64) -> Self {
         Self(version)
@@ -25,6 +26,9 @@ impl LockInfo {
     pub fn shared() -> Self {
         Self(Self::SHARED)
     }
+    pub fn retired() -> Self {
+        Self(Self::RETIRED)
+    }
 
     pub fn is_unlocked(&self) -> bool {
         self.0 == Self::UNLOCKED
@@ -35,6 +39,9 @@ impl LockInfo {
     pub fn is_shared(&self) -> bool {
         self.0 == Self::SHARED
     }
+    pub fn is_retired(&self) -> bool {
+        self.0 == Self::RETIRED
+    }
 }
 
 impl Display for LockInfo {
@@ -43,6 +50,7 @@ impl Display for LockInfo {
             LockInfo::UNLOCKED => write!(f, "UNLOCKED"),
             LockInfo::EXCLUSIVE => write!(f, "EXCLUSIVE"),
             LockInfo::SHARED => write!(f, "SHARED"),
+            LockInfo::RETIRED => write!(f, "RETIRED"),
             LockInfo::LOWEST_VERSION => write!(f, "LOWEST_VERSION"),
             _ => write!(f, "{}", self.0),
         }
@@ -83,11 +91,22 @@ impl HybridLatch {
         }
     }
 
+    pub fn retire(&self) {
+        self.version.store(LockInfo::RETIRED, Ordering::Release);
+        unsafe {
+            self.rw_lock.unlock_exclusive();
+        }
+    }
+
     pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {
         if self.rw_lock.is_locked_exclusive() {
             return Err(());
         }
-        Ok(LockInfo::from_version(self.version.load(Ordering::Acquire)))
+        let lock_info = LockInfo::from_version(self.version.load(Ordering::Acquire));
+        if lock_info.is_retired() {
+            return Err(());
+        }
+        Ok(lock_info)
     }
 
     pub fn validate_optimistic_read(&self, version: LockInfo) -> bool {

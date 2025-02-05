@@ -6,6 +6,8 @@ use crate::{
         marker::{self},
         NodeRef,
     },
+    qsbr::qsbr_reclaimer,
+    smart_pointers::GracefulBox,
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
 use std::{cell::UnsafeCell, ptr, sync::atomic::Ordering};
@@ -50,8 +52,15 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         unsafe {
             match self.binary_search_key(&*key_to_insert) {
                 Ok(index) => {
-                    // NOCOMMIT: need to push a guard through here and protect the dropped key in the replacement case
-                    self.storage.set(index, value);
+                    let old_value = self.storage.set(index, value);
+                    if old_value != ptr::null_mut() {
+                        let old_value_box = GracefulBox::new(old_value);
+                        qsbr_reclaimer().add_callback(Box::new(move || {
+                            drop(old_value_box);
+                        }));
+                    }
+                    // no need to qsbr this key -- it hasn't been published
+                    ptr::drop_in_place(key_to_insert);
                 }
                 Err(index) => {
                     self.storage.insert(key_to_insert, value, index);
@@ -103,14 +112,15 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         to.storage.extend(from.storage.drain());
 
         parent.remove(from.node_ptr());
-        // this is not necessary, but it lets is track the lock count correctly
-        from.unlock_exclusive();
         // TODO: make sure there's no live sibling reference to left
         // when we implement concurrency
-        // NOCOMMIT: EBR THIS
-        unsafe {
-            ptr::drop_in_place(from.to_raw_leaf_ptr());
-        }
+        // retire the leaf -- this ensures that any optimistic readers will fail
+        from.retire();
+        // qsbr-drop the leaf
+        let from_box = GracefulBox::new(from.to_raw_leaf_ptr());
+        qsbr_reclaimer().add_callback(Box::new(move || {
+            drop(from_box);
+        }));
     }
 
     pub fn move_last_to_front_of(

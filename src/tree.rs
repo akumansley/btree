@@ -22,11 +22,11 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-pub trait BTreeKey: PartialOrd + Ord + Clone + Debug + Display {}
-pub trait BTreeValue: Debug + Display {}
+pub trait BTreeKey: PartialOrd + Ord + Clone + Debug + Display + Send + 'static {}
+pub trait BTreeValue: Debug + Display + Send + 'static {}
 
-impl<K: PartialOrd + Ord + Clone + Debug + Display> BTreeKey for K {}
-impl<V: Debug + Display> BTreeValue for V {}
+impl<K: PartialOrd + Ord + Clone + Debug + Display + Send + 'static> BTreeKey for K {}
+impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum UnderfullNodePosition {
@@ -36,7 +36,6 @@ pub enum UnderfullNodePosition {
 
 /// B+Tree
 /// Todo
-/// - implement EBR for keys, values and nodes
 /// - try inlined key descriminator with node-level key prefixes
 /// - implement iterators
 /// - bulk loading
@@ -928,11 +927,14 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::array_types::ORDER;
+    use crate::qsbr::qsbr_reclaimer;
 
     use super::*;
 
     #[test]
     fn test_insert_and_get() {
+        qsbr_reclaimer().register_thread();
+
         let tree = BTree::<usize, String>::new();
         let n = ORDER.pow(2);
         for i in 1..=n {
@@ -989,6 +991,7 @@ mod tests {
     }
 
     fn run_random_operations_with_seed_single_threaded(seed: u64) {
+        qsbr_reclaimer().register_thread();
         let mut rng = StdRng::seed_from_u64(seed);
         let tree = BTree::<usize, String>::new();
         let mut reference_map = HashMap::new();
@@ -1037,6 +1040,7 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
 
         println!("tree.print_tree()");
         tree.check_invariants();
@@ -1052,7 +1056,7 @@ mod tests {
         }
     }
 
-    const INTERESTING_SEEDS: [u64; 1] = [13142251578868436595];
+    const INTERESTING_SEEDS: [u64; 2] = [13142251578868436595, 15830960132082815423];
 
     #[test]
     fn test_random_inserts_gets_and_removes_with_seed_multi_threaded() {
@@ -1067,6 +1071,7 @@ mod tests {
     }
 
     fn run_random_operations_with_seed_multi_threaded(seed: u64) {
+        qsbr_reclaimer().register_thread();
         let tree = BTree::<usize, String>::new();
         let num_threads = 8;
         let operations_per_thread = 25000;
@@ -1080,6 +1085,7 @@ mod tests {
                 let tree_ref = &tree;
                 let completed_threads = completed_threads.clone();
                 s.spawn(move || {
+                    qsbr_reclaimer().register_thread();
                     let mut rng = StdRng::seed_from_u64(seed);
                     for _ in 0..operations_per_thread {
                         let operation = rng.gen_range(0..3);
@@ -1101,6 +1107,7 @@ mod tests {
                         }
                     }
                     // Increment the counter when this thread completes
+                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                     completed_threads.fetch_add(1, Ordering::Release);
                 });
             }
@@ -1109,11 +1116,14 @@ mod tests {
             let completed_threads = completed_threads.clone();
             let tree_ref = &tree;
             s.spawn(move || {
+                qsbr_reclaimer().register_thread();
                 while completed_threads.load(Ordering::Acquire) < num_threads {
                     thread::sleep(Duration::from_secs(1));
                     tree_ref.check_invariants();
                 }
+                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
             });
         });
+        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
     }
 }

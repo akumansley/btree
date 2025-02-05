@@ -165,6 +165,10 @@ impl NodeHeader {
         }
     }
 
+    pub fn retire(&self) {
+        self.lock.retire();
+    }
+
     pub fn height(&self) -> Height {
         self.height
     }
