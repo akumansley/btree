@@ -27,11 +27,13 @@ thread_local! {
     /// Each thread buffers callbacks locally until it quiesces
     static THREAD_STATE: std::cell::RefCell<ThreadState> = std::cell::RefCell::new(ThreadState {
         local_callbacks: VecDeque::new(),
+        is_registered: false,
     });
 }
 
 struct ThreadState {
     local_callbacks: VecDeque<Box<dyn FnOnce() + Send>>,
+    is_registered: bool,
 }
 
 impl MemoryReclaimer {
@@ -51,12 +53,20 @@ impl MemoryReclaimer {
         let thread_id = gettid();
         let mut inner = self.inner.lock();
         inner.registered_threads.insert(thread_id);
+        THREAD_STATE.with(|state| {
+            state.borrow_mut().is_registered = true;
+        });
         thread_id
     }
 
     /// Adds a deferred callback
     pub fn add_callback(&self, callback: Box<dyn FnOnce() + Send>) {
         THREAD_STATE.with(|state| {
+            assert!(
+                state.borrow().is_registered,
+                "Thread {} is not registered",
+                gettid()
+            );
             state.borrow_mut().local_callbacks.push_back(callback);
         });
     }
@@ -106,6 +116,7 @@ impl MemoryReclaimer {
             inner
                 .current_interval_callbacks
                 .append(&mut state.borrow_mut().local_callbacks);
+            state.borrow_mut().is_registered = false;
         });
 
         // Remove the thread from registration (it will no longer participate in future intervals).

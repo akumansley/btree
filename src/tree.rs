@@ -3,6 +3,7 @@ use crate::array_types::{
     MIN_KEYS_PER_NODE,
 };
 use crate::debug_println;
+use crate::graceful_pointers::GracefulArc;
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};
 use crate::node::{
@@ -36,18 +37,16 @@ pub enum UnderfullNodePosition {
 
 /// B+Tree
 /// Todo
-/// - try inlined key descriminator with node-level key prefixes
 /// - implement iterators
 /// - bulk loading
 /// Perf ideas:
+/// - try inlined key descriminator with node-level key prefixes
 /// - experiment with hybrid latch strategies:
 ///   - how many tries should we give optimistic locks?
 ///   - try being more pessimistic once we're close to the leaves
 ///   - try switching between shared and optimstic as we descend
 /// - try the "no coalescing" or "relaxed" btree idea
-/// - experiment with blockId/offset-based key storage and use that to avoid atomics since we're bounds-checking the result
-///
-///   Problems and answers:
+/// - try unordered leaf storage, or lazily sorted leaf storage
 
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
     root: RootNode<K, V>,
@@ -628,15 +627,18 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     pub fn insert(&self, key: Box<K>, value: Box<V>) {
         debug_println!("top-level insert {:?}", key);
+        let graceful_key = GracefulArc::new(*key);
+
         // TODO(ak): should we try a few times optimistically?
-        let mut optimistic_leaf = match self.get_leaf_exclusively_using_optimistic_search(&key) {
-            Ok(leaf) => leaf,
-            Err(_) => self.get_leaf_exclusively_using_shared_search(&key),
-        };
+        let mut optimistic_leaf =
+            match self.get_leaf_exclusively_using_optimistic_search(&graceful_key) {
+                Ok(leaf) => leaf,
+                Err(_) => self.get_leaf_exclusively_using_shared_search(&graceful_key),
+            };
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
-            || optimistic_leaf.get(&key).is_some()
+            || optimistic_leaf.get(&graceful_key).is_some()
         {
-            optimistic_leaf.insert(Box::into_raw(key), Box::into_raw(value));
+            optimistic_leaf.insert(graceful_key, Box::into_raw(value));
             optimistic_leaf.unlock_exclusive();
             self.len.fetch_add(1, Ordering::Relaxed);
             debug_assert_no_locks_held::<'i'>();
@@ -644,13 +646,15 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         }
         optimistic_leaf.unlock_exclusive();
 
-        let mut search_stack =
-            self.get_leaf_exclusively_using_exclusive_search(&key, ModificationType::Insertion);
+        let mut search_stack = self.get_leaf_exclusively_using_exclusive_search(
+            &graceful_key,
+            ModificationType::Insertion,
+        );
         let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
         // this should get us to 3 keys in the leaf
         if leaf_node.num_keys() < MAX_KEYS_PER_NODE {
-            leaf_node.insert(Box::into_raw(key), Box::into_raw(value));
+            leaf_node.insert(graceful_key, Box::into_raw(value));
             search_stack.drain().for_each(|n| {
                 n.assert_exclusive().unlock_exclusive();
             });
@@ -660,8 +664,8 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             // in the case where we otherwise would split
             // this is necessary for correctness, because split doesn't (and shouldn't)
             // handle the case where the key already exists
-            if leaf_node.get(&key).is_some() {
-                leaf_node.insert(Box::into_raw(key), Box::into_raw(value));
+            if leaf_node.get(&graceful_key).is_some() {
+                leaf_node.insert(graceful_key, Box::into_raw(value));
                 search_stack.drain().for_each(|n| {
                     n.assert_exclusive().unlock_exclusive();
                 });
@@ -670,7 +674,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             } else {
                 self.insert_into_leaf_after_splitting(
                     search_stack,
-                    Box::into_raw(key),
+                    graceful_key,
                     Box::into_raw(value),
                 );
             }
@@ -683,21 +687,21 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     fn insert_into_leaf_after_splitting(
         &self,
         mut search_stack: SearchDequeue<K, V>,
-        key_to_insert: *mut K,
+        key_to_insert: GracefulArc<K>,
         value_to_insert: *mut V,
     ) {
         debug_println!("insert_into_leaf_after_splitting");
         let leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
         let new_leaf = NodeRef::from_leaf_unlocked(LeafNode::<K, V>::new()).lock_exclusive();
 
-        let mut temp_leaf_vec: SmallVec<LeafTempArray<(*mut K, *mut V)>> = SmallVec::new();
+        let mut temp_leaf_vec: SmallVec<LeafTempArray<(GracefulArc<K>, *mut V)>> = SmallVec::new();
 
         let mut key_to_insert = Some(key_to_insert);
         let mut value_to_insert = Some(value_to_insert);
 
         leaf.storage.drain().for_each(|(k, v)| {
-            if let Some(key) = key_to_insert {
-                if unsafe { &*key < &*k } {
+            if let Some(ref key) = key_to_insert {
+                if **key < *k {
                     temp_leaf_vec.push((
                         key_to_insert.take().unwrap(),
                         value_to_insert.take().unwrap(),
@@ -721,7 +725,8 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         leaf.storage.extend(temp_leaf_vec.drain(..));
 
         // this clone is necessary because the key is moved into the parent
-        let split_key = new_leaf.storage.get_key(0);
+        // it's just a reference count increment, so it's relatively cheap
+        let split_key = new_leaf.storage.get_key(0).clone_and_increment_ref_count();
 
         self.insert_into_parent(search_stack, leaf, split_key, new_leaf);
     }
@@ -730,7 +735,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         &self,
         mut search_stack: SearchDequeue<K, V>,
         left: NodeRef<K, V, marker::Exclusive, N>,
-        split_key: *mut K,
+        split_key: GracefulArc<K>,
         right: NodeRef<K, V, marker::Exclusive, N>,
     ) {
         debug_println!("insert_into_parent");
@@ -780,7 +785,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         &self,
         parent_stack: SearchDequeue<K, V>,
         old_internal_node: NodeRef<K, V, marker::Exclusive, marker::Internal>, // this is the node we're splitting
-        split_key: *mut K, // this is the key for the new child
+        split_key: GracefulArc<K>, // this is the key for the new child
         new_child: NodeRef<K, V, marker::Exclusive, ChildType>, // this is the new child we're inserting
     ) {
         debug_println!("insert_into_internal_node_after_splitting");
@@ -788,19 +793,21 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             NodeRef::from_internal_unlocked(InternalNode::<K, V>::new(old_internal_node.height()))
                 .lock_exclusive();
 
-        let mut temp_keys_vec: SmallVec<InternalKeyTempArray<*mut K>> = SmallVec::new();
+        let mut temp_keys_vec: SmallVec<InternalKeyTempArray<GracefulArc<K>>> = SmallVec::new();
         let mut temp_children_vec: SmallVec<InternalChildTempArray<NodePtr>> = SmallVec::new();
 
         let new_key_index = old_internal_node
             .storage
-            .binary_search_keys(unsafe { &*split_key })
+            .binary_search_keys(split_key.as_ref())
             .unwrap_either();
 
         let is_last_element = new_key_index == old_internal_node.storage.num_keys();
 
+        let mut split_key = Some(split_key);
+
         for (i, key) in old_internal_node.storage.iter_keys().enumerate() {
             if i == new_key_index {
-                temp_keys_vec.push(split_key);
+                temp_keys_vec.push(split_key.take().unwrap());
             }
             temp_keys_vec.push(key);
         }
@@ -813,7 +820,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         }
 
         if is_last_element {
-            temp_keys_vec.push(split_key);
+            temp_keys_vec.push(split_key.take().unwrap());
             temp_children_vec.push(new_child.node_ptr());
         }
 
@@ -855,7 +862,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         &self,
         mut root: NodeRef<K, V, marker::Exclusive, marker::Root>,
         left: NodeRef<K, V, marker::Exclusive, N>,
-        split_key: *mut K,
+        split_key: GracefulArc<K>,
         right: NodeRef<K, V, marker::Exclusive, N>,
     ) {
         debug_println!("insert_into_new_top_of_tree");

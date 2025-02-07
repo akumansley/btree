@@ -1,3 +1,4 @@
+use btree::qsbr::qsbr_reclaimer;
 use btree::{debug_println, BTree};
 use criterion::measurement::WallTime;
 use criterion::{
@@ -64,6 +65,7 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                             let tree = &tree;
                             let threads_done = threads_done.clone();
                             s.spawn(move || {
+                                qsbr_reclaimer().register_thread();
                                 let mut rng = StdRng::seed_from_u64(thread_id as u64);
                                 let start = thread_id * ops_per_thread;
                                 let end = start + ops_per_thread;
@@ -75,6 +77,7 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                                 }
                                 debug_println!("pure_insert_benchmark: thread done");
                                 threads_done.fetch_add(1, Ordering::Relaxed);
+                                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
                         }
                         check_deadlocks(s, threads_done, num_threads);
@@ -102,11 +105,13 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                 for _ in 0..iters {
                     let threads_done = Arc::new(AtomicUsize::new(0));
                     let tree = BTree::<usize, String>::new();
+                    qsbr_reclaimer().register_thread();
 
                     // Pre-populate the tree with some data
                     for i in 0..NUM_OPERATIONS / 10 {
                         tree.insert(Box::new(i), Box::new(format!("value{}", i)));
                     }
+                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
 
                     let start = std::time::Instant::now();
                     thread::scope(|s| {
@@ -114,6 +119,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                             let tree = &tree;
                             let threads_done = threads_done.clone();
                             s.spawn(move || {
+                                qsbr_reclaimer().register_thread();
                                 let mut rng = StdRng::seed_from_u64(thread_id as u64);
                                 for _ in 0..ops_per_thread {
                                     let operation = rng.gen_range(0..3);
@@ -138,6 +144,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                 }
                                 debug_println!("mixed_operations_benchmark: thread done");
                                 threads_done.fetch_add(1, Ordering::Relaxed);
+                                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
                         }
                         check_deadlocks(s, threads_done, num_threads);
@@ -166,11 +173,14 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                 for _ in 0..iters {
                     let tree = BTree::<usize, String>::new();
                     let threads_done = Arc::new(AtomicUsize::new(0));
+                    qsbr_reclaimer().register_thread();
 
                     // Pre-populate the tree with some data
                     for i in 0..NUM_OPERATIONS / 10 {
                         tree.insert(Box::new(i), Box::new(format!("value{}", i)));
                     }
+
+                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
 
                     let start = std::time::Instant::now();
 
@@ -179,6 +189,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                             let tree = &tree;
                             let threads_done = threads_done.clone();
                             s.spawn(move || {
+                                qsbr_reclaimer().register_thread();
                                 let mut rng = StdRng::seed_from_u64(thread_id as u64);
 
                                 for _ in 0..ops_per_thread {
@@ -208,6 +219,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                 }
                                 threads_done.fetch_add(1, Ordering::Relaxed);
                                 debug_println!("read_heavy_benchmark: thread done");
+                                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
                         }
                         check_deadlocks(s, threads_done, num_threads);

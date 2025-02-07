@@ -3,11 +3,13 @@ use crate::{
         InternalNodeStorage, MAX_CHILDREN_PER_NODE, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE,
     },
     debug_println,
+    graceful_pointers::{GracefulArc, GracefulBox},
     node::{Height, NodeHeader},
     node_ptr::{
         marker::{self, LockState},
         DiscriminatedNode, NodePtr, NodeRef,
     },
+    qsbr::qsbr_reclaimer,
     tree::{BTreeKey, BTreeValue, ModificationType, UnderfullNodePosition},
     util::UnwrapEither,
 };
@@ -98,10 +100,10 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         }
     }
 
-    pub fn insert(&mut self, key: *mut K, new_child: NodePtr) {
+    pub fn insert(&mut self, key: GracefulArc<K>, new_child: NodePtr) {
         let insertion_point = self
             .storage
-            .binary_search_keys(unsafe { &*key })
+            .binary_search_keys(key.as_ref())
             .unwrap_either();
 
         self.storage
@@ -116,7 +118,7 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         self.storage.get_child(index)
     }
 
-    pub fn get_key_for_non_leftmost_child(&self, child: NodePtr) -> *mut K {
+    pub fn get_key_for_non_leftmost_child(&self, child: NodePtr) -> GracefulArc<K> {
         let index = self
             .storage
             .iter_children()
@@ -131,9 +133,7 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         println!("| Keys and Children:   |");
         for i in 0..self.num_keys() {
             println!("|  - NodePtr: {:?}     |", self.storage.get_child(i));
-            println!("|  - Key: {:?}         |", unsafe {
-                &*self.storage.get_key(i)
-            });
+            println!("|  - Key: {:?}         |", self.storage.get_key(i).as_ref());
         }
         // Print the last child
         if self.num_keys() < self.storage.num_children() {
@@ -242,10 +242,11 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
 
         parent.remove(from.node_ptr());
         // this is not necessary, but it lets us track the lock count correctly
-        from.unlock_exclusive();
-        unsafe {
-            ptr::drop_in_place(from.to_raw_internal_ptr());
-        }
+        from.retire();
+        let from_box = GracefulBox::new(from.to_raw_internal_ptr());
+        qsbr_reclaimer().add_callback(Box::new(move || {
+            drop(from_box);
+        }));
     }
 
     pub fn move_last_to_front_of(
@@ -257,13 +258,19 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         let (last_key, last_child) = left.storage.pop();
 
         // last key wants to become the _parent_ split key
+        // no need to change the ref count -- it's just getting moved
         let old_split_key = parent.update_split_key(right.node_ptr(), last_key);
 
         right.storage.insert(old_split_key, last_child, 0);
     }
 
     // we'll only call this for children other than the leftmost
-    pub(crate) fn update_split_key(&mut self, node: NodePtr, new_split_key: *mut K) -> *mut K {
+    // we also assume the caller has accounted for any reference count changes on the key
+    pub(crate) fn update_split_key(
+        &mut self,
+        node: NodePtr,
+        new_split_key: GracefulArc<K>,
+    ) -> GracefulArc<K> {
         debug_println!(
             "InternalNode update_split_key on parent node {:?} for child {:?} num_keys: {:?}",
             self as *const _,
@@ -325,26 +332,22 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
 
                     if child_index > 0 {
                         assert!(
-                            unsafe {
-                                &*locked_child.storage.get_key(0)
-                                    >= &*self.storage.get_key(child_index - 1)
-                            },
+                            locked_child.storage.get_key(0).as_ref()
+                                >= self.storage.get_key(child_index - 1).as_ref(),
                             "internal child {:?} first key {:?} is greater or equal to the parent's split key {:?} for that child",
                             locked_child.node_ptr(),
-                            unsafe { &*locked_child.storage.get_key(0) },
-                            unsafe { &*self.storage.get_key(child_index - 1) }
+                            locked_child.storage.get_key(0).as_ref(),
+                            self.storage.get_key(child_index - 1).as_ref()
                         );
                     }
                     if child_index < self.num_keys() - 1 {
                         assert!(
-                            unsafe {
-                                &*locked_child.storage.get_key(locked_child.num_keys() - 1)
-                                    <= &*self.storage.get_key(child_index)
-                            },
+                            locked_child.storage.get_key(locked_child.num_keys() - 1).as_ref()
+                                <= self.storage.get_key(child_index).as_ref(),
                             "internal child {:?} last key {:?} is greater than the parent's split key {:?} for the next child",
                             locked_child.node_ptr(),
-                            unsafe { &*locked_child.storage.get_key(locked_child.num_keys() - 1) },
-                            unsafe { &*self.storage.get_key(child_index) }
+                            locked_child.storage.get_key(locked_child.num_keys() - 1).as_ref(),
+                            self.storage.get_key(child_index).as_ref()
                         );
                     }
 
@@ -356,23 +359,23 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
                     // assert that the child's first key is after the child's split key
                     if child_index > 0 {
                         assert!(
-                            unsafe { &*locked_child.storage.get_key(0) }
-                                >= unsafe { &*self.storage.get_key(child_index - 1) },
+                            locked_child.storage.get_key(0).as_ref()
+                                >= self.storage.get_key(child_index - 1).as_ref(),
                             "leaf child {:?} 's first key {:?} is before the child's split key {:?}",
                             leaf_child.node_ptr(),
-                            unsafe { &*locked_child.storage.get_key(0) },
-                            unsafe { &*self.storage.get_key(child_index - 1) }
+                            locked_child.storage.get_key(0).as_ref(),
+                            self.storage.get_key(child_index - 1).as_ref()
                         );
                     }
                     // assert that the child's last key is before the next child's split key
                     if child_index < self.num_keys() - 1 {
                         assert!(
-                            unsafe { &*locked_child.storage.get_key(locked_child.num_keys() - 1) }
-                                <= unsafe { &*self.storage.get_key(child_index) },
+                            locked_child.storage.get_key(locked_child.num_keys() - 1).as_ref()
+                                <= self.storage.get_key(child_index).as_ref(),
                             "leaf child {:?} 's last key {:?} is after the next child's split key {:?}",
                             leaf_child.node_ptr(),
-                            unsafe { &*locked_child.storage.get_key(locked_child.num_keys() - 1) },
-                            unsafe { &*self.storage.get_key(child_index) }
+                            locked_child.storage.get_key(locked_child.num_keys() - 1).as_ref(),
+                            self.storage.get_key(child_index).as_ref()
                         );
                     }
                     locked_child.check_invariants();

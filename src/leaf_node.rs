@@ -1,13 +1,13 @@
 use crate::{
     array_types::{LeafNodeStorageArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
     debug_println,
+    graceful_pointers::{GracefulArc, GracefulAtomicPointer, GracefulBox},
     node::{Height, NodeHeader},
     node_ptr::{
         marker::{self},
         NodeRef,
     },
     qsbr::qsbr_reclaimer,
-    smart_pointers::GracefulBox,
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
 use std::{cell::UnsafeCell, ptr, sync::atomic::Ordering};
@@ -48,23 +48,23 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         }
     }
 
-    pub fn insert(&mut self, key_to_insert: *mut K, value: *mut V) {
-        unsafe {
-            match self.binary_search_key(&*key_to_insert) {
-                Ok(index) => {
-                    let old_value = self.storage.set(index, value);
-                    if old_value != ptr::null_mut() {
-                        let old_value_box = GracefulBox::new(old_value);
-                        qsbr_reclaimer().add_callback(Box::new(move || {
-                            drop(old_value_box);
-                        }));
+    pub fn insert(&mut self, key_to_insert: GracefulArc<K>, value: *mut V) {
+        match self.binary_search_key(&*key_to_insert) {
+            Ok(index) => {
+                let old_value = self.storage.set(index, value);
+                if old_value != ptr::null_mut() {
+                    // we always use share locks for leaf nodes, so this is safe to drop immediately
+                    unsafe {
+                        ptr::drop_in_place(old_value);
                     }
-                    // no need to qsbr this key -- it hasn't been published
-                    ptr::drop_in_place(key_to_insert);
                 }
-                Err(index) => {
-                    self.storage.insert(key_to_insert, value, index);
+                // no need to qsbr this key -- it can't have been published yet
+                unsafe {
+                    key_to_insert.drop_in_place();
                 }
+            }
+            Err(index) => {
+                self.storage.insert(key_to_insert, value, index);
             }
         }
     }
@@ -72,7 +72,11 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
     pub fn remove(&mut self, key: &K) -> bool {
         match self.binary_search_key(key) {
             Ok(index) => {
-                self.storage.remove(index);
+                let (key, value) = self.storage.remove(index);
+                unsafe {
+                    key.drop_in_place();
+                    ptr::drop_in_place(value);
+                }
                 true
             }
             Err(_) => false,
@@ -132,10 +136,16 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
 
         let (last_key, last_value) = left.storage.pop();
 
-        right.storage.insert(last_key, last_value, 0);
+        right
+            .storage
+            .insert(last_key.clone_and_increment_ref_count(), last_value, 0);
 
-        // Update the split key in the parent
-        parent.update_split_key(right.node_ptr(), last_key);
+        // Update the split key in the parent -- and we did need to increment the ref count above
+        // because we're copying the first key to the parent
+        let old_key = parent.update_split_key(right.node_ptr(), last_key);
+
+        // and we need to decrement the ref count on the old key
+        old_key.decrement_ref_count();
     }
 
     pub fn move_first_to_end_of(
@@ -147,9 +157,14 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         let (first_key, first_value) = right.storage.remove(0);
         left.storage.push(first_key, first_value);
 
-        // Update the split key in the parent for self
-        let new_split_key = right.storage.keys()[0].load(Ordering::Relaxed);
-        parent.update_split_key(right.node_ptr(), new_split_key);
+        // Update the split key in the parent for self, cloning it upwards
+        let new_split_key = right.storage.keys()[0]
+            .load(Ordering::Relaxed)
+            .clone_and_increment_ref_count();
+
+        // and we need to decrement the ref count on the old key
+        let old_key = parent.update_split_key(right.node_ptr(), new_split_key);
+        old_key.decrement_ref_count();
     }
 
     pub fn print_node(&self) {
@@ -160,12 +175,14 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         println!("| Keys and Values:     |");
         if self.num_keys() > 0 {
             for i in 0..self.num_keys() {
-                println!("|  - Key: {:?}         |", unsafe {
-                    &*self.storage.keys()[i].load(Ordering::Relaxed)
-                });
-                println!("|  - Value: {:?}       |", unsafe {
-                    &*self.storage.values()[i].load(Ordering::Relaxed)
-                });
+                println!(
+                    "|  - Key: {:?}         |",
+                    self.storage.keys()[i].load(Ordering::Relaxed).as_ref()
+                );
+                println!(
+                    "|  - Value: {:?}       |",
+                    self.storage.values()[i].load(Ordering::Relaxed)
+                );
             }
         }
         println!("+----------------------+");
