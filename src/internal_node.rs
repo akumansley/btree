@@ -1,3 +1,4 @@
+use crate::coalescing::UnderfullNodePosition;
 use crate::{
     array_types::{
         InternalNodeStorage, MAX_CHILDREN_PER_NODE, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE,
@@ -10,7 +11,7 @@ use crate::{
         DiscriminatedNode, NodePtr, NodeRef,
     },
     qsbr::qsbr_reclaimer,
-    tree::{BTreeKey, BTreeValue, ModificationType, UnderfullNodePosition},
+    tree::{BTreeKey, BTreeValue, ModificationType},
     util::UnwrapEither,
 };
 use std::{cell::UnsafeCell, marker::PhantomData, ptr};
