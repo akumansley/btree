@@ -8,7 +8,8 @@ use crate::hybrid_latch::LockInfo;
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};
 use crate::node::{Height, NodeHeader};
-use crate::tree::{BTreeKey, BTreeValue, RootNode, RootNodeInner};
+use crate::root_node::{RootNode, RootNodeInner};
+use crate::tree::{BTreeKey, BTreeValue};
 use marker::{LockState, NodeType};
 
 pub enum DiscriminatedNode<K: BTreeKey, V: BTreeValue, L: LockState> {

@@ -4,9 +4,10 @@ use crate::search_dequeue::SearchDequeue;
 use crate::tree::{BTreeKey, BTreeValue, ModificationType};
 
 pub fn get_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
-    locked_root: NodeRef<K, V, marker::Optimistic, marker::Root>,
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> Result<NodeRef<K, V, marker::Shared, marker::Leaf>, ()> {
+    let locked_root = root.lock_optimistic()?;
     let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
 
     let mut prev_node = locked_root.erase_node_type();
@@ -42,9 +43,10 @@ pub fn get_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
 }
 
 pub fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
-    locked_root: NodeRef<K, V, marker::Optimistic, marker::Root>,
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
+    let locked_root = root.lock_optimistic()?;
     let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
 
     let mut prev_node = locked_root.erase_node_type();

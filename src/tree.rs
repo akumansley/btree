@@ -2,24 +2,17 @@ use crate::array_types::{MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE};
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::debug_println;
 use crate::graceful_pointers::GracefulArc;
-use crate::leaf_node::LeafNode;
-use crate::node::{
-    debug_assert_no_locks_held, debug_assert_one_shared_lock_held, Height, NodeHeader,
-};
-use crate::node_ptr::{marker, DiscriminatedNode, NodePtr, NodeRef};
+use crate::node::{debug_assert_no_locks_held, debug_assert_one_shared_lock_held};
+use crate::node_ptr::{marker, DiscriminatedNode, NodeRef};
 use crate::reference::Ref;
+use crate::root_node::RootNode;
 use crate::search::{
     get_leaf_exclusively_using_exclusive_search, get_leaf_exclusively_using_optimistic_search,
     get_leaf_exclusively_using_shared_search, get_leaf_shared_using_optimistic_search,
     get_leaf_shared_using_shared_search,
 };
 use crate::splitting::insert_into_leaf_after_splitting;
-use std::cell::UnsafeCell;
 use std::fmt::{Debug, Display};
-use std::marker::PhantomData;
-use std::ops::Deref;
-use std::ptr::{self, NonNull};
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 pub trait BTreeKey: PartialOrd + Ord + Clone + Debug + Display + Send + 'static {}
@@ -51,102 +44,26 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             root: RootNode::new(),
         }
     }
-}
 
-unsafe impl<K: BTreeKey, V: BTreeValue> Send for BTree<K, V> {}
-unsafe impl<K: BTreeKey, V: BTreeValue> Sync for BTree<K, V> {}
-
-impl<K: BTreeKey, V: BTreeValue> Deref for BTree<K, V> {
-    type Target = RootNode<K, V>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.root
-    }
-}
-
-#[repr(C)]
-pub struct RootNode<K: BTreeKey, V: BTreeValue> {
-    pub header: NodeHeader,
-    pub inner: UnsafeCell<RootNodeInner<K, V>>,
-    // this is updated atomically after insert/remove, so it's not perfectly consistent
-    // but that lets us avoid some extra locking -- otherwise we'd need to hold a lock during any
-    // insert/remove for the duration of the operation
-    pub len: AtomicUsize,
-}
-
-pub struct RootNodeInner<K: BTreeKey, V: BTreeValue> {
-    pub top_of_tree: NodePtr,
-    phantom: PhantomData<(K, V)>,
-}
-
-impl<K: BTreeKey, V: BTreeValue> Drop for RootNodeInner<K, V> {
-    fn drop(&mut self) {
-        let top_of_tree_ref =
-            NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
-                self.top_of_tree,
-            );
-        match top_of_tree_ref.force() {
-            DiscriminatedNode::Leaf(leaf) => unsafe {
-                ptr::drop_in_place(leaf.to_raw_leaf_ptr());
-            },
-            DiscriminatedNode::Internal(internal) => {
-                let internal_node_ptr = internal.to_raw_internal_ptr();
-                unsafe {
-                    internal_node_ptr.as_ref().unwrap().drop_node_recursively();
-                }
-            }
-            _ => panic!("RootNodeInner::drop: top_of_tree is not a leaf or internal node"),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum ModificationType {
-    Insertion,
-    Removal,
-    NonModifying,
-}
-
-impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
-    pub fn new() -> Self {
-        let top_of_tree = LeafNode::<K, V>::new();
-        RootNode {
-            header: NodeHeader::new(Height::Root),
-            inner: UnsafeCell::new(RootNodeInner {
-                top_of_tree: NodePtr(NonNull::new(top_of_tree as *mut NodeHeader).unwrap()),
-                phantom: PhantomData,
-            }),
-            len: AtomicUsize::new(0),
-        }
-    }
-
-    pub fn as_node_ref(&self) -> NodeRef<K, V, marker::Unlocked, marker::Root> {
-        NodeRef::from_root_unlocked(self as *const _ as *mut _)
-    }
-
-    /// Locks the leaf node (shared) and returns a reference to the value
-    /// The leaf will be unlocked when the reference is dropped
     pub fn get(&self, search_key: &K) -> Option<Ref<K, V>> {
         debug_println!("top-level get {:?}", search_key);
 
         // try optimistic search first
-        if let Ok(locked_root) = self.as_node_ref().lock_optimistic() {
-            if let Ok(leaf_node_shared) =
-                get_leaf_shared_using_optimistic_search(locked_root, search_key)
-            {
-                match leaf_node_shared.get(search_key) {
-                    Some(v_ptr) => return Some(Ref::new(leaf_node_shared, v_ptr)),
-                    None => {
-                        leaf_node_shared.unlock_shared();
-                        return None;
-                    }
+        if let Ok(leaf_node_shared) =
+            get_leaf_shared_using_optimistic_search(self.root.as_node_ref(), search_key)
+        {
+            match leaf_node_shared.get(search_key) {
+                Some(v_ptr) => return Some(Ref::new(leaf_node_shared, v_ptr)),
+                None => {
+                    leaf_node_shared.unlock_shared();
+                    return None;
                 }
             }
         }
 
         // fall back to shared search
         let leaf_node_shared =
-            get_leaf_shared_using_shared_search(self.as_node_ref().lock_shared(), search_key);
+            get_leaf_shared_using_shared_search(self.root.as_node_ref().lock_shared(), search_key);
         debug_println!("top-level get {:?} done", search_key);
         debug_assert_one_shared_lock_held();
         match leaf_node_shared.get(search_key) {
@@ -159,69 +76,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
     }
 
     pub fn len(&self) -> usize {
-        self.len.load(Ordering::Relaxed)
-    }
-
-    /**
-     * Removal methods:
-     * - remove - the top-level remove method
-     * - coalesce_or_redistribute_leaf_node - called when a leaf node has too few keys
-     * - coalesce_or_redistribute_internal_node - called when an internal node has too few keys
-     */
-
-    pub fn remove(&self, key: &K) {
-        debug_println!("top-level remove {:?}", key);
-
-        if let Ok(locked_root) = self.as_node_ref().lock_optimistic() {
-            let mut optimistic_leaf =
-                // first try fully optimistic search
-                match get_leaf_exclusively_using_optimistic_search(locked_root, key) {
-                    Ok(leaf) => leaf,
-                    // if that doesn't work, use shared search, which is still optimistic
-                    // in the sense that we're assuming we don't need any structural modifications
-                    Err(_) => get_leaf_exclusively_using_shared_search(
-                        self.as_node_ref().lock_shared(),
-                        key,
-                    ),
-                };
-            if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal)
-                || optimistic_leaf.get(&key).is_none()
-            {
-                let removed = optimistic_leaf.remove(key);
-                if removed {
-                    self.len.fetch_sub(1, Ordering::Relaxed);
-                }
-                debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
-                optimistic_leaf.unlock_exclusive();
-                debug_assert_no_locks_held::<'r'>();
-                return;
-            }
-            optimistic_leaf.unlock_exclusive();
-        }
-
-        // we need structural modifications, so fall back to exclusive search
-        let mut search_stack = get_leaf_exclusively_using_exclusive_search(
-            self.as_node_ref().lock_exclusive(),
-            key,
-            ModificationType::Removal,
-        );
-
-        let mut leaf_node_exclusive = search_stack.peek_lowest().assert_leaf().assert_exclusive();
-        let removed = leaf_node_exclusive.remove(key);
-        if removed {
-            self.len.fetch_sub(1, Ordering::Relaxed);
-        }
-        if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
-            coalesce_or_redistribute_leaf_node(search_stack);
-        } else {
-            // the remove might not actually remove the key (it might be not found)
-            // so the stack may still contain nodes -- unlock them
-            search_stack.drain().for_each(|n| {
-                n.assert_exclusive().unlock_exclusive();
-            });
-        }
-        debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
-        debug_assert_no_locks_held::<'r'>();
+        self.root.len.load(Ordering::Relaxed)
     }
 
     pub fn insert(&self, key: Box<K>, value: Box<V>) {
@@ -230,32 +85,32 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
         // TODO(ak): should we try a few times optimistically?
         // first try fully optimistic search
-        if let Ok(locked_root) = self.as_node_ref().lock_optimistic() {
-            let mut optimistic_leaf =
-                match get_leaf_exclusively_using_optimistic_search(locked_root, &graceful_key) {
-                    Ok(leaf) => leaf,
-                    // if that doesn't work, use shared search, which is still optimistic
-                    // in the sense that we're assuming we don't need any structural modifications
-                    Err(_) => get_leaf_exclusively_using_shared_search(
-                        self.as_node_ref().lock_shared(),
-                        &graceful_key,
-                    ),
-                };
-            if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
-                || optimistic_leaf.get(&graceful_key).is_some()
-            {
-                optimistic_leaf.insert(graceful_key, Box::into_raw(value));
-                optimistic_leaf.unlock_exclusive();
-                self.len.fetch_add(1, Ordering::Relaxed);
-                debug_assert_no_locks_held::<'i'>();
-                return;
-            }
+        let mut optimistic_leaf = match get_leaf_exclusively_using_optimistic_search(
+            self.root.as_node_ref(),
+            &graceful_key,
+        ) {
+            Ok(leaf) => leaf,
+            // if that doesn't work, use shared search, which is still optimistic
+            // in the sense that we're assuming we don't need any structural modifications
+            Err(_) => get_leaf_exclusively_using_shared_search(
+                self.root.as_node_ref().lock_shared(),
+                &graceful_key,
+            ),
+        };
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
+            || optimistic_leaf.get(&graceful_key).is_some()
+        {
+            optimistic_leaf.insert(graceful_key, Box::into_raw(value));
             optimistic_leaf.unlock_exclusive();
+            self.root.len.fetch_add(1, Ordering::Relaxed);
+            debug_assert_no_locks_held::<'i'>();
+            return;
         }
+        optimistic_leaf.unlock_exclusive();
 
         // we need structural modifications, so fall back to exclusive search
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
-            self.as_node_ref().lock_exclusive(),
+            self.root.as_node_ref().lock_exclusive(),
             &graceful_key,
             ModificationType::Insertion,
         );
@@ -284,16 +139,69 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
                 insert_into_leaf_after_splitting(search_stack, graceful_key, Box::into_raw(value));
             }
         }
-        self.len.fetch_add(1, Ordering::Relaxed);
+        self.root.len.fetch_add(1, Ordering::Relaxed);
         debug_println!("top-level insert done");
         debug_assert_no_locks_held::<'i'>();
     }
 
+    pub fn remove(&self, key: &K) {
+        debug_println!("top-level remove {:?}", key);
+
+        let mut optimistic_leaf =
+                // first try fully optimistic search
+                match get_leaf_exclusively_using_optimistic_search(self.root.as_node_ref(), key) {
+                    Ok(leaf) => leaf,
+                    // if that doesn't work, use shared search, which is still optimistic
+                    // in the sense that we're assuming we don't need any structural modifications
+                    Err(_) => get_leaf_exclusively_using_shared_search(
+                        self.root.as_node_ref().lock_shared(),
+                        key,
+                    ),
+                };
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal)
+            || optimistic_leaf.get(&key).is_none()
+        {
+            let removed = optimistic_leaf.remove(key);
+            if removed {
+                self.root.len.fetch_sub(1, Ordering::Relaxed);
+            }
+            debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
+            optimistic_leaf.unlock_exclusive();
+            debug_assert_no_locks_held::<'r'>();
+            return;
+        }
+        optimistic_leaf.unlock_exclusive();
+
+        // we need structural modifications, so fall back to exclusive search
+        let mut search_stack = get_leaf_exclusively_using_exclusive_search(
+            self.root.as_node_ref().lock_exclusive(),
+            key,
+            ModificationType::Removal,
+        );
+
+        let mut leaf_node_exclusive = search_stack.peek_lowest().assert_leaf().assert_exclusive();
+        let removed = leaf_node_exclusive.remove(key);
+        if removed {
+            self.root.len.fetch_sub(1, Ordering::Relaxed);
+        }
+        if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
+            coalesce_or_redistribute_leaf_node(search_stack);
+        } else {
+            // the remove might not actually remove the key (it might be not found)
+            // so the stack may still contain nodes -- unlock them
+            search_stack.drain().for_each(|n| {
+                n.assert_exclusive().unlock_exclusive();
+            });
+        }
+        debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
+        debug_assert_no_locks_held::<'r'>();
+    }
+
     pub fn print_tree(&self) {
-        let root = self.as_node_ref().lock_shared();
+        let root = self.root.as_node_ref().lock_shared();
         println!("BTree:");
         println!("+----------------------+");
-        println!("| Tree length: {}      |", self.len.load(Ordering::Relaxed));
+        println!("| Tree length: {}      |", self.len());
         println!("+----------------------+");
         match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
             root.top_of_tree,
@@ -317,7 +225,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
 
     pub fn check_invariants(&self) {
         debug_println!("checking invariants");
-        let root = self.as_node_ref().lock_shared();
+        let root = self.root.as_node_ref().lock_shared();
         match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
             root.top_of_tree,
         )
@@ -337,6 +245,16 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         }
         root.unlock_shared();
     }
+}
+
+unsafe impl<K: BTreeKey, V: BTreeValue> Send for BTree<K, V> {}
+unsafe impl<K: BTreeKey, V: BTreeValue> Sync for BTree<K, V> {}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ModificationType {
+    Insertion,
+    Removal,
+    NonModifying,
 }
 
 #[cfg(test)]
@@ -386,6 +304,7 @@ mod tests {
     use rand::seq::IteratorRandom;
     use rand::{Rng, SeedableRng};
     use std::collections::HashMap;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;

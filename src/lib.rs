@@ -9,6 +9,7 @@ pub mod node;
 pub mod node_ptr;
 pub mod qsbr;
 pub mod reference;
+pub mod root_node;
 pub mod search;
 pub mod search_dequeue;
 pub mod splitting;
