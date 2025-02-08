@@ -83,7 +83,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         debug_println!("top-level insert {:?}", key);
         let graceful_key = GracefulArc::new(*key);
 
-        // TODO(ak): should we try a few times optimistically?
         // first try fully optimistic search
         let mut optimistic_leaf = match get_leaf_exclusively_using_optimistic_search(
             self.root.as_node_ref(),

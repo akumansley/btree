@@ -2,24 +2,28 @@ use crate::debug_println;
 use crate::node_ptr::{marker, DiscriminatedNode, NodeRef};
 use crate::search_dequeue::SearchDequeue;
 use crate::tree::{BTreeKey, BTreeValue, ModificationType};
+use crate::util::retry;
 
 pub fn get_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
     root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> Result<NodeRef<K, V, marker::Shared, marker::Leaf>, ()> {
-    let locked_root = root.lock_optimistic()?;
-    let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
+    retry::<_, _, _, 3>(|| {
+        let locked_root = root.lock_optimistic()?;
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
 
-    let mut prev_node = locked_root.erase_node_type();
-    let mut current_node = top_of_tree;
-    while current_node.is_internal() {
-        let locked_current_node = current_node.lock_optimistic()?.assert_internal();
-        prev_node.unlock_optimistic()?;
-        current_node = NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
-        prev_node = locked_current_node.erase_node_type();
-    }
-    let leaf = current_node.lock_shared();
-    Ok(leaf.assert_leaf())
+        let mut prev_node = locked_root.erase_node_type();
+        let mut current_node = top_of_tree;
+        while current_node.is_internal() {
+            let locked_current_node = current_node.lock_optimistic()?.assert_internal();
+            prev_node.unlock_optimistic()?;
+            current_node =
+                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
+            prev_node = locked_current_node.erase_node_type();
+        }
+        let leaf = current_node.lock_shared();
+        Ok(leaf.assert_leaf())
+    })
 }
 
 pub fn get_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
@@ -46,26 +50,29 @@ pub fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
     root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
-    let locked_root = root.lock_optimistic()?;
-    let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
+    retry::<_, _, _, 3>(|| {
+        let locked_root = root.lock_optimistic()?;
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
 
-    let mut prev_node = locked_root.erase_node_type();
-    let mut current_node = top_of_tree;
-    while current_node.is_internal() {
-        let locked_current_node = current_node.lock_optimistic()?.assert_internal();
-        prev_node.unlock_optimistic()?;
-        current_node = NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
-        prev_node = locked_current_node.erase_node_type();
-    }
-
-    let leaf = current_node.lock_exclusive().assert_leaf();
-    match prev_node.unlock_optimistic() {
-        Ok(_) => Ok(leaf),
-        Err(_) => {
-            leaf.unlock_exclusive();
-            Err(())
+        let mut prev_node = locked_root.erase_node_type();
+        let mut current_node = top_of_tree;
+        while current_node.is_internal() {
+            let locked_current_node = current_node.lock_optimistic()?.assert_internal();
+            prev_node.unlock_optimistic()?;
+            current_node =
+                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
+            prev_node = locked_current_node.erase_node_type();
         }
-    }
+
+        let leaf = current_node.lock_exclusive().assert_leaf();
+        match prev_node.unlock_optimistic() {
+            Ok(_) => Ok(leaf),
+            Err(_) => {
+                leaf.unlock_exclusive();
+                Err(())
+            }
+        }
+    })
 }
 
 pub fn get_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(

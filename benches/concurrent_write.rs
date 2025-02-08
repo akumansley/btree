@@ -241,7 +241,7 @@ fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent_write");
     group.sampling_mode(SamplingMode::Flat);
     group.sample_size(10);
-    for num_threads in [1, 2, 4, 8] {
+    for num_threads in [4, 8] {
         mixed_operations_benchmark(&mut group, num_threads);
         pure_insert_benchmark(&mut group, num_threads);
         read_heavy_benchmark(&mut group, num_threads);
