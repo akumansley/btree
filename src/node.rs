@@ -146,6 +146,12 @@ impl NodeHeader {
         debug_perchance_yield();
         increment_shared_lock_count();
     }
+    pub fn try_lock_shared(&self) -> Result<(), ()> {
+        self.lock.try_lock_shared()
+    }
+    pub fn try_lock_exclusive(&self) -> Result<(), ()> {
+        self.lock.try_lock_exclusive()
+    }
     pub fn unlock_shared(&self) {
         self.lock.unlock_shared();
         decrement_shared_lock_count();

@@ -1,3 +1,6 @@
+use std::ptr;
+use std::sync::atomic::Ordering;
+
 use crate::array_types::{
     InternalChildTempArray, InternalKeyTempArray, LeafTempArray, KV_IDX_CENTER, MAX_KEYS_PER_NODE,
 };
@@ -21,6 +24,27 @@ pub fn insert_into_leaf_after_splitting<K, V>(
     debug_println!("insert_into_leaf_after_splitting");
     let leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
     let new_leaf = NodeRef::from_leaf_unlocked(LeafNode::<K, V>::new()).lock_exclusive();
+
+    // update sibling pointers
+    if let Some(next_leaf) = leaf.next_leaf() {
+        // if we have a right sibling, it's new sibling is new_leaf
+        let next_leaf = next_leaf.lock_exclusive();
+        new_leaf
+            .next_leaf
+            .store(next_leaf.to_raw_leaf_ptr(), Ordering::Relaxed);
+        next_leaf
+            .prev_leaf
+            .store(new_leaf.to_raw_leaf_ptr(), Ordering::Relaxed);
+        next_leaf.unlock_exclusive();
+    } else {
+        new_leaf.next_leaf.store(ptr::null_mut(), Ordering::Relaxed);
+    }
+    // the split nodes always point to one another
+    leaf.next_leaf
+        .store(new_leaf.to_raw_leaf_ptr(), Ordering::Relaxed);
+    new_leaf
+        .prev_leaf
+        .store(leaf.to_raw_leaf_ptr(), Ordering::Relaxed);
 
     let mut temp_leaf_vec: SmallVec<LeafTempArray<(GracefulArc<K>, *mut V)>> = SmallVec::new();
 

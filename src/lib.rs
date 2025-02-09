@@ -1,5 +1,6 @@
 pub mod array_types;
 pub mod coalescing;
+pub mod cursor;
 pub mod debug;
 pub mod graceful_pointers;
 pub mod hybrid_latch;

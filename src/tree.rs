@@ -1,5 +1,7 @@
 use crate::array_types::{MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE};
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
+use crate::cursor::Cursor;
+use crate::cursor::CursorMut;
 use crate::debug_println;
 use crate::graceful_pointers::GracefulArc;
 use crate::node::{debug_assert_no_locks_held, debug_assert_one_shared_lock_held};
@@ -23,7 +25,6 @@ impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 
 /// B+Tree
 /// Todo
-/// - implement iterators
 /// - bulk loading
 /// Perf ideas:
 /// - try inlined key descriminator with node-level key prefixes
@@ -35,7 +36,7 @@ impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 /// - try unordered leaf storage, or lazily sorted leaf storage
 
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
-    root: RootNode<K, V>,
+    pub root: RootNode<K, V>,
 }
 
 impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
@@ -63,7 +64,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
 
         // fall back to shared search
         let leaf_node_shared =
-            get_leaf_shared_using_shared_search(self.root.as_node_ref().lock_shared(), search_key);
+            get_leaf_shared_using_shared_search(self.root.as_node_ref(), search_key);
         debug_println!("top-level get {:?} done", search_key);
         debug_assert_one_shared_lock_held();
         match leaf_node_shared.get(search_key) {
@@ -91,10 +92,9 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             Ok(leaf) => leaf,
             // if that doesn't work, use shared search, which is still optimistic
             // in the sense that we're assuming we don't need any structural modifications
-            Err(_) => get_leaf_exclusively_using_shared_search(
-                self.root.as_node_ref().lock_shared(),
-                &graceful_key,
-            ),
+            Err(_) => {
+                get_leaf_exclusively_using_shared_search(self.root.as_node_ref(), &graceful_key)
+            }
         };
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
             || optimistic_leaf.get(&graceful_key).is_some()
@@ -152,10 +152,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
                     Ok(leaf) => leaf,
                     // if that doesn't work, use shared search, which is still optimistic
                     // in the sense that we're assuming we don't need any structural modifications
-                    Err(_) => get_leaf_exclusively_using_shared_search(
-                        self.root.as_node_ref().lock_shared(),
-                        key,
-                    ),
+                    Err(_) => get_leaf_exclusively_using_shared_search(self.root.as_node_ref(), key),
                 };
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal)
             || optimistic_leaf.get(&key).is_none()
@@ -244,6 +241,22 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         }
         root.unlock_shared();
     }
+
+    pub fn cursor(&self) -> Cursor<K, V> {
+        Cursor {
+            tree: self,
+            current_leaf: None,
+            current_index: 0,
+        }
+    }
+
+    pub fn cursor_mut(&self) -> CursorMut<K, V> {
+        CursorMut {
+            tree: self,
+            current_leaf: None,
+            current_index: 0,
+        }
+    }
 }
 
 unsafe impl<K: BTreeKey, V: BTreeValue> Send for BTree<K, V> {}
@@ -297,6 +310,7 @@ mod tests {
         assert_eq!(tree.get(&1), None);
         assert_eq!(tree.get(&2), None);
         assert_eq!(tree.get(&3), None);
+        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
     }
 
     use rand::rngs::StdRng;

@@ -10,7 +10,11 @@ use crate::{
     qsbr::qsbr_reclaimer,
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
-use std::{cell::UnsafeCell, ptr, sync::atomic::Ordering};
+use std::{
+    cell::UnsafeCell,
+    ptr,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 #[repr(C)]
 pub struct LeafNode<K: BTreeKey, V: BTreeValue> {
@@ -19,6 +23,8 @@ pub struct LeafNode<K: BTreeKey, V: BTreeValue> {
 }
 pub struct LeafNodeInner<K: BTreeKey, V: BTreeValue> {
     pub storage: LeafNodeStorageArray<K, V>,
+    pub next_leaf: AtomicPtr<LeafNode<K, V>>,
+    pub prev_leaf: AtomicPtr<LeafNode<K, V>>,
 }
 
 impl<K: BTreeKey, V: BTreeValue> LeafNode<K, V> {
@@ -27,13 +33,32 @@ impl<K: BTreeKey, V: BTreeValue> LeafNode<K, V> {
             header: NodeHeader::new(Height::Leaf),
             inner: UnsafeCell::new(LeafNodeInner {
                 storage: LeafNodeStorageArray::new(),
+                next_leaf: AtomicPtr::new(ptr::null_mut()),
+                prev_leaf: AtomicPtr::new(ptr::null_mut()),
             }),
         }))
     }
 }
 
 impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
-    fn binary_search_key(&self, search_key: &K) -> Result<usize, usize> {
+    pub fn next_leaf(&self) -> Option<NodeRef<K, V, marker::Unlocked, marker::Leaf>> {
+        let next_leaf_ptr = self.next_leaf.load(Ordering::Acquire);
+        if next_leaf_ptr.is_null() {
+            None
+        } else {
+            Some(NodeRef::from_leaf_unlocked(next_leaf_ptr as *mut _))
+        }
+    }
+    pub fn prev_leaf(&self) -> Option<NodeRef<K, V, marker::Unlocked, marker::Leaf>> {
+        let prev_leaf_ptr = self.prev_leaf.load(Ordering::Acquire);
+        if prev_leaf_ptr.is_null() {
+            None
+        } else {
+            Some(NodeRef::from_leaf_unlocked(prev_leaf_ptr as *mut _))
+        }
+    }
+
+    pub fn binary_search_key(&self, search_key: &K) -> Result<usize, usize> {
         self.storage.binary_search_keys(search_key)
     }
 
@@ -112,9 +137,24 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         from: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
         to: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
     ) {
-        debug_println!("LeafNode move_from_right_neighbor_into_left_node");
-        to.storage.extend(from.storage.drain());
+        // update sibling pointers
+        if let Some(right_neighbor_next_leaf) = from.next_leaf() {
+            let right_neighbor_next_leaf = right_neighbor_next_leaf.lock_exclusive();
 
+            right_neighbor_next_leaf
+                .prev_leaf
+                .store(to.to_raw_leaf_ptr(), Ordering::Relaxed);
+
+            to.next_leaf.store(
+                right_neighbor_next_leaf.to_raw_leaf_ptr(),
+                Ordering::Relaxed,
+            );
+            right_neighbor_next_leaf.unlock_exclusive();
+        } else {
+            to.next_leaf.store(ptr::null_mut(), Ordering::Relaxed);
+        }
+
+        to.storage.extend(from.storage.drain());
         parent.remove(from.node_ptr());
         // TODO: make sure there's no live sibling reference to left
         // when we implement concurrency

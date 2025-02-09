@@ -212,6 +212,26 @@ impl<K: BTreeKey, V: BTreeValue, N: NodeType> NodeRef<K, V, marker::Unlocked, N>
             phantom: PhantomData,
         }
     }
+    pub fn try_lock_shared(&self) -> Result<NodeRef<K, V, marker::Shared, N>, ()> {
+        match self.header().try_lock_shared() {
+            Ok(_) => Ok(NodeRef {
+                node: self.node,
+                lock_info: LockInfo::shared(),
+                phantom: PhantomData,
+            }),
+            Err(_) => Err(()),
+        }
+    }
+    pub fn try_lock_exclusive(&self) -> Result<NodeRef<K, V, marker::Exclusive, N>, ()> {
+        match self.header().try_lock_exclusive() {
+            Ok(_) => Ok(NodeRef {
+                node: self.node,
+                lock_info: LockInfo::exclusive(),
+                phantom: PhantomData,
+            }),
+            Err(_) => Err(()),
+        }
+    }
 }
 
 // Any node, exclusive

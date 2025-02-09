@@ -1,55 +1,74 @@
-use crate::debug_println;
+use crate::node_ptr::marker::LockState;
 use crate::node_ptr::{marker, DiscriminatedNode, NodeRef};
 use crate::search_dequeue::SearchDequeue;
 use crate::tree::{BTreeKey, BTreeValue, ModificationType};
 use crate::util::retry;
 
+pub fn get_last_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> Result<NodeRef<K, V, marker::Shared, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_last_child()),
+        |node| node.lock_shared(),
+        |node| node.unlock_shared(),
+    )
+}
+pub fn get_last_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
+    do_shared_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_last_child()),
+        |node| node.lock_shared(),
+    )
+}
+
+pub fn get_first_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> Result<NodeRef<K, V, marker::Shared, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_first_child()),
+        |node| node.lock_shared(),
+        |node| node.unlock_shared(),
+    )
+}
+
+pub fn get_first_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
+    do_shared_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_first_child()),
+        |node| node.lock_shared(),
+    )
+}
+
 pub fn get_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
     root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> Result<NodeRef<K, V, marker::Shared, marker::Leaf>, ()> {
-    retry::<_, _, _, 3>(|| {
-        let locked_root = root.lock_optimistic()?;
-        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
-
-        let mut prev_node = locked_root.erase_node_type();
-        let mut current_node = top_of_tree;
-        while current_node.is_internal() {
-            let locked_current_node = current_node.lock_optimistic()?.assert_internal();
-            prev_node.unlock_optimistic()?;
-            current_node =
-                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
-            prev_node = locked_current_node.erase_node_type();
-        }
-        let leaf = current_node.lock_shared();
-        Ok(leaf.assert_leaf())
-    })
+    do_optimistic_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.find_child(search_key)),
+        |node| node.lock_shared(),
+        |node| node.unlock_shared(),
+    )
 }
 
-pub fn get_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
-    locked_root: NodeRef<K, V, marker::Shared, marker::Root>,
-    search_key: &K,
-) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
-    let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
-
-    let mut prev_node = locked_root.erase_node_type();
-    let mut current_node = top_of_tree;
-    while current_node.is_internal() {
-        let locked_current_node = current_node.lock_shared().assert_internal();
-        prev_node.unlock_shared();
-        current_node = NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
-        prev_node = locked_current_node.erase_node_type();
-    }
-
-    let leaf = current_node.lock_shared().assert_leaf();
-    prev_node.unlock_shared();
-    leaf
-}
-
-pub fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+pub fn do_optimistic_search<K: BTreeKey, V: BTreeValue, LeafLockState: LockState>(
     root: NodeRef<K, V, marker::Unlocked, marker::Root>,
-    search_key: &K,
-) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
+    descend: impl Fn(
+        NodeRef<K, V, marker::Optimistic, marker::Internal>,
+    ) -> NodeRef<K, V, marker::Unlocked, marker::Unknown>,
+    lock_leaf: impl Fn(
+        NodeRef<K, V, marker::Unlocked, marker::Leaf>,
+    ) -> NodeRef<K, V, LeafLockState, marker::Leaf>,
+    unlock_leaf: impl Fn(
+        NodeRef<K, V, LeafLockState, marker::Leaf>,
+    ) -> NodeRef<K, V, marker::Unlocked, marker::Leaf>,
+) -> Result<NodeRef<K, V, LeafLockState, marker::Leaf>, ()> {
     retry::<_, _, _, 3>(|| {
         let locked_root = root.lock_optimistic()?;
         let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
@@ -59,40 +78,76 @@ pub fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
         while current_node.is_internal() {
             let locked_current_node = current_node.lock_optimistic()?.assert_internal();
             prev_node.unlock_optimistic()?;
-            current_node =
-                NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
+            current_node = descend(locked_current_node);
             prev_node = locked_current_node.erase_node_type();
         }
-
-        let leaf = current_node.lock_exclusive().assert_leaf();
+        let leaf = lock_leaf(current_node.assert_leaf());
         match prev_node.unlock_optimistic() {
             Ok(_) => Ok(leaf),
             Err(_) => {
-                leaf.unlock_exclusive();
+                unlock_leaf(leaf);
                 Err(())
             }
         }
     })
 }
 
-pub fn get_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(
-    locked_root: NodeRef<K, V, marker::Shared, marker::Root>,
-    search_key: &K,
-) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
+fn do_shared_search<K: BTreeKey, V: BTreeValue, LeafLockState: LockState>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+    descend: impl Fn(
+        NodeRef<K, V, marker::Shared, marker::Internal>,
+    ) -> NodeRef<K, V, marker::Unlocked, marker::Unknown>,
+    lock_leaf: impl Fn(
+        NodeRef<K, V, marker::Unlocked, marker::Leaf>,
+    ) -> NodeRef<K, V, LeafLockState, marker::Leaf>,
+) -> NodeRef<K, V, LeafLockState, marker::Leaf> {
+    let locked_root = root.lock_shared();
     let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
-
     let mut prev_node = locked_root.erase_node_type();
     let mut current_node = top_of_tree;
     while current_node.is_internal() {
         let locked_current_node = current_node.lock_shared().assert_internal();
         prev_node.unlock_shared();
-        current_node = NodeRef::from_unknown_node_ptr(locked_current_node.find_child(search_key));
+        current_node = descend(locked_current_node);
         prev_node = locked_current_node.erase_node_type();
     }
-
-    let leaf = current_node.lock_exclusive().assert_leaf();
+    let leaf = lock_leaf(current_node.assert_leaf());
     prev_node.unlock_shared();
     leaf
+}
+
+pub fn get_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+    search_key: &K,
+) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
+    do_shared_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.find_child(search_key)),
+        |node| node.lock_shared(),
+    )
+}
+
+pub fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+    search_key: &K,
+) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.find_child(search_key)),
+        |node| node.lock_exclusive(),
+        |node| node.unlock_exclusive(),
+    )
+}
+
+pub fn get_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+    search_key: &K,
+) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
+    do_shared_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.find_child(search_key)),
+        |node| node.lock_exclusive(),
+    )
 }
 
 pub fn get_leaf_exclusively_using_exclusive_search<K: BTreeKey, V: BTreeValue>(
@@ -154,10 +209,47 @@ pub fn get_leaf_exclusively_using_exclusive_search<K: BTreeKey, V: BTreeValue>(
         }
         current_node = search.peek_lowest();
     }
-    debug_println!(
-        "find_leaf {:?} found {:?}",
-        search_key,
-        search.peek_lowest()
-    );
     search
+}
+
+pub fn get_first_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_first_child()),
+        |node| node.lock_exclusive(),
+        |node| node.unlock_exclusive(),
+    )
+}
+
+pub fn get_first_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
+    do_shared_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_first_child()),
+        |node| node.lock_exclusive(),
+    )
+}
+
+pub fn get_last_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_last_child()),
+        |node| node.lock_exclusive(),
+        |node| node.unlock_exclusive(),
+    )
+}
+
+pub fn get_last_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
+    do_shared_search(
+        root,
+        |node| NodeRef::from_unknown_node_ptr(node.get_last_child()),
+        |node| node.lock_exclusive(),
+    )
 }

@@ -74,8 +74,24 @@ impl HybridLatch {
         self.rw_lock.lock_shared();
     }
 
+    pub fn try_lock_shared(&self) -> Result<(), ()> {
+        if self.rw_lock.try_lock_shared() {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
     pub fn lock_exclusive(&self) {
         self.rw_lock.lock_exclusive();
+    }
+
+    pub fn try_lock_exclusive(&self) -> Result<(), ()> {
+        if self.rw_lock.try_lock_exclusive() {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 
     pub fn unlock_shared(&self) {

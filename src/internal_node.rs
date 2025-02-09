@@ -111,6 +111,15 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
             .insert_child_with_split_key(key, new_child, insertion_point);
     }
 
+    pub fn get_first_child(&self) -> NodePtr {
+        self.storage.get_child(0)
+    }
+
+    pub fn get_last_child(&self) -> NodePtr {
+        // there's always (keys + 1) children
+        self.storage.get_child(self.num_keys())
+    }
+
     pub fn find_child(&self, search_key: &K) -> NodePtr {
         let index = match self.storage.binary_search_keys(search_key) {
             Ok(index) => index + 1,
