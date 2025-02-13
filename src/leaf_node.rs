@@ -62,17 +62,19 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         self.storage.binary_search_keys(search_key)
     }
 
-    pub fn get(&self, search_key: &K) -> Option<*const V> {
+    pub fn get(&self, search_key: &K) -> Option<(GracefulArc<K>, *const V)> {
         debug_println!("LeafNode get {:?}", search_key);
         match self.binary_search_key(search_key) {
-            Ok(index) => Some(self.storage.values()[index].load(Ordering::Relaxed) as *const V),
+            Ok(index) => Some((
+                self.storage.keys()[index].load(Ordering::Relaxed),
+                self.storage.values()[index].load(Ordering::Relaxed) as *const V,
+            )),
             Err(_) => {
                 debug_println!("LeafNode get {:?} not found", search_key);
                 None
             }
         }
     }
-
     pub fn insert(&mut self, key_to_insert: GracefulArc<K>, value: *mut V) {
         match self.binary_search_key(&*key_to_insert) {
             Ok(index) => {

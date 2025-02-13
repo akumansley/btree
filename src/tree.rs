@@ -4,6 +4,7 @@ use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
 use crate::debug_println;
 use crate::graceful_pointers::GracefulArc;
+use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
 use crate::node::{debug_assert_no_locks_held, debug_assert_one_shared_lock_held};
 use crate::node_ptr::{marker, DiscriminatedNode, NodeRef};
 use crate::reference::Ref;
@@ -54,7 +55,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             get_leaf_shared_using_optimistic_search(self.root.as_node_ref(), search_key)
         {
             match leaf_node_shared.get(search_key) {
-                Some(v_ptr) => return Some(Ref::new(leaf_node_shared, v_ptr)),
+                Some((_, v_ptr)) => return Some(Ref::new(leaf_node_shared, v_ptr)),
                 None => {
                     leaf_node_shared.unlock_shared();
                     return None;
@@ -68,7 +69,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         debug_println!("top-level get {:?} done", search_key);
         debug_assert_one_shared_lock_held();
         match leaf_node_shared.get(search_key) {
-            Some(v_ptr) => Some(Ref::new(leaf_node_shared, v_ptr)),
+            Some((_, v_ptr)) => Some(Ref::new(leaf_node_shared, v_ptr)),
             None => {
                 leaf_node_shared.unlock_shared();
                 None
@@ -240,6 +241,14 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             _ => unreachable!(),
         }
         root.unlock_shared();
+    }
+
+    pub fn iter(&self) -> ForwardBTreeIterator<K, V> {
+        BTreeIterator::new(self)
+    }
+
+    pub fn iter_rev(&self) -> BackwardBTreeIterator<K, V> {
+        BTreeIterator::new(self)
     }
 
     pub fn cursor(&self) -> Cursor<K, V> {

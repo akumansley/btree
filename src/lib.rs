@@ -5,6 +5,7 @@ pub mod debug;
 pub mod graceful_pointers;
 pub mod hybrid_latch;
 pub mod internal_node;
+pub mod iter;
 pub mod leaf_node;
 pub mod node;
 pub mod node_ptr;

@@ -139,7 +139,7 @@ impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulArc<T> {
     }
 }
 
-struct GracefulArcInner<T: Send + 'static> {
+pub struct GracefulArcInner<T: Send + 'static> {
     ref_count: AtomicUsize,
     inner: T,
 }
@@ -158,11 +158,11 @@ impl<T: Send + 'static> GracefulArc<T> {
             phantom: PhantomData,
         }
     }
-    fn as_ptr(&self) -> *mut GracefulArcInner<T> {
+    pub fn as_ptr(&self) -> *mut GracefulArcInner<T> {
         self.inner.as_ptr()
     }
     pub fn as_ref(&self) -> &T {
-        &*self
+        &unsafe { &*self.inner.as_ptr() }.inner
     }
     pub fn new(inner: T) -> Self {
         let inner = Box::new(GracefulArcInner {
