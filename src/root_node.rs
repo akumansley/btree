@@ -1,9 +1,9 @@
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
-use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::debug_println;
+use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::node::{Height, NodeHeader};
 use crate::node_ptr::{marker, DiscriminatedNode, NodePtr, NodeRef};
@@ -21,7 +21,7 @@ pub struct RootNode<K: BTreeKey, V: BTreeValue> {
 }
 
 pub struct RootNodeInner<K: BTreeKey, V: BTreeValue> {
-    pub top_of_tree: NodePtr,
+    pub top_of_tree: AtomicPtr<NodeHeader>,
     phantom: PhantomData<(K, V)>,
 }
 
@@ -29,17 +29,15 @@ impl<K: BTreeKey, V: BTreeValue> Drop for RootNodeInner<K, V> {
     fn drop(&mut self) {
         let top_of_tree_ref =
             NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
-                self.top_of_tree,
+                NodePtr::from_raw_ptr(self.top_of_tree.load(Ordering::Relaxed)),
             );
         match top_of_tree_ref.force() {
             DiscriminatedNode::Leaf(leaf) => unsafe {
-                ptr::drop_in_place(leaf.to_raw_leaf_ptr());
+                drop(Box::from_raw(leaf.to_raw_leaf_ptr()));
             },
             DiscriminatedNode::Internal(internal) => {
                 let internal_node_ptr = internal.to_raw_internal_ptr();
-                unsafe {
-                    internal_node_ptr.as_ref().unwrap().drop_node_recursively();
-                }
+                unsafe { InternalNode::drop_node_recursively(internal_node_ptr) };
             }
             _ => panic!("RootNodeInner::drop: top_of_tree is not a leaf or internal node"),
         }
@@ -51,7 +49,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         RootNode {
             header: NodeHeader::new(Height::Root),
             inner: UnsafeCell::new(RootNodeInner {
-                top_of_tree: NodePtr(NonNull::new(top_of_tree as *mut NodeHeader).unwrap()),
+                top_of_tree: AtomicPtr::new(top_of_tree as *mut NodeHeader),
                 phantom: PhantomData,
             }),
             len: AtomicUsize::new(0),
@@ -69,7 +67,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         println!("| Tree length: {}      |", self.len.load(Ordering::Relaxed));
         println!("+----------------------+");
         match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
-            root.top_of_tree,
+            NodePtr::from_raw_ptr(root.top_of_tree.load(Ordering::Relaxed)),
         )
         .force()
         {
@@ -92,7 +90,7 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
         debug_println!("checking invariants");
         let root = self.as_node_ref().lock_shared();
         match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
-            root.top_of_tree,
+            NodePtr::from_raw_ptr(root.top_of_tree.load(Ordering::Relaxed)),
         )
         .force()
         {
@@ -109,5 +107,10 @@ impl<K: BTreeKey, V: BTreeValue> RootNode<K, V> {
             _ => unreachable!(),
         }
         root.unlock_shared();
+    }
+}
+impl<K: BTreeKey, V: BTreeValue> RootNodeInner<K, V> {
+    pub fn top_of_tree(&self) -> NodePtr {
+        NodePtr::from_raw_ptr(self.top_of_tree.load(Ordering::Relaxed))
     }
 }

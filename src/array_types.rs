@@ -91,7 +91,15 @@ impl<const CAPACITY: usize, T: Send + 'static, P: GracefulAtomicPointer<T>>
         }
     }
 
-    fn set(&self, index: usize, ptr: P::GracefulPointer) -> P::GracefulPointer {
+    fn set(&self, index: usize, ptr: P::GracefulPointer) {
+        unsafe {
+            self.array
+                .get_unchecked(index)
+                .assume_init_ref()
+                .store(ptr, Ordering::Relaxed);
+        }
+    }
+    fn replace(&self, index: usize, ptr: P::GracefulPointer) -> P::GracefulPointer {
         unsafe {
             self.array
                 .get_unchecked(index)
@@ -152,6 +160,16 @@ pub struct InternalNodeStorage<
     children: NodeStorageArray<CAPACITY_PLUS_ONE, NodeHeader, AtomicPtr<NodeHeader>>,
     num_keys: AtomicUsize,
     phantom: PhantomData<V>,
+}
+
+impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTreeValue> Drop
+    for InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
+{
+    fn drop(&mut self) {
+        for key in self.keys.iter(self.num_keys()) {
+            unsafe { key.decrement_ref_count_and_drop_if_zero() };
+        }
+    }
 }
 
 impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTreeValue>
@@ -348,6 +366,21 @@ pub struct LeafNodeStorage<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> {
     num_keys: AtomicUsize,
 }
 
+impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> Drop for LeafNodeStorage<CAPACITY, K, V> {
+    fn drop(&mut self) {
+        let num_keys = self.num_keys();
+        for i in 0..num_keys {
+            unsafe {
+                let key = self.keys.get(i, num_keys);
+                key.decrement_ref_count_and_drop_if_zero();
+
+                let value = self.values.get(i, num_keys);
+                drop(Box::from_raw(value));
+            }
+        }
+    }
+}
+
 impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY, K, V> {
     pub fn new() -> Self {
         Self {
@@ -425,10 +458,10 @@ impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY
     }
 
     pub fn set(&self, index: usize, value: *mut V) -> *mut V {
-        let old_value = self.values.set(index, value);
         if index < self.num_keys() {
-            old_value
+            self.values.replace(index, value)
         } else {
+            self.values.set(index, value);
             ptr::null_mut()
         }
     }

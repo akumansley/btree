@@ -100,7 +100,6 @@ impl<K: BTreeKey, V: BTreeValue> SearchDequeue<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use std::ptr;
 
     use super::*;
     use crate::{
@@ -128,7 +127,7 @@ mod tests {
         assert_eq!(dequeue.len(), 0);
         assert!(popped_node.is_leaf());
         unsafe {
-            ptr::drop_in_place(popped_node.assert_leaf().to_raw_leaf_ptr());
+            drop(Box::from_raw(popped_node.assert_leaf().to_raw_leaf_ptr()));
         }
     }
 
@@ -144,7 +143,7 @@ mod tests {
         dequeue.pop_lowest();
         assert!(dequeue.is_empty());
         unsafe {
-            ptr::drop_in_place(node_ptr.to_raw_leaf_ptr());
+            drop(Box::from_raw(node_ptr.to_raw_leaf_ptr()));
         }
     }
 
@@ -166,7 +165,7 @@ mod tests {
         dequeue.pop_lowest();
         assert_eq!(dequeue.len(), 0);
         unsafe {
-            ptr::drop_in_place(node_ptr.to_raw_leaf_ptr());
+            drop(Box::from_raw(node_ptr.to_raw_leaf_ptr()));
         }
     }
 }

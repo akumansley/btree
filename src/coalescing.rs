@@ -1,11 +1,13 @@
 use crate::array_types::{MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE};
 use crate::debug_println;
+use crate::graceful_pointers::GracefulBox;
 use crate::internal_node::InternalNodeInner;
 use crate::leaf_node::LeafNodeInner;
 use crate::node_ptr::{marker, NodeRef};
+use crate::qsbr::qsbr_reclaimer;
 use crate::search_dequeue::SearchDequeue;
 use crate::tree::{BTreeKey, BTreeValue};
-use std::ptr;
+use std::sync::atomic::Ordering;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum UnderfullNodePosition {
@@ -207,14 +209,16 @@ pub fn adjust_top_of_tree<K: BTreeKey, V: BTreeValue>(
         debug_println!("top_of_tree is an internal node");
         let top_of_tree = top_of_tree.assert_internal();
         if top_of_tree.num_keys() == 0 {
-            let mut root = search_stack.pop_lowest().assert_root().assert_exclusive();
+            let root = search_stack.pop_lowest().assert_root().assert_exclusive();
             debug_println!("top_of_tree is an internal node with one child");
             let new_top_of_tree = top_of_tree.storage.get_child(0);
-            root.top_of_tree = new_top_of_tree;
-            top_of_tree.unlock_exclusive();
-            unsafe {
-                ptr::drop_in_place(top_of_tree.to_raw_internal_ptr());
-            }
+            root.top_of_tree
+                .store(new_top_of_tree.as_raw_ptr(), Ordering::Relaxed);
+            top_of_tree.retire();
+            let top_of_tree_box = GracefulBox::new(top_of_tree.to_raw_internal_ptr());
+            qsbr_reclaimer().add_callback(Box::new(move || {
+                drop(top_of_tree_box);
+            }));
             root.unlock_exclusive();
         } else {
             debug_println!("top_of_tree is an internal node with multiple children -- we're done");

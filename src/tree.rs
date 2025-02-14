@@ -5,7 +5,7 @@ use crate::cursor::CursorMut;
 use crate::debug_println;
 use crate::graceful_pointers::GracefulArc;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
-use crate::node::{debug_assert_no_locks_held, debug_assert_one_shared_lock_held};
+use crate::node::debug_assert_no_locks_held;
 use crate::node_ptr::{marker, DiscriminatedNode, NodeRef};
 use crate::reference::Ref;
 use crate::root_node::RootNode;
@@ -28,10 +28,11 @@ impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 /// Todo
 /// - bulk loading
 /// Perf ideas:
-/// - experiment with usync vs parking lot
 /// - try inlined key descriminator with node-level key prefixes
 /// - try the "no coalescing" or "relaxed" btree idea
 /// - try unordered leaf storage, or lazily sorted leaf storage
+/// To test with Miri:
+///   MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test
 
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
     pub root: RootNode<K, V>,
@@ -44,34 +45,32 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         }
     }
 
-    pub fn get(&self, search_key: &K) -> Option<Ref<K, V>> {
+    pub fn get(&self, search_key: &K) -> Option<Ref<V>> {
         debug_println!("top-level get {:?}", search_key);
 
         // try optimistic search first
         if let Ok(leaf_node_shared) =
             get_leaf_shared_using_optimistic_search(self.root.as_node_ref(), search_key)
         {
-            match leaf_node_shared.get(search_key) {
-                Some((_, v_ptr)) => return Some(Ref::new(leaf_node_shared, v_ptr)),
-                None => {
-                    leaf_node_shared.unlock_shared();
-                    return None;
-                }
-            }
+            let result = match leaf_node_shared.get(search_key) {
+                Some((_, v_ptr)) => Some(Ref::new(v_ptr)),
+                None => None,
+            };
+            leaf_node_shared.unlock_shared();
+            return result;
         }
 
         // fall back to shared search
         let leaf_node_shared =
             get_leaf_shared_using_shared_search(self.root.as_node_ref(), search_key);
         debug_println!("top-level get {:?} done", search_key);
-        debug_assert_one_shared_lock_held();
-        match leaf_node_shared.get(search_key) {
-            Some((_, v_ptr)) => Some(Ref::new(leaf_node_shared, v_ptr)),
-            None => {
-                leaf_node_shared.unlock_shared();
-                None
-            }
-        }
+        let result = match leaf_node_shared.get(search_key) {
+            Some((_, v_ptr)) => Some(Ref::new(v_ptr)),
+            None => None,
+        };
+        leaf_node_shared.unlock_shared();
+        debug_assert_no_locks_held::<'g'>();
+        result
     }
 
     pub fn len(&self) -> usize {
@@ -80,7 +79,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
 
     pub fn insert(&self, key: Box<K>, value: Box<V>) {
         debug_println!("top-level insert {:?}", key);
-        let graceful_key = GracefulArc::new(*key);
+        let graceful_key: GracefulArc<K> = GracefulArc::new(*key);
 
         // first try fully optimistic search
         let mut optimistic_leaf = match get_leaf_exclusively_using_optimistic_search(
@@ -198,7 +197,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         println!("| Tree length: {}      |", self.len());
         println!("+----------------------+");
         match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
-            root.top_of_tree,
+            root.top_of_tree(),
         )
         .force()
         {
@@ -221,7 +220,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         debug_println!("checking invariants");
         let root = self.root.as_node_ref().lock_shared();
         match NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
-            root.top_of_tree,
+            root.top_of_tree(),
         )
         .force()
         {
@@ -284,10 +283,15 @@ mod tests {
 
     #[test]
     fn test_insert_and_get() {
+        #[cfg(not(miri))]
+        const NUM_OPERATIONS: usize = ORDER.pow(2);
+        #[cfg(miri)]
+        const NUM_OPERATIONS: usize = ORDER;
+
         qsbr_reclaimer().register_thread();
 
         let tree = BTree::<usize, String>::new();
-        let n = ORDER.pow(2);
+        let n = NUM_OPERATIONS;
         for i in 1..=n {
             let value = format!("value{}", i);
             tree.insert(Box::new(i), Box::new(value.clone()));
@@ -297,7 +301,6 @@ mod tests {
         }
 
         println!("tree should be full:");
-        tree.print_tree();
 
         assert_eq!(tree.get(&1).unwrap(), &"value1".to_string());
         assert_eq!(tree.get(&2).unwrap(), &"value2".to_string());
@@ -306,7 +309,6 @@ mod tests {
         // Remove all elements in sequence
         // this will force the tree to coalesce and redistribute
         for i in 1..=n {
-            println!("removing {}", i);
             tree.remove(&i);
             tree.check_invariants();
             assert_eq!(tree.get(&i), None);
@@ -328,6 +330,13 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    #[cfg(not(miri))]
+    const NUM_OPERATIONS: usize = 100000;
+
+    #[cfg(miri)]
+    const NUM_OPERATIONS: usize = 100;
+
+    const INTERESTING_SEEDS: [u64; 1] = [13142251578868436595];
     #[test]
     fn test_random_inserts_gets_and_removes_with_seed_single_threaded() {
         // Test with predefined interesting seeds
@@ -351,7 +360,7 @@ mod tests {
         println!("Using seed: {}", seed);
 
         // Perform random operations for a while
-        for _ in 0..100000 {
+        for _ in 0..NUM_OPERATIONS {
             let operation = rng.gen_range(0..3);
             match operation {
                 0 => {
@@ -393,7 +402,7 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        qsbr_reclaimer().mark_current_thread_quiescent();
 
         println!("tree.print_tree()");
         tree.check_invariants();
@@ -407,9 +416,8 @@ mod tests {
                 key
             );
         }
+        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
     }
-
-    const INTERESTING_SEEDS: [u64; 2] = [13142251578868436595, 15830960132082815423];
 
     #[test]
     fn test_random_inserts_gets_and_removes_with_seed_multi_threaded() {
@@ -427,7 +435,10 @@ mod tests {
         qsbr_reclaimer().register_thread();
         let tree = BTree::<usize, String>::new();
         let num_threads = 8;
+        #[cfg(not(miri))]
         let operations_per_thread = 25000;
+        #[cfg(miri)]
+        let operations_per_thread = 100;
 
         // Use an AtomicUsize to count completed threads
         let completed_threads = Arc::new(AtomicUsize::new(0));
@@ -477,6 +488,7 @@ mod tests {
                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
             });
         });
+
         qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
     }
 }

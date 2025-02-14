@@ -14,7 +14,7 @@ use crate::{
     tree::{BTreeKey, BTreeValue, ModificationType},
     util::UnwrapEither,
 };
-use std::{cell::UnsafeCell, marker::PhantomData, ptr};
+use std::{cell::UnsafeCell, marker::PhantomData};
 
 // this is the shared node data
 pub struct InternalNodeInner<K: BTreeKey, V: BTreeValue> {
@@ -42,27 +42,25 @@ impl<K: BTreeKey, V: BTreeValue> InternalNode<K, V> {
 
     /// SAFETY: this is only safe to call when dropping the entire tree
     /// and there are no other live references to any data in the tree -- we don't take locks
-    pub unsafe fn drop_node_recursively(&self) {
-        let height = self.header.height();
-        let child_height = height.one_level_lower();
+    pub unsafe fn drop_node_recursively(node: *mut InternalNode<K, V>) {
         unsafe {
-            for child in (*self.inner.get()).storage.iter_children() {
+            let height = (*node).header.height();
+            let child_height = height.one_level_lower();
+            for child in (*(*node).inner.get()).storage.iter_children() {
                 let child_ref =
                     NodeRef::<K, V, marker::Unlocked, marker::Unknown>::from_unknown_node_ptr(
                         child,
                     );
                 if child_height.is_internal() {
                     let child_ref = child_ref.assert_internal();
-                    (*child_ref.to_raw_internal_ptr()).drop_node_recursively();
+                    InternalNode::drop_node_recursively(child_ref.to_raw_internal_ptr());
                 } else {
                     let child_ref = child_ref.assert_leaf();
-                    ptr::drop_in_place(child_ref.to_raw_leaf_ptr());
+                    drop(Box::from_raw(child_ref.to_raw_leaf_ptr()));
                 }
             }
         }
-        unsafe {
-            ptr::drop_in_place(self as *const _ as *mut InternalNode<K, V>);
-        }
+        drop(Box::from_raw(node));
     }
 }
 
@@ -222,7 +220,7 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
         (neighbor_ref.assert_leaf(), direction)
     }
 
-    pub(crate) fn remove(&mut self, child: NodePtr) {
+    pub(crate) fn remove(&mut self, child: NodePtr) -> GracefulArc<K> {
         debug_println!(
             "removing child {:?} from internal node {:?}",
             child,
@@ -234,10 +232,10 @@ impl<K: BTreeKey, V: BTreeValue> InternalNodeInner<K, V> {
             .position(|c| c == child)
             .unwrap();
 
-        self.storage.remove_child_at_index(index);
-
+        let (key, _) = self.storage.remove_child_at_index(index);
         // we don't remove the leftmost element
         debug_assert!(index > 0);
+        key
     }
 
     pub(crate) fn move_from_right_neighbor_into_left_node(

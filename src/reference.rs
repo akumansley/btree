@@ -2,32 +2,23 @@ use std::fmt::{Debug, Display};
 use std::ops::Deref;
 
 use crate::graceful_pointers::GracefulArc;
-use crate::node_ptr::{marker, NodeRef};
 use crate::tree::{BTreeKey, BTreeValue};
 
-pub struct Ref<K: BTreeKey, V: BTreeValue> {
-    _leaf: NodeRef<K, V, marker::Shared, marker::Leaf>,
+pub struct Ref<V: BTreeValue> {
     value: *const V,
     _phantom: std::marker::PhantomData<V>,
 }
 
-impl<K: BTreeKey, V: BTreeValue> Ref<K, V> {
-    pub fn new(leaf: NodeRef<K, V, marker::Shared, marker::Leaf>, value: *const V) -> Self {
+impl<V: BTreeValue> Ref<V> {
+    pub fn new(value: *const V) -> Self {
         Ref {
-            _leaf: leaf,
             value,
             _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<K: BTreeKey, V: BTreeValue> Drop for Ref<K, V> {
-    fn drop(&mut self) {
-        self._leaf.unlock_shared();
-    }
-}
-
-impl<K: BTreeKey, V: BTreeValue> Deref for Ref<K, V> {
+impl<V: BTreeValue> Deref for Ref<V> {
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
@@ -35,19 +26,19 @@ impl<K: BTreeKey, V: BTreeValue> Deref for Ref<K, V> {
     }
 }
 
-impl<K: BTreeKey, V: BTreeValue> Debug for Ref<K, V> {
+impl<V: BTreeValue> Debug for Ref<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.deref())
     }
 }
 
-impl<K: BTreeKey, V: BTreeValue> Display for Ref<K, V> {
+impl<V: BTreeValue> Display for Ref<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.deref())
     }
 }
 
-impl<K: BTreeKey, V: BTreeValue> PartialEq for Ref<K, V>
+impl<V: BTreeValue> PartialEq for Ref<V>
 where
     V: PartialEq,
 {
@@ -56,7 +47,7 @@ where
     }
 }
 
-impl<K: BTreeKey, V: BTreeValue> PartialEq<&V> for Ref<K, V>
+impl<V: BTreeValue> PartialEq<&V> for Ref<V>
 where
     V: PartialEq,
 {

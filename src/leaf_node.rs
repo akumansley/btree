@@ -80,10 +80,10 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
             Ok(index) => {
                 let old_value = self.storage.set(index, value);
                 if old_value != ptr::null_mut() {
-                    // we always use share locks for leaf nodes, so this is safe to drop immediately
-                    unsafe {
-                        ptr::drop_in_place(old_value);
-                    }
+                    let value_box = GracefulBox::new(old_value);
+                    qsbr_reclaimer().add_callback(Box::new(move || {
+                        drop(value_box);
+                    }));
                 }
                 // no need to qsbr this key -- it can't have been published yet
                 unsafe {
@@ -99,11 +99,12 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
     pub fn remove(&mut self, key: &K) -> bool {
         match self.binary_search_key(key) {
             Ok(index) => {
-                let (key, value) = self.storage.remove(index);
-                unsafe {
-                    key.drop_in_place();
-                    ptr::drop_in_place(value);
-                }
+                let (stored_key, value) = self.storage.remove(index);
+                stored_key.decrement_ref_count();
+                let value_box = GracefulBox::new(value);
+                qsbr_reclaimer().add_callback(Box::new(move || {
+                    drop(value_box);
+                }));
                 true
             }
             Err(_) => false,
@@ -157,10 +158,10 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         }
 
         to.storage.extend(from.storage.drain());
-        parent.remove(from.node_ptr());
-        // TODO: make sure there's no live sibling reference to left
-        // when we implement concurrency
+        let key = parent.remove(from.node_ptr());
+        key.decrement_ref_count();
         // retire the leaf -- this ensures that any optimistic readers will fail
+        // we've already drained it, so any moved keys won't be freed (which is what we want)
         from.retire();
         // qsbr-drop the leaf
         let from_box = GracefulBox::new(from.to_raw_leaf_ptr());
@@ -177,7 +178,6 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         debug_println!("LeafNode move_last_to_front_of");
 
         let (last_key, last_value) = left.storage.pop();
-
         right
             .storage
             .insert(last_key.clone_and_increment_ref_count(), last_value, 0);
@@ -203,7 +203,6 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         let new_split_key = right.storage.keys()[0]
             .load(Ordering::Relaxed)
             .clone_and_increment_ref_count();
-
         // and we need to decrement the ref count on the old key
         let old_key = parent.update_split_key(right.node_ptr(), new_split_key);
         old_key.decrement_ref_count();

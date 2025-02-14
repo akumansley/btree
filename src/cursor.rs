@@ -64,8 +64,8 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
     }
 
     fn seek_from_top(&mut self, key: &K) {
-        if let Some(leaf) = self.current_leaf.as_ref() {
-            leaf.unlock_shared();
+        if self.current_leaf.is_some() {
+            self.current_leaf.take().unwrap().unlock_shared();
         }
         let leaf = match get_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref(), key)
         {
@@ -90,37 +90,26 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
     }
 
     pub fn move_next(&mut self) -> bool {
-        println!("moving next");
         loop {
             if self.current_leaf.is_none() {
-                println!("current_leaf is None");
                 return false;
             }
             let leaf = self.current_leaf.unwrap();
             if self.current_index < leaf.num_keys() - 1 {
                 self.current_index += 1;
-                println!(
-                    "moving to next key in current leaf -- index is {}",
-                    self.current_index
-                );
                 return true;
             }
 
             // Move to next leaf
             let maybe_next_leaf = leaf.next_leaf();
             if maybe_next_leaf.is_none() {
-                println!("no next leaf");
                 self.current_leaf.take().unwrap().unlock_shared();
                 return false;
             }
 
             let next_leaf = match maybe_next_leaf.unwrap().try_lock_shared() {
-                Ok(leaf) => {
-                    println!("got lock on next leaf");
-                    leaf
-                }
+                Ok(leaf) => leaf,
                 Err(_) => {
-                    println!("next_leaf lock failed - reseeking");
                     // we didn't attain the lock, so restart from the top
                     // to the current key
                     let key = leaf.storage.get_key(self.current_index);
@@ -128,7 +117,6 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
                     return self.move_next();
                 }
             };
-            println!("locked next leaf -- advancing to it");
             self.current_leaf.take().unwrap().unlock_shared();
             self.current_leaf = Some(next_leaf);
             self.current_index = 0;
@@ -233,8 +221,8 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
     }
 
     fn seek_from_top(&mut self, key: &K) {
-        if let Some(leaf) = self.current_leaf.as_ref() {
-            leaf.unlock_exclusive();
+        if self.current_leaf.is_some() {
+            self.current_leaf.take().unwrap().unlock_exclusive();
         }
         let leaf =
             match get_leaf_exclusively_using_optimistic_search(self.tree.root.as_node_ref(), key) {
@@ -263,12 +251,10 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
     pub fn move_next(&mut self) -> bool {
         loop {
             if let None = self.current_leaf {
-                println!("current_leaf is None");
                 return false;
             }
             let leaf = self.current_leaf.unwrap();
             if self.current_index < leaf.num_keys() - 1 {
-                println!("moving to next key in current leaf");
                 self.current_index += 1;
                 return true;
             }
@@ -276,18 +262,13 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
             // Move to next leaf
             let maybe_next_leaf = leaf.next_leaf();
             if maybe_next_leaf.is_none() {
-                println!("no next leaf");
                 self.current_leaf.take().unwrap().unlock_exclusive();
                 return false;
             }
 
             let next_leaf = match maybe_next_leaf.unwrap().try_lock_exclusive() {
-                Ok(leaf) => {
-                    println!("got lock on next leaf");
-                    leaf
-                }
+                Ok(leaf) => leaf,
                 Err(_) => {
-                    println!("failed to get lock on next leaf");
                     // we didn't attain the lock, so restart from the top
                     // to the current key
                     let key = leaf.storage.get_key(self.current_index);
@@ -295,7 +276,6 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
                     return self.move_next();
                 }
             };
-            println!("locked next leaf -- advancing to it");
             self.current_leaf.take().unwrap().unlock_exclusive();
             self.current_leaf = Some(next_leaf);
             self.current_index = 0;
@@ -321,7 +301,6 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
                 let prev_leaf = match maybe_prev_leaf.unwrap().try_lock_exclusive() {
                     Ok(leaf) => leaf,
                     Err(_) => {
-                        println!("prev_leaf lock failed - reseeking");
                         // we didn't attain the lock, so restart from the top
                         // to the current key
                         let key = leaf.storage.get_key(self.current_index);
@@ -583,14 +562,13 @@ mod tests {
             // First thread starts at end with mut cursor and moves backwards
             let tree_ref = &tree;
             let barrier_ref = &barrier;
-            let handle = s.spawn(move || {
+            s.spawn(move || {
                 qsbr_reclaimer().register_thread();
                 let mut cursor_mut = tree_ref.cursor_mut();
                 cursor_mut.seek_to_end();
 
                 // Wait for both cursors to be ready
                 barrier_ref.wait();
-                println!("writer past the barrier!");
 
                 // Move backwards and verify values
                 let mut expected = n - 1;
@@ -612,14 +590,13 @@ mod tests {
             // Second thread starts at beginning with shared cursor and moves forwards
             let tree_ref = &tree;
             let barrier_ref = &barrier;
-            let handle2 = s.spawn(move || {
+            s.spawn(move || {
                 qsbr_reclaimer().register_thread();
                 let mut cursor_shared = tree_ref.cursor();
                 cursor_shared.seek_to_start();
 
                 // Wait for both cursors to be ready
                 barrier_ref.wait();
-                println!("reader past the barrier!");
 
                 // Move forward and verify values
                 let mut expected = 0;
@@ -637,9 +614,6 @@ mod tests {
                 assert_eq!(expected, n - 1);
                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
             });
-
-            handle.join().unwrap();
-            handle2.join().unwrap();
         });
 
         qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();

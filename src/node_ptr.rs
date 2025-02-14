@@ -1,7 +1,8 @@
+use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 
 use crate::debug_println;
 use crate::hybrid_latch::LockInfo;
@@ -250,13 +251,8 @@ impl<K: BTreeKey, V: BTreeValue, N: NodeType> NodeRef<K, V, marker::Exclusive, N
             phantom: PhantomData,
         }
     }
-    pub fn retire(self) -> NodeRef<K, V, marker::Unlocked, N> {
+    pub fn retire(self) {
         self.header().retire();
-        NodeRef {
-            node: self.node,
-            lock_info: LockInfo::unlocked(),
-            phantom: PhantomData,
-        }
     }
 }
 
@@ -376,7 +372,7 @@ impl<K: BTreeKey, V: BTreeValue> Deref for NodeRef<K, V, marker::Exclusive, mark
 impl<K: BTreeKey, V: BTreeValue> DerefMut for NodeRef<K, V, marker::Exclusive, marker::Internal> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         let raw_ptr = self.to_raw_internal_ptr();
-        unsafe { &mut *(*raw_ptr).inner.get() }
+        unsafe { &mut *UnsafeCell::raw_get(ptr::addr_of!((*raw_ptr).inner)) }
     }
 }
 

@@ -1,7 +1,7 @@
 use std::{
     marker::PhantomData,
     ops::Deref,
-    ptr::{self, NonNull},
+    ptr::NonNull,
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
@@ -60,7 +60,7 @@ unsafe impl<T: Send + 'static> Send for GracefulBox<T> {}
 impl<T: Send + 'static> Drop for GracefulBox<T> {
     fn drop(&mut self) {
         unsafe {
-            ptr::drop_in_place(self.inner.as_ptr());
+            drop(Box::from_raw(self.inner.as_ptr()));
         }
     }
 }
@@ -105,7 +105,7 @@ impl<T: Send + 'static> AtomicGracefulBox<T> {
 
 pub struct AtomicGracefulArc<T: Send + 'static> {
     inner: AtomicPtr<GracefulArcInner<T>>,
-    phantom: PhantomData<T>,
+    phantom: PhantomData<GracefulArcInner<T>>,
 }
 
 impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulArc<T> {
@@ -114,7 +114,7 @@ impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulArc<T> {
     fn new(inner: T) -> Self {
         let inner = GracefulArcInner {
             ref_count: AtomicUsize::new(1),
-            inner,
+            data: inner,
         };
         let inner_ptr = Box::into_raw(Box::new(inner));
         AtomicGracefulArc {
@@ -139,13 +139,13 @@ impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulArc<T> {
     }
 }
 
-pub struct GracefulArcInner<T: Send + 'static> {
+pub struct GracefulArcInner<T: Send + 'static + ?Sized> {
     ref_count: AtomicUsize,
-    inner: T,
+    data: T,
 }
 
-pub struct GracefulArc<T: Send + 'static> {
-    inner: NonNull<GracefulArcInner<T>>,
+pub struct GracefulArc<T: Send + 'static + ?Sized> {
+    ptr_to_inner: NonNull<GracefulArcInner<T>>,
     phantom: PhantomData<T>,
 }
 
@@ -154,29 +154,29 @@ unsafe impl<T: Send + 'static> Send for GracefulArc<T> {}
 impl<T: Send + 'static> GracefulArc<T> {
     fn from_ptr(ptr: *mut GracefulArcInner<T>) -> Self {
         Self {
-            inner: unsafe { NonNull::new_unchecked(ptr) },
+            ptr_to_inner: unsafe { NonNull::new_unchecked(ptr) },
             phantom: PhantomData,
         }
     }
     pub fn as_ptr(&self) -> *mut GracefulArcInner<T> {
-        self.inner.as_ptr()
+        self.ptr_to_inner.as_ptr()
     }
     pub fn as_ref(&self) -> &T {
-        &unsafe { &*self.inner.as_ptr() }.inner
+        &unsafe { &*self.ptr_to_inner.as_ptr() }.data
     }
-    pub fn new(inner: T) -> Self {
-        let inner = Box::new(GracefulArcInner {
+    pub fn new(data: T) -> Self {
+        let ptr_to_inner = Box::into_raw(Box::new(GracefulArcInner {
             ref_count: AtomicUsize::new(1),
-            inner,
-        });
+            data,
+        }));
         Self {
-            inner: unsafe { NonNull::new_unchecked(Box::into_raw(inner)) },
+            ptr_to_inner: unsafe { NonNull::new_unchecked(ptr_to_inner) },
             phantom: PhantomData,
         }
     }
     pub fn clone_without_incrementing_ref_count(&self) -> Self {
         Self {
-            inner: unsafe { NonNull::new_unchecked(self.inner.as_ptr()) },
+            ptr_to_inner: unsafe { NonNull::new_unchecked(self.ptr_to_inner.as_ptr()) },
             phantom: PhantomData,
         }
     }
@@ -188,7 +188,7 @@ impl<T: Send + 'static> GracefulArc<T> {
         }
     }
     pub fn increment_ref_count(&self) -> bool {
-        let inner = self.inner.as_ptr();
+        let inner = self.ptr_to_inner.as_ptr();
 
         // need to use a CAS loop instead of fetch_add because we need to check if the ref_count is 0
         // in which case we can't increment it
@@ -215,22 +215,40 @@ impl<T: Send + 'static> GracefulArc<T> {
         }
     }
     pub fn decrement_ref_count(&self) {
-        let inner = self.inner.as_ptr();
+        let ptr_to_inner = self.ptr_to_inner.as_ptr();
         unsafe {
-            let old_ref_count = (*inner).ref_count.fetch_sub(1, Ordering::Relaxed);
+            let old_ref_count = (*ptr_to_inner).ref_count.fetch_sub(1, Ordering::Relaxed);
             if old_ref_count == 1 {
                 // there can be readers after this point, but there can't be any more references
-                let inner_box = GracefulBox::new(inner);
+                let inner_box = GracefulBox::new(ptr_to_inner);
                 qsbr_reclaimer().add_callback(Box::new(move || {
                     drop(inner_box);
                 }));
+            } else if old_ref_count == 0 {
+                panic!(
+                    "attempted to decrement the ref_count of a graceful arc at {:?} with a ref_count of 0",
+                    self.ptr_to_inner.as_ptr()
+                );
             }
         }
     }
-    pub unsafe fn drop_in_place(&self) {
-        let inner = self.inner.as_ptr();
+    pub unsafe fn decrement_ref_count_and_drop_if_zero(self) {
+        let inner = self.ptr_to_inner.as_ptr();
         unsafe {
-            ptr::drop_in_place(inner);
+            let old_ref_count = (*inner).ref_count.fetch_sub(1, Ordering::Relaxed);
+            if old_ref_count == 1 {
+                self.drop_in_place();
+            } else if old_ref_count == 0 {
+                panic!(
+                    "attempted to decrement the ref_count of a graceful arc with a ref_count of 0"
+                );
+            }
+        }
+    }
+
+    pub unsafe fn drop_in_place(self) {
+        unsafe {
+            drop(Box::from_raw(self.ptr_to_inner.as_ptr()));
         }
     }
 }
@@ -239,7 +257,40 @@ impl<T: Send + 'static> Deref for GracefulArc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        let inner = self.inner.as_ptr();
-        unsafe { &(*inner).inner }
+        let inner = self.ptr_to_inner.as_ptr();
+        unsafe { &(*inner).data }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::qsbr::qsbr_reclaimer;
+
+    #[test]
+    fn test_graceful_arc_ref_counting() {
+        qsbr_reclaimer().register_thread();
+
+        // Create a new GracefulArc
+        let input = Box::new(42);
+        let arc1 = GracefulArc::new(*input);
+        assert_eq!(*arc1, 42);
+
+        // Test clone_and_increment_ref_count -- we're at 2
+        let arc2 = arc1.clone_and_increment_ref_count();
+        assert_eq!(*arc2, 42);
+
+        // Test clone_without_incrementing_ref_count -- we're at 2
+        let arc3 = arc2.clone_without_incrementing_ref_count();
+        assert_eq!(*arc3, 42);
+
+        // Test decrement_ref_count -- we're at 1
+        arc2.decrement_ref_count();
+
+        // Test decrement_ref_count_and_drop_if_zero -- we're at 0; we should
+        // drop the arcinner
+        unsafe { arc3.decrement_ref_count_and_drop_if_zero() };
+
+        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
     }
 }

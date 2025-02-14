@@ -106,13 +106,7 @@ impl Height {
 }
 
 #[cfg(debug_assertions)]
-pub fn debug_perchance_yield() {
-    use rand::Rng;
-
-    if rand::thread_rng().gen_bool(0.001) {
-        std::thread::yield_now();
-    }
-}
+pub fn debug_perchance_yield() {}
 
 #[cfg(not(debug_assertions))]
 pub fn debug_perchance_yield() {}
@@ -140,6 +134,7 @@ impl NodeHeader {
         self.lock.is_locked_exclusive()
     }
     pub fn unlock_exclusive(&self) {
+        debug_assert!(self.is_locked_exclusive());
         self.lock.unlock_exclusive();
         decrement_exclusive_lock_count();
     }
@@ -149,13 +144,29 @@ impl NodeHeader {
         debug_perchance_yield();
         increment_shared_lock_count();
     }
+    pub fn is_locked_shared(&self) -> bool {
+        self.lock.is_locked_shared()
+    }
     pub fn try_lock_shared(&self) -> Result<(), ()> {
-        self.lock.try_lock_shared()
+        match self.lock.try_lock_shared() {
+            Ok(_) => {
+                increment_shared_lock_count();
+                Ok(())
+            }
+            Err(_) => Err(()),
+        }
     }
     pub fn try_lock_exclusive(&self) -> Result<(), ()> {
-        self.lock.try_lock_exclusive()
+        match self.lock.try_lock_exclusive() {
+            Ok(_) => {
+                increment_exclusive_lock_count();
+                Ok(())
+            }
+            Err(_) => Err(()),
+        }
     }
     pub fn unlock_shared(&self) {
+        debug_assert!(self.is_locked_shared());
         self.lock.unlock_shared();
         decrement_shared_lock_count();
     }

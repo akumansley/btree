@@ -71,7 +71,7 @@ pub fn do_optimistic_search<K: BTreeKey, V: BTreeValue, LeafLockState: LockState
 ) -> Result<NodeRef<K, V, LeafLockState, marker::Leaf>, ()> {
     retry::<_, _, _, 3>(|| {
         let locked_root = root.lock_optimistic()?;
-        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
+        let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree());
 
         let mut prev_node = locked_root.erase_node_type();
         let mut current_node = top_of_tree;
@@ -102,7 +102,7 @@ fn do_shared_search<K: BTreeKey, V: BTreeValue, LeafLockState: LockState>(
     ) -> NodeRef<K, V, LeafLockState, marker::Leaf>,
 ) -> NodeRef<K, V, LeafLockState, marker::Leaf> {
     let locked_root = root.lock_shared();
-    let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
+    let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree());
     let mut prev_node = locked_root.erase_node_type();
     let mut current_node = top_of_tree;
     while current_node.is_internal() {
@@ -158,7 +158,7 @@ pub fn get_leaf_exclusively_using_exclusive_search<K: BTreeKey, V: BTreeValue>(
     let mut search = SearchDequeue::new();
 
     search.push_node_on_bottom(locked_root);
-    let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree);
+    let top_of_tree = NodeRef::from_unknown_node_ptr(locked_root.top_of_tree());
     let top_of_tree = top_of_tree.lock_exclusive();
     search.push_node_on_bottom(top_of_tree);
     match top_of_tree.force() {

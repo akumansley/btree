@@ -8,6 +8,7 @@ use crate::debug_println;
 use crate::graceful_pointers::GracefulArc;
 use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
+use crate::node::NodeHeader;
 use crate::node_ptr::{marker, NodePtr, NodeRef};
 use crate::search_dequeue::SearchDequeue;
 use crate::util::UnwrapEither;
@@ -79,7 +80,6 @@ pub fn insert_into_leaf_after_splitting<K, V>(
     // this clone is necessary because the key is moved into the parent
     // it's just a reference count increment, so it's relatively cheap
     let split_key = new_leaf.storage.get_key(0).clone_and_increment_ref_count();
-
     insert_into_parent(search_stack, leaf, split_key, new_leaf);
 }
 
@@ -204,7 +204,7 @@ pub fn insert_into_internal_node_after_splitting<K, V, ChildType: marker::NodeTy
 }
 
 pub fn insert_into_new_top_of_tree<K, V, N: marker::NodeType>(
-    mut root: NodeRef<K, V, marker::Exclusive, marker::Root>,
+    root: NodeRef<K, V, marker::Exclusive, marker::Root>,
     left: NodeRef<K, V, marker::Exclusive, N>,
     split_key: GracefulArc<K>,
     right: NodeRef<K, V, marker::Exclusive, N>,
@@ -221,7 +221,10 @@ pub fn insert_into_new_top_of_tree<K, V, N: marker::NodeType>(
     new_top_of_tree.storage.push_extra_child(left.node_ptr());
     new_top_of_tree.storage.push(split_key, right.node_ptr());
 
-    root.top_of_tree = new_top_of_tree.node_ptr();
+    root.top_of_tree.store(
+        new_top_of_tree.to_raw_internal_ptr() as *mut NodeHeader,
+        Ordering::Relaxed,
+    );
     root.unlock_exclusive();
     new_top_of_tree.unlock_exclusive();
     left.unlock_exclusive();

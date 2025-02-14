@@ -1,7 +1,8 @@
 use fxhash::FxHashSet;
-use gettid::gettid;
+use std::thread;
+
+use std::sync::Mutex;
 use std::{collections::VecDeque, sync::OnceLock};
-use usync::Mutex;
 
 /// A memory reclaimer using intervals to defer resource reclamation until all threads are quiescent
 /// Threads must register before using the reclaimer
@@ -10,6 +11,10 @@ pub struct MemoryReclaimer {
 }
 
 type ThreadId = u64;
+
+fn gettid() -> ThreadId {
+    unsafe { std::mem::transmute(thread::current().id()) }
+}
 
 struct MemoryReclaimerInner {
     /// Callbacks added during the current interval
@@ -51,7 +56,7 @@ impl MemoryReclaimer {
     /// Registers the current thread
     pub fn register_thread(&self) -> ThreadId {
         let thread_id = gettid();
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
         inner.registered_threads.insert(thread_id);
         THREAD_STATE.with(|state| {
             state.borrow_mut().is_registered = true;
@@ -75,7 +80,7 @@ impl MemoryReclaimer {
     /// Panics if not registered
     pub fn mark_current_thread_quiescent(&self) {
         let thread_id = gettid();
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         if !inner.registered_threads.contains(&thread_id) {
             panic!(
@@ -102,7 +107,7 @@ impl MemoryReclaimer {
     /// Panics if not registered
     pub fn deregister_current_thread_and_mark_quiescent(&self) {
         let thread_id = gettid();
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         if !inner.registered_threads.contains(&thread_id) {
             panic!(
