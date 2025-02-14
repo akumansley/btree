@@ -6,11 +6,11 @@ edition = "2021"
 [dependencies]
 smallvec = "1.11.1"
 rand = "0.8.5"
-parking_lot = { version = "0.12.3"}
 crossbeam = "0.8.4"
 gettid = "0.1.3"
 tagptr = "0.2.0"
 fxhash = "0.2"
+usync = "0.2.1"
 
 
 [dev-dependencies]

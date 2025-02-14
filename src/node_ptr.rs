@@ -252,7 +252,11 @@ impl<K: BTreeKey, V: BTreeValue, N: NodeType> NodeRef<K, V, marker::Exclusive, N
     }
     pub fn retire(self) -> NodeRef<K, V, marker::Unlocked, N> {
         self.header().retire();
-        self.unlock_exclusive()
+        NodeRef {
+            node: self.node,
+            lock_info: LockInfo::unlocked(),
+            phantom: PhantomData,
+        }
     }
 }
 

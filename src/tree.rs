@@ -28,11 +28,8 @@ impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 /// Todo
 /// - bulk loading
 /// Perf ideas:
+/// - experiment with usync vs parking lot
 /// - try inlined key descriminator with node-level key prefixes
-/// - experiment with hybrid latch strategies:
-///   - how many tries should we give optimistic locks?
-///   - try being more pessimistic once we're close to the leaves
-///   - try switching between shared and optimstic as we descend
 /// - try the "no coalescing" or "relaxed" btree idea
 /// - try unordered leaf storage, or lazily sorted leaf storage
 

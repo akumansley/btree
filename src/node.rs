@@ -136,6 +136,9 @@ impl NodeHeader {
         debug_perchance_yield();
         increment_exclusive_lock_count();
     }
+    pub fn is_locked_exclusive(&self) -> bool {
+        self.lock.is_locked_exclusive()
+    }
     pub fn unlock_exclusive(&self) {
         self.lock.unlock_exclusive();
         decrement_exclusive_lock_count();
@@ -173,6 +176,7 @@ impl NodeHeader {
 
     pub fn retire(&self) {
         self.lock.retire();
+        decrement_exclusive_lock_count();
     }
 
     pub fn height(&self) -> Height {

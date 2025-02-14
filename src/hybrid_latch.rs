@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-use parking_lot::lock_api::RawRwLock;
+use usync::lock_api::RawRwLock;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
 pub struct LockInfo(pub u64);
@@ -58,14 +58,14 @@ impl Display for LockInfo {
 }
 // doesn't handle poisoning
 pub(crate) struct HybridLatch {
-    rw_lock: parking_lot::RawRwLock,
+    rw_lock: usync::RawRwLock,
     version: AtomicU64,
 }
 
 impl HybridLatch {
     pub fn new() -> Self {
         Self {
-            rw_lock: parking_lot::RawRwLock::INIT,
+            rw_lock: usync::RawRwLock::INIT,
             version: AtomicU64::new(LockInfo::LOWEST_VERSION),
         }
     }
@@ -84,6 +84,10 @@ impl HybridLatch {
 
     pub fn lock_exclusive(&self) {
         self.rw_lock.lock_exclusive();
+    }
+
+    pub fn is_locked_exclusive(&self) -> bool {
+        self.rw_lock.is_locked_exclusive()
     }
 
     pub fn try_lock_exclusive(&self) -> Result<(), ()> {

@@ -1,7 +1,7 @@
 use fxhash::FxHashSet;
 use gettid::gettid;
-use parking_lot::Mutex;
 use std::{collections::VecDeque, sync::OnceLock};
+use usync::Mutex;
 
 /// A memory reclaimer using intervals to defer resource reclamation until all threads are quiescent
 /// Threads must register before using the reclaimer
