@@ -104,13 +104,15 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                 let mut sum = Duration::ZERO;
                 for _ in 0..iters {
                     let threads_done = Arc::new(AtomicUsize::new(0));
-                    let tree = BTree::<usize, String>::new();
                     qsbr_reclaimer().register_thread();
 
-                    // Pre-populate the tree with some data
+                    // Pre-populate the tree
+                    let mut pairs = Vec::new();
                     for i in 0..NUM_OPERATIONS / 10 {
-                        tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+                        pairs.push((i, format!("value{}", i)));
                     }
+                    let tree = BTree::bulk_load(pairs);
+
                     qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
 
                     let start = std::time::Instant::now();
@@ -171,14 +173,15 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                 let ops_per_thread = NUM_OPERATIONS / num_threads;
                 let mut sum = Duration::ZERO;
                 for _ in 0..iters {
-                    let tree = BTree::<usize, String>::new();
                     let threads_done = Arc::new(AtomicUsize::new(0));
                     qsbr_reclaimer().register_thread();
 
-                    // Pre-populate the tree with some data
+                    // Pre-populate the tree with bulk load
+                    let mut pairs = Vec::new();
                     for i in 0..NUM_OPERATIONS / 10 {
-                        tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+                        pairs.push((i, format!("value{}", i)));
                     }
+                    let tree = BTree::bulk_load(pairs);
 
                     qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
 

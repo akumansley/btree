@@ -1,4 +1,5 @@
 pub mod array_types;
+pub mod bulk_load;
 pub mod coalescing;
 pub mod cursor;
 pub mod debug;

@@ -28,6 +28,10 @@ lto = true
 name = "concurrent_write"
 harness = false
 
+[[bench]]
+name = "bulk_load"
+harness = false
+
 [profile.test]
 opt-level = 0
 debug = true
