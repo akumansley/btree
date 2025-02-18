@@ -1,5 +1,6 @@
 use crate::array_types::{MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE};
 use crate::bulk_load::{bulk_load_from_sorted_kv_pairs, bulk_load_from_sorted_kv_pairs_parallel};
+use crate::bulk_update::bulk_update_from_sorted_kv_pairs_parallel;
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
@@ -27,7 +28,10 @@ impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 
 /// B+Tree
 /// Todo
-/// - bulk loading
+/// - conditional writes
+///   tree.cas("key1", None, new_val) -> insert_if
+///   tree.cas("key1", old_val, None) -> remove_if
+///   tree.cas("key1", old_val, new_val) -> update_if
 /// Perf ideas:
 /// - try inlined key descriminator with node-level key prefixes
 /// - try the "no coalescing" or "relaxed" btree idea
@@ -146,6 +150,9 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         self.root.len.fetch_add(1, Ordering::Relaxed);
         debug_println!("top-level insert done");
         debug_assert_no_locks_held::<'i'>();
+    }
+    pub fn bulk_update_parallel(&self, updates: Vec<(K, V)>) {
+        bulk_update_from_sorted_kv_pairs_parallel(updates, self)
     }
 
     pub fn remove(&self, key: &K) {

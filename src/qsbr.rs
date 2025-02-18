@@ -1,4 +1,5 @@
 use fxhash::FxHashSet;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::thread;
 
 use std::sync::Mutex;
@@ -158,8 +159,26 @@ impl MemoryReclaimer {
 }
 
 static RECLAIMER: OnceLock<MemoryReclaimer> = OnceLock::new();
+static POOL: OnceLock<ThreadPool> = OnceLock::new();
 pub fn qsbr_reclaimer() -> &'static MemoryReclaimer {
     RECLAIMER.get_or_init(MemoryReclaimer::new)
+}
+
+pub fn qsbr_pool() -> &'static ThreadPool {
+    POOL.get_or_init(|| {
+        ThreadPoolBuilder::new()
+            .num_threads(8)
+            .start_handler(|_| {
+                qsbr_reclaimer().register_thread();
+                ()
+            })
+            .exit_handler(|_| {
+                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                ()
+            })
+            .build()
+            .unwrap()
+    })
 }
 
 #[cfg(test)]

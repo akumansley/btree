@@ -7,6 +7,7 @@ use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::node::NodeHeader;
 use crate::node_ptr::NodePtr;
+use crate::qsbr::qsbr_pool;
 use crate::tree::{BTree, BTreeKey, BTreeValue};
 use rand::Rng;
 use rayon::prelude::*;
@@ -57,7 +58,6 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
 ) -> Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> {
     let mut leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> = Vec::new();
     let mut pairs_iter = pairs_iter.peekable();
-    let mut is_leftmost = true;
 
     while pairs_iter.peek().is_some() {
         let chunk_size = calculate_chunk_size(target_utilization, jitter_range);
@@ -65,16 +65,6 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
         // Create a new leaf node
         let leaf = AliasableBox::new(LeafNode::new());
         let leaf_inner = unsafe { &mut *leaf.inner.get() };
-
-        // Get the first key of this chunk to use as the split key (None if leftmost)
-        let maybe_split_key = if is_leftmost {
-            is_leftmost = false;
-            None
-        } else if let Some((key, _)) = pairs_iter.peek() {
-            Some(GracefulArc::new(key.clone()))
-        } else {
-            None
-        };
 
         // Add pairs for this chunk
         for _ in 0..chunk_size {
@@ -86,6 +76,10 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
                 break;
             }
         }
+
+        // Get the first key of this leaf to use as the split key
+        let key = leaf_inner.storage.get_key(0);
+        let maybe_split_key = Some(key.clone_and_increment_ref_count());
 
         // Link to previous leaf if any
         if let Some((prev_leaf, _)) = leaves.last() {
@@ -222,30 +216,33 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
     let target_utilization = 0.69;
     let jitter_range = 0.1;
 
-    let chunks = sorted_kv_pairs.into_par_iter().chunks(ORDER * 8);
-    let leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> = chunks
-        .map(|chunk| construct_leaf_level(chunk.into_iter(), target_utilization, jitter_range))
-        .reduce(
-            || Vec::new(),
-            |mut acc, mut leaves| {
-                if let Some((last_leaf, _)) = acc.last_mut() {
-                    if let Some((first_leaf, _)) = leaves.first_mut() {
-                        unsafe {
-                            last_leaf
-                                .get_inner()
-                                .next_leaf
-                                .store(first_leaf.as_ptr(), std::sync::atomic::Ordering::Release);
-                            first_leaf
-                                .get_inner()
-                                .prev_leaf
-                                .store(last_leaf.as_ptr(), std::sync::atomic::Ordering::Release);
+    let pool = qsbr_pool();
+    let leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> = pool.install(|| {
+        let chunks = sorted_kv_pairs.into_par_iter().chunks(ORDER * 8);
+        chunks
+            .map(|chunk| construct_leaf_level(chunk.into_iter(), target_utilization, jitter_range))
+            .reduce(
+                || Vec::new(),
+                |mut acc, mut leaves| {
+                    if let Some((last_leaf, _)) = acc.last_mut() {
+                        if let Some((first_leaf, _)) = leaves.first_mut() {
+                            unsafe {
+                                last_leaf.get_inner().next_leaf.store(
+                                    first_leaf.as_ptr(),
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                first_leaf.get_inner().prev_leaf.store(
+                                    last_leaf.as_ptr(),
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                            }
                         }
                     }
-                }
-                acc.extend(leaves);
-                acc
-            },
-        );
+                    acc.extend(leaves);
+                    acc
+                },
+            )
+    });
 
     let root_node = construct_tree_from_leaves(leaves, target_utilization, jitter_range);
 
@@ -282,9 +279,13 @@ mod tests {
         cursor.seek_to_start();
 
         for (i, (key, value)) in pairs.iter().enumerate() {
+            let entry_from_get = tree
+                .get(key)
+                .expect(format!("key not found: {}", key).as_str());
             let entry = cursor.current().unwrap();
             assert_eq!(entry.key(), key);
             assert_eq!(entry.value(), value);
+            assert_eq!(entry_from_get, value);
 
             if i < pairs.len() - 1 {
                 cursor.move_next();

@@ -100,6 +100,23 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         }
     }
 
+    pub fn update(&mut self, index: usize, value: *mut V) {
+        let old_value = self.storage.set(index, value);
+        if old_value == ptr::null_mut() {
+            println!(
+                "update: old_value is null, thread: {:?}, index: {}, value: {:?}",
+                std::thread::current().id(),
+                index,
+                unsafe { &*value }
+            );
+        }
+        assert!(old_value != ptr::null_mut());
+        let value_box = GracefulBox::new(old_value);
+        qsbr_reclaimer().add_callback(Box::new(move || {
+            drop(value_box);
+        }));
+    }
+
     pub fn remove(&mut self, key: &K) -> bool {
         match self.binary_search_key(key) {
             Ok(index) => {

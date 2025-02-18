@@ -220,6 +220,11 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
         self.seek_from_top(key);
     }
 
+    pub fn update_value(&mut self, value: Box<V>) {
+        let mut leaf = self.current_leaf.unwrap();
+        leaf.update(self.current_index, Box::into_raw(value));
+    }
+
     fn seek_from_top(&mut self, key: &K) {
         if self.current_leaf.is_some() {
             self.current_leaf.take().unwrap().unlock_exclusive();

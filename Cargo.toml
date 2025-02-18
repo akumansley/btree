@@ -30,7 +30,7 @@ name = "concurrent_write"
 harness = false
 
 [[bench]]
-name = "bulk_load"
+name = "bulk_ops"
 harness = false
 
 [profile.test]
