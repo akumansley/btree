@@ -1,5 +1,5 @@
 use crate::array_types::{MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE};
-use crate::bulk_load::bulk_load_from_sorted_kv_pairs;
+use crate::bulk_load::{bulk_load_from_sorted_kv_pairs, bulk_load_from_sorted_kv_pairs_parallel};
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
@@ -48,6 +48,9 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
 
     pub fn bulk_load(sorted_kv_pairs: Vec<(K, V)>) -> Self {
         bulk_load_from_sorted_kv_pairs(sorted_kv_pairs)
+    }
+    pub fn bulk_load_parallel(sorted_kv_pairs: Vec<(K, V)>) -> Self {
+        bulk_load_from_sorted_kv_pairs_parallel(sorted_kv_pairs)
     }
 
     pub fn get(&self, search_key: &K) -> Option<Ref<V>> {

@@ -1,3 +1,6 @@
+use std::ops::{Deref, DerefMut};
+use std::ptr::NonNull;
+
 use crate::array_types::ORDER;
 use crate::graceful_pointers::GracefulArc;
 use crate::internal_node::InternalNode;
@@ -6,8 +9,40 @@ use crate::node::NodeHeader;
 use crate::node_ptr::NodePtr;
 use crate::tree::{BTree, BTreeKey, BTreeValue};
 use rand::Rng;
+use rayon::prelude::*;
 
-fn calculate_chunk_size(rng: &mut impl Rng, target_utilization: f64, jitter_range: f64) -> usize {
+struct AliasableBox<T> {
+    non_null: NonNull<T>,
+}
+
+impl<T> AliasableBox<T> {
+    fn new(ptr: *mut T) -> Self {
+        Self {
+            non_null: unsafe { NonNull::new_unchecked(ptr) },
+        }
+    }
+    fn as_ptr(&self) -> *mut T {
+        self.non_null.as_ptr()
+    }
+}
+
+impl<T> Deref for AliasableBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.non_null.as_ptr() }
+    }
+}
+impl<T> DerefMut for AliasableBox<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.non_null.as_ptr() }
+    }
+}
+
+unsafe impl<K: BTreeKey, V: BTreeValue> Send for AliasableBox<LeafNode<K, V>> {}
+
+fn calculate_chunk_size(target_utilization: f64, jitter_range: f64) -> usize {
+    let mut rng = rand::thread_rng();
     let base_chunk_size = (ORDER as f64 * target_utilization) as usize;
     let jitter = (ORDER as f64 * jitter_range * (2.0 * rng.gen::<f64>() - 1.0)) as usize;
     base_chunk_size
@@ -17,19 +52,18 @@ fn calculate_chunk_size(rng: &mut impl Rng, target_utilization: f64, jitter_rang
 
 fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
     pairs_iter: impl Iterator<Item = (K, V)>,
-    rng: &mut impl Rng,
     target_utilization: f64,
     jitter_range: f64,
-) -> Vec<(*mut LeafNode<K, V>, Option<GracefulArc<K>>)> {
-    let mut leaves: Vec<(*mut LeafNode<K, V>, Option<GracefulArc<K>>)> = Vec::new();
+) -> Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> {
+    let mut leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> = Vec::new();
     let mut pairs_iter = pairs_iter.peekable();
     let mut is_leftmost = true;
 
     while pairs_iter.peek().is_some() {
-        let chunk_size = calculate_chunk_size(rng, target_utilization, jitter_range);
+        let chunk_size = calculate_chunk_size(target_utilization, jitter_range);
 
         // Create a new leaf node
-        let leaf = unsafe { &mut *LeafNode::new() };
+        let leaf = AliasableBox::new(LeafNode::new());
         let leaf_inner = unsafe { &mut *leaf.inner.get() };
 
         // Get the first key of this chunk to use as the split key (None if leftmost)
@@ -57,11 +91,11 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
         if let Some((prev_leaf, _)) = leaves.last() {
             leaf_inner
                 .prev_leaf
-                .store(*prev_leaf as *mut _, std::sync::atomic::Ordering::Release);
+                .store(prev_leaf.as_ptr(), std::sync::atomic::Ordering::Release);
             unsafe {
-                (&mut *(**prev_leaf).inner.get())
+                (&mut *(*prev_leaf).inner.get())
                     .next_leaf
-                    .store(leaf, std::sync::atomic::Ordering::Release);
+                    .store(leaf.as_ptr(), std::sync::atomic::Ordering::Release);
             }
         }
 
@@ -73,7 +107,6 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
 
 fn construct_internal_level<K: BTreeKey, V: BTreeValue>(
     children_with_split_keys: Vec<(*mut NodeHeader, Option<GracefulArc<K>>)>,
-    rng: &mut impl Rng,
     target_utilization: f64,
     jitter_range: f64,
 ) -> Vec<(*mut InternalNode<K, V>, Option<GracefulArc<K>>)> {
@@ -83,7 +116,7 @@ fn construct_internal_level<K: BTreeKey, V: BTreeValue>(
 
     // Process children in chunks to create internal nodes
     while children_iter.peek().is_some() {
-        let chunk_size = calculate_chunk_size(rng, target_utilization, jitter_range);
+        let chunk_size = calculate_chunk_size(target_utilization, jitter_range);
         let (first_child, _) = children_iter.peek().unwrap();
         let height = unsafe { (**first_child).height().one_level_higher() };
         let node_ptr = InternalNode::<K, V>::new(height);
@@ -127,26 +160,25 @@ fn construct_internal_level<K: BTreeKey, V: BTreeValue>(
 }
 
 fn construct_tree_from_leaves<K: BTreeKey, V: BTreeValue>(
-    leaves: Vec<(*mut LeafNode<K, V>, Option<GracefulArc<K>>)>,
-    rng: &mut impl Rng,
+    leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)>,
     target_utilization: f64,
     jitter_range: f64,
 ) -> *mut NodeHeader {
     // If we only have one leaf, it becomes the root
     if leaves.len() == 1 {
-        return leaves[0].0 as *mut NodeHeader;
+        return leaves[0].0.as_ptr() as *mut NodeHeader;
     }
 
     // Convert leaves to NodeHeaders for the first level
     let mut current_level: Vec<(*mut NodeHeader, Option<GracefulArc<K>>)> = leaves
         .into_iter()
-        .map(|(node, split_key)| (node as *mut NodeHeader, split_key))
+        .map(|(node, split_key)| (node.as_ptr() as *mut NodeHeader, split_key))
         .collect();
 
     // Keep building levels until we have a single node
     while current_level.len() > 1 {
         let internal_nodes =
-            construct_internal_level::<K, V>(current_level, rng, target_utilization, jitter_range);
+            construct_internal_level::<K, V>(current_level, target_utilization, jitter_range);
 
         current_level = internal_nodes
             .into_iter()
@@ -160,22 +192,63 @@ fn construct_tree_from_leaves<K: BTreeKey, V: BTreeValue>(
 pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey, V: BTreeValue>(
     sorted_kv_pairs: Vec<(K, V)>,
 ) -> BTree<K, V> {
-    let mut rng = rand::thread_rng();
     let target_utilization = 0.69;
     let jitter_range = 0.1;
 
     // Create leaf nodes with target utilization
     let leaves = construct_leaf_level(
         sorted_kv_pairs.into_iter(),
-        &mut rng,
         target_utilization,
         jitter_range,
     );
 
     // Build the tree from leaves up
-    let root_node = construct_tree_from_leaves(leaves, &mut rng, target_utilization, jitter_range);
+    let root_node = construct_tree_from_leaves(leaves, target_utilization, jitter_range);
 
     // Create and return the tree
+    let tree = BTree::new();
+    unsafe {
+        let root_inner = &mut *tree.root.inner.get();
+        root_inner
+            .top_of_tree
+            .store(root_node, std::sync::atomic::Ordering::Release);
+    }
+    tree
+}
+
+pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
+    sorted_kv_pairs: Vec<(K, V)>,
+) -> BTree<K, V> {
+    let target_utilization = 0.69;
+    let jitter_range = 0.1;
+
+    let chunks = sorted_kv_pairs.into_par_iter().chunks(ORDER * 8);
+    let leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> = chunks
+        .map(|chunk| construct_leaf_level(chunk.into_iter(), target_utilization, jitter_range))
+        .reduce(
+            || Vec::new(),
+            |mut acc, mut leaves| {
+                if let Some((last_leaf, _)) = acc.last_mut() {
+                    if let Some((first_leaf, _)) = leaves.first_mut() {
+                        unsafe {
+                            last_leaf
+                                .get_inner()
+                                .next_leaf
+                                .store(first_leaf.as_ptr(), std::sync::atomic::Ordering::Release);
+                            first_leaf
+                                .get_inner()
+                                .prev_leaf
+                                .store(last_leaf.as_ptr(), std::sync::atomic::Ordering::Release);
+                        }
+                    }
+                }
+                acc.extend(leaves);
+                acc
+            },
+        );
+
+    let root_node = construct_tree_from_leaves(leaves, target_utilization, jitter_range);
+
     let tree = BTree::new();
     unsafe {
         let root_inner = &mut *tree.root.inner.get();
@@ -202,7 +275,7 @@ mod tests {
         }
 
         // Bulk load the tree
-        let tree = bulk_load_from_sorted_kv_pairs(pairs.clone());
+        let tree = bulk_load_from_sorted_kv_pairs_parallel(pairs.clone());
 
         // Verify the tree contains all pairs in order
         let mut cursor = tree.cursor();

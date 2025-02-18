@@ -45,6 +45,7 @@ dependencies = [
  "lock_api",
  "parking_lot",
  "rand",
+ "rayon",
  "smallvec",
  "spin",
  "tagptr",

@@ -21,7 +21,7 @@ fn bulk_load_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::WallTi
 
                     qsbr_reclaimer().register_thread();
                     let start = std::time::Instant::now();
-                    let _tree = BTree::bulk_load(pairs);
+                    let _tree = BTree::bulk_load_parallel(pairs);
                     sum += start.elapsed();
                     qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                 }
