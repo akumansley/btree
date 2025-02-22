@@ -95,9 +95,18 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
                 }
             }
             Err(index) => {
-                self.storage.insert(key_to_insert, value, index);
+                self.insert_new_value_at_index(key_to_insert, value, index);
             }
         }
+    }
+
+    pub fn insert_new_value_at_index(
+        &mut self,
+        key_to_insert: GracefulArc<K>,
+        value: *mut V,
+        index: usize,
+    ) {
+        self.storage.insert(key_to_insert, value, index);
     }
 
     pub fn update(&mut self, index: usize, value: *mut V) {

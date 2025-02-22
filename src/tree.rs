@@ -1,4 +1,4 @@
-use crate::array_types::{MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE};
+use crate::array_types::MIN_KEYS_PER_NODE;
 use crate::bulk_load::{bulk_load_from_sorted_kv_pairs, bulk_load_from_sorted_kv_pairs_parallel};
 use crate::bulk_update::bulk_update_from_sorted_kv_pairs_parallel;
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
@@ -16,7 +16,10 @@ use crate::search::{
     get_leaf_exclusively_using_shared_search, get_leaf_shared_using_optimistic_search,
     get_leaf_shared_using_shared_search,
 };
-use crate::splitting::insert_into_leaf_after_splitting;
+use crate::splitting::{
+    insert_into_leaf_after_splitting,
+    insert_into_leaf_after_splitting_returning_leaf_with_new_entry,
+};
 use std::fmt::{Debug, Display};
 use std::sync::atomic::Ordering;
 
@@ -125,7 +128,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
         // this should get us to 3 keys in the leaf
-        if leaf_node.num_keys() < MAX_KEYS_PER_NODE {
+        if leaf_node.has_capacity_for_modification(ModificationType::Insertion) {
             leaf_node.insert(graceful_key, Box::into_raw(value));
             search_stack.drain().for_each(|n| {
                 n.assert_exclusive().unlock_exclusive();
@@ -136,6 +139,8 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             // in the case where we otherwise would split
             // this is necessary for correctness, because split doesn't (and shouldn't)
             // handle the case where the key already exists
+            // you might think we handled this above, but someone could've come along and
+            // inserted the key between the optimistic search and the exclusive search
             if leaf_node.get(&graceful_key).is_some() {
                 leaf_node.insert(graceful_key, Box::into_raw(value));
                 search_stack.drain().for_each(|n| {
@@ -151,8 +156,63 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         debug_println!("top-level insert done");
         debug_assert_no_locks_held::<'i'>();
     }
+
     pub fn bulk_update_parallel(&self, updates: Vec<(K, V)>) {
         bulk_update_from_sorted_kv_pairs_parallel(updates, self)
+    }
+
+    pub fn get_or_insert(&self, key: Box<K>, value: Box<V>) -> CursorMut<K, V> {
+        let mut optimistic_leaf =
+            match get_leaf_exclusively_using_optimistic_search(self.root.as_node_ref(), &key) {
+                Ok(leaf) => leaf,
+                Err(_) => get_leaf_exclusively_using_shared_search(self.root.as_node_ref(), &key),
+            };
+        let search_result = optimistic_leaf.binary_search_key(&key);
+
+        // case 1: key already exists
+        if let Ok(index) = search_result {
+            return CursorMut::new_from_leaf_and_index(self, optimistic_leaf, index);
+        }
+
+        // case 2: key doesn't exist, but we have capacity to insert
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion) {
+            let index = search_result.unwrap_err();
+            optimistic_leaf.insert_new_value_at_index(
+                GracefulArc::new(*key),
+                Box::into_raw(value),
+                index,
+            );
+            return CursorMut::new_from_leaf_and_index(self, optimistic_leaf, index);
+        }
+        // unlock the leaf so we can restart our search
+        optimistic_leaf.unlock_exclusive();
+
+        // case 3: key doesn't exist, and we need to split
+        let mut search_stack = get_leaf_exclusively_using_exclusive_search(
+            self.root.as_node_ref().lock_exclusive(),
+            &key,
+            ModificationType::Insertion,
+        );
+        // since we restarted our search, we need to see if the key exists again before we split
+        let leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
+        let index = leaf_node.binary_search_key(&key);
+        if index.is_ok() {
+            // someone has inserted the key while we were searching
+            // pop off the leaf, unlock the rest, and then we're done
+            search_stack.pop_lowest();
+            search_stack.drain().for_each(|n| {
+                n.assert_exclusive().unlock_exclusive();
+            });
+
+            return CursorMut::new_from_leaf_and_index(self, leaf_node, index.unwrap());
+        }
+
+        let entry_location = insert_into_leaf_after_splitting_returning_leaf_with_new_entry(
+            search_stack,
+            GracefulArc::new(*key),
+            Box::into_raw(value),
+        );
+        return CursorMut::new_from_leaf_and_index(self, entry_location.leaf, entry_location.index);
     }
 
     pub fn remove(&self, key: &K) {
@@ -395,7 +455,6 @@ mod tests {
                         println!("Mismatch for key {}", key);
                         println!("btree_result: {:?}", btree_result);
                         println!("hashmap_result: {:?}", hashmap_result);
-                        tree.print_tree();
                         tree.check_invariants();
                     }
                     assert_eq!(
@@ -419,9 +478,6 @@ mod tests {
         }
         qsbr_reclaimer().mark_current_thread_quiescent();
 
-        println!("tree.print_tree()");
-        tree.check_invariants();
-        tree.print_tree();
         // Verify all keys at the end
         for key in reference_map.keys() {
             assert_eq!(
@@ -503,6 +559,83 @@ mod tests {
                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
             });
         });
+
+        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+    }
+
+    #[test]
+    fn test_get_or_insert() {
+        qsbr_reclaimer().register_thread();
+        let tree = BTree::<usize, String>::new();
+
+        {
+            println!("Case 1: Insert into empty tree");
+            // Case 1: Insert into empty tree
+            let mut cursor = tree.get_or_insert(Box::new(5), Box::new("value5".to_string()));
+            assert_eq!(cursor.current().unwrap().key(), &5);
+            assert_eq!(cursor.current().unwrap().value(), &"value5".to_string());
+
+            // Move cursor and verify we can find the entry again
+            cursor.move_next();
+            cursor.seek(&5);
+            assert_eq!(cursor.current().unwrap().key(), &5);
+        }
+        {
+            println!("Case 2: Get existing entry");
+            // Case 2: Get existing entry
+            let cursor = tree.get_or_insert(Box::new(5), Box::new("new_value5".to_string()));
+            assert_eq!(cursor.current().unwrap().key(), &5);
+            assert_eq!(cursor.current().unwrap().value(), &"value5".to_string());
+            // Should keep old value
+        }
+        {
+            println!("Case 3: Insert when there's capacity (no split needed)");
+            // Case 3: Insert when there's capacity (no split needed)
+            let mut cursor = tree.get_or_insert(Box::new(3), Box::new("value3".to_string()));
+            assert_eq!(cursor.current().unwrap().key(), &3);
+            assert_eq!(cursor.current().unwrap().value(), &"value3".to_string());
+
+            // Verify we can navigate to both entries
+            cursor.seek(&5);
+            assert_eq!(cursor.current().unwrap().key(), &5);
+            cursor.seek(&3);
+            assert_eq!(cursor.current().unwrap().key(), &3);
+        }
+        {
+            // Case 4: Insert enough entries to cause a split
+            // Fill up the first leaf node
+            for i in 0..ORDER {
+                let cursor =
+                    tree.get_or_insert(Box::new(i * 2), Box::new(format!("value{}", i * 2)));
+                assert_eq!(cursor.current().unwrap().key(), &(i * 2));
+                assert_eq!(
+                    cursor.current().unwrap().value(),
+                    &format!("value{}", i * 2)
+                );
+            }
+
+            // Insert one more entry that should cause a split
+            let split_key = ORDER * 2;
+            let mut cursor =
+                tree.get_or_insert(Box::new(split_key), Box::new(format!("value{}", split_key)));
+
+            // Verify cursor points to the correct entry after split
+            assert_eq!(cursor.current().unwrap().key(), &split_key);
+            assert_eq!(
+                cursor.current().unwrap().value(),
+                &format!("value{}", split_key)
+            );
+
+            // Verify we can still access entries before and after the split point
+            cursor.seek(&0);
+            assert_eq!(cursor.current().unwrap().key(), &0);
+            cursor.seek(&((ORDER - 1) * 2));
+            assert_eq!(cursor.current().unwrap().key(), &((ORDER - 1) * 2));
+        }
+
+        debug_assert_no_locks_held::<'t'>();
+        // Verify tree invariants after all operations
+        tree.check_invariants();
 
         qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
     }

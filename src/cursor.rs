@@ -175,6 +175,17 @@ pub struct CursorMut<'a, K: BTreeKey, V: BTreeValue> {
 }
 
 impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
+    pub fn new_from_leaf_and_index(
+        tree: &'a BTree<K, V>,
+        leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        index: usize,
+    ) -> Self {
+        Self {
+            tree,
+            current_leaf: Some(leaf),
+            current_index: index,
+        }
+    }
     pub fn seek_to_start(&mut self) {
         if let Some(leaf) = self.current_leaf.as_ref() {
             leaf.unlock_exclusive();
