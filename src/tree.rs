@@ -208,24 +208,40 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         );
         (entry_location, true)
     }
-
     pub fn remove(&self, key: &K) {
+        debug_println!("top-level remove {:?}", key);
+        self.remove_if(key, |_| true);
+        debug_assert_no_locks_held::<'c'>();
+    }
+
+    pub fn remove_if(&self, key: &K, predicate: impl Fn(&V) -> bool) {
         debug_println!("top-level remove {:?}", key);
 
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
             key,
         );
-        if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal)
-            || optimistic_leaf.get(&key).is_none()
-        {
+        let value = match optimistic_leaf.get(&key) {
+            Some((_, v_ptr)) => v_ptr,
+            None => {
+                optimistic_leaf.unlock_exclusive();
+                debug_assert_no_locks_held::<'d'>();
+                return;
+            } // nothing to remove
+        };
+        if !predicate(unsafe { &*value }) {
+            optimistic_leaf.unlock_exclusive();
+            debug_assert_no_locks_held::<'e'>();
+            return;
+        }
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal) {
             let removed = optimistic_leaf.remove(key);
             if removed {
                 self.root.len.fetch_sub(1, Ordering::Relaxed);
             }
             debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
             optimistic_leaf.unlock_exclusive();
-            debug_assert_no_locks_held::<'r'>();
+            debug_assert_no_locks_held::<'a'>();
             return;
         }
         optimistic_leaf.unlock_exclusive();
@@ -238,21 +254,31 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         );
 
         let mut leaf_node_exclusive = search_stack.peek_lowest().assert_leaf().assert_exclusive();
-        let removed = leaf_node_exclusive.remove(key);
-        if removed {
-            self.root.len.fetch_sub(1, Ordering::Relaxed);
+
+        // need to re-check the predicate since we released our locks to restart the search
+        let search_result = leaf_node_exclusive.binary_search_key(&key);
+        match search_result {
+            Ok(index) => {
+                let value = leaf_node_exclusive.storage.get_value(index);
+                if !predicate(unsafe { &*value }) {
+                    debug_assert_no_locks_held::<'f'>();
+                } else {
+                    leaf_node_exclusive.remove_at_index(search_result.unwrap());
+                    self.root.len.fetch_sub(1, Ordering::Relaxed);
+                    if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
+                        coalesce_or_redistribute_leaf_node(search_stack);
+                        return;
+                    }
+                }
+            }
+            Err(_) => {
+                // nothing to remove
+            }
         }
-        if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
-            coalesce_or_redistribute_leaf_node(search_stack);
-        } else {
-            // the remove might not actually remove the key (it might be not found)
-            // so the stack may still contain nodes -- unlock them
-            search_stack.drain().for_each(|n| {
-                n.assert_exclusive().unlock_exclusive();
-            });
-        }
-        debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
-        debug_assert_no_locks_held::<'r'>();
+        search_stack.drain().for_each(|n| {
+            n.assert_exclusive().unlock_exclusive();
+        });
+        debug_assert_no_locks_held::<'b'>();
     }
 
     pub fn print_tree(&self) {
@@ -625,6 +651,60 @@ mod tests {
 
         debug_assert_no_locks_held::<'t'>();
         // Verify tree invariants after all operations
+        tree.check_invariants();
+
+        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+    }
+
+    #[test]
+    fn test_remove_if() {
+        qsbr_reclaimer().register_thread();
+        let tree = BTree::<usize, String>::new();
+
+        // Insert enough elements to ensure multiple leaves
+        let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
+        for i in 0..n {
+            tree.insert(Box::new(i), Box::new(format!("{}", i)));
+        }
+
+        // Test 1: Remove only even numbers
+        for i in 0..n {
+            tree.remove_if(&i, |v| v.parse::<usize>().unwrap() % 2 == 0);
+        }
+
+        // Verify: Even numbers should be removed, odd numbers should remain
+        let mut cursor = tree.cursor();
+        cursor.seek_to_start();
+        let expected_remaining = (0..n).filter(|i| i % 2 != 0).collect::<Vec<_>>();
+        let mut actual_remaining = Vec::new();
+        while let Some(entry) = cursor.current() {
+            actual_remaining.push(*entry.key());
+            cursor.move_next();
+        }
+        assert_eq!(actual_remaining, expected_remaining);
+        assert_eq!(tree.len(), n / 2);
+
+        // Test 2: Try to remove with a predicate that always returns false
+        for i in 0..n {
+            tree.remove_if(&i, |_| false);
+        }
+        // Verify: No elements should be removed
+        cursor.seek_to_start();
+        let mut count = 0;
+        while cursor.current().is_some() {
+            count += 1;
+            cursor.move_next();
+        }
+        assert_eq!(count, n / 2); // Same count as before
+
+        // Test 3: Remove elements that would cause redistribution/coalescing
+        // First, remove enough elements to force structural modifications
+        for i in (0..n).step_by(2) {
+            if i % 4 == 1 {
+                // Remove every fourth element
+                tree.remove_if(&i, |v| v.contains('1')); // Only remove values containing '1'
+            }
+        }
         tree.check_invariants();
 
         qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();

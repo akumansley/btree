@@ -131,16 +131,19 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
     pub fn remove(&mut self, key: &K) -> bool {
         match self.binary_search_key(key) {
             Ok(index) => {
-                let (stored_key, value) = self.storage.remove(index);
-                stored_key.decrement_ref_count();
-                let value_box = GracefulBox::new(value);
-                qsbr_reclaimer().add_callback(Box::new(move || {
-                    drop(value_box);
-                }));
+                self.remove_at_index(index);
                 true
             }
             Err(_) => false,
         }
+    }
+    pub fn remove_at_index(&mut self, index: usize) {
+        let (stored_key, value) = self.storage.remove(index);
+        stored_key.decrement_ref_count();
+        let value_box = GracefulBox::new(value);
+        qsbr_reclaimer().add_callback(Box::new(move || {
+            drop(value_box);
+        }));
     }
 
     pub fn num_keys(&self) -> usize {
