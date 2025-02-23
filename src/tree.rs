@@ -120,9 +120,11 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
             || optimistic_leaf.get(&graceful_key).is_some()
         {
-            optimistic_leaf.insert(graceful_key, Box::into_raw(value));
+            let inserted = optimistic_leaf.insert(graceful_key, Box::into_raw(value));
             optimistic_leaf.unlock_exclusive();
-            self.root.len.fetch_add(1, Ordering::Relaxed);
+            if inserted {
+                self.root.len.fetch_add(1, Ordering::Relaxed);
+            }
             debug_assert_no_locks_held::<'i'>();
             return;
         }

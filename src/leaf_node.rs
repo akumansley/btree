@@ -79,7 +79,7 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
             }
         }
     }
-    pub fn insert(&mut self, key_to_insert: GracefulArc<K>, value: *mut V) {
+    pub fn insert(&mut self, key_to_insert: GracefulArc<K>, value: *mut V) -> bool {
         match self.binary_search_key(&*key_to_insert) {
             Ok(index) => {
                 let old_value = self.storage.set(index, value);
@@ -93,9 +93,11 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
                 unsafe {
                     key_to_insert.drop_in_place();
                 }
+                false
             }
             Err(index) => {
                 self.insert_new_value_at_index(key_to_insert, value, index);
+                true
             }
         }
     }
