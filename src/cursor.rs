@@ -2,15 +2,14 @@ use crate::graceful_pointers::GracefulArc;
 use crate::node_ptr::marker;
 use crate::node_ptr::NodeRef;
 use crate::reference::Entry;
-use crate::search::get_leaf_shared_using_optimistic_search;
-use crate::search::get_leaf_shared_using_shared_search;
+use crate::search::get_leaf_exclusively_using_optimistic_search_with_fallback;
+use crate::search::get_leaf_shared_using_optimistic_search_with_fallback;
 use crate::search::{
     get_first_leaf_exclusively_using_optimistic_search,
     get_first_leaf_exclusively_using_shared_search, get_first_leaf_shared_using_optimistic_search,
     get_first_leaf_shared_using_shared_search, get_last_leaf_exclusively_using_optimistic_search,
     get_last_leaf_exclusively_using_shared_search, get_last_leaf_shared_using_optimistic_search,
-    get_last_leaf_shared_using_shared_search, get_leaf_exclusively_using_optimistic_search,
-    get_leaf_exclusively_using_shared_search,
+    get_last_leaf_shared_using_shared_search,
 };
 use crate::splitting::EntryLocation;
 use crate::tree::{BTree, BTreeKey, BTreeValue, ModificationType};
@@ -69,11 +68,10 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
         if self.current_leaf.is_some() {
             self.current_leaf.take().unwrap().unlock_shared();
         }
-        let leaf = match get_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref(), key)
-        {
-            Ok(leaf) => leaf,
-            Err(_) => get_leaf_shared_using_shared_search(self.tree.root.as_node_ref(), key),
-        };
+        let leaf = get_leaf_shared_using_optimistic_search_with_fallback(
+            self.tree.root.as_node_ref(),
+            key,
+        );
         let index = leaf.binary_search_key(key).unwrap_either();
         self.current_leaf = Some(leaf);
         self.current_index = index;
@@ -283,13 +281,10 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
         if self.current_leaf.is_some() {
             self.current_leaf.take().unwrap().unlock_exclusive();
         }
-        let leaf =
-            match get_leaf_exclusively_using_optimistic_search(self.tree.root.as_node_ref(), key) {
-                Ok(leaf) => leaf,
-                Err(_) => {
-                    get_leaf_exclusively_using_shared_search(self.tree.root.as_node_ref(), key)
-                }
-            };
+        let leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.tree.root.as_node_ref(),
+            key,
+        );
         let index = leaf.binary_search_key(key).unwrap_either();
         self.current_leaf = Some(leaf);
         self.current_index = index;

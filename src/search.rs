@@ -45,7 +45,7 @@ pub fn get_first_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
     )
 }
 
-pub fn get_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+fn get_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
     root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> Result<NodeRef<K, V, marker::Shared, marker::Leaf>, ()> {
@@ -55,6 +55,16 @@ pub fn get_leaf_shared_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
         |node| node.lock_shared(),
         |node| node.unlock_shared(),
     )
+}
+
+pub fn get_leaf_shared_using_optimistic_search_with_fallback<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+    search_key: &K,
+) -> NodeRef<K, V, marker::Shared, marker::Leaf> {
+    match get_leaf_shared_using_optimistic_search(root, search_key) {
+        Ok(leaf) => leaf,
+        Err(_) => get_leaf_shared_using_shared_search(root, search_key),
+    }
 }
 
 pub fn do_optimistic_search<K: BTreeKey, V: BTreeValue, LeafLockState: LockState>(
@@ -127,7 +137,7 @@ pub fn get_leaf_shared_using_shared_search<K: BTreeKey, V: BTreeValue>(
     )
 }
 
-pub fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
+fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
     root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> Result<NodeRef<K, V, marker::Exclusive, marker::Leaf>, ()> {
@@ -139,7 +149,7 @@ pub fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey, V: BTreeValue>(
     )
 }
 
-pub fn get_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(
+fn get_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(
     root: NodeRef<K, V, marker::Unlocked, marker::Root>,
     search_key: &K,
 ) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
@@ -148,6 +158,16 @@ pub fn get_leaf_exclusively_using_shared_search<K: BTreeKey, V: BTreeValue>(
         |node| NodeRef::from_unknown_node_ptr(node.find_child(search_key)),
         |node| node.lock_exclusive(),
     )
+}
+
+pub fn get_leaf_exclusively_using_optimistic_search_with_fallback<K: BTreeKey, V: BTreeValue>(
+    root: NodeRef<K, V, marker::Unlocked, marker::Root>,
+    search_key: &K,
+) -> NodeRef<K, V, marker::Exclusive, marker::Leaf> {
+    match get_leaf_exclusively_using_optimistic_search(root, search_key) {
+        Ok(leaf) => leaf,
+        Err(_) => get_leaf_exclusively_using_shared_search(root, search_key),
+    }
 }
 
 pub fn get_leaf_exclusively_using_exclusive_search<K: BTreeKey, V: BTreeValue>(

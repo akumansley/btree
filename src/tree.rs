@@ -14,9 +14,9 @@ use crate::node_ptr::{marker, DiscriminatedNode, NodeRef};
 use crate::reference::Ref;
 use crate::root_node::RootNode;
 use crate::search::{
-    get_leaf_exclusively_using_exclusive_search, get_leaf_exclusively_using_optimistic_search,
-    get_leaf_exclusively_using_shared_search, get_leaf_shared_using_optimistic_search,
-    get_leaf_shared_using_shared_search,
+    get_leaf_exclusively_using_exclusive_search,
+    get_leaf_exclusively_using_optimistic_search_with_fallback,
+    get_leaf_shared_using_optimistic_search_with_fallback,
 };
 use crate::splitting::{
     insert_into_leaf_after_splitting,
@@ -71,29 +71,15 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
 
     pub fn get(&self, search_key: &K) -> Option<Ref<V>> {
         debug_println!("top-level get {:?}", search_key);
-
-        // try optimistic search first
-        if let Ok(leaf_node_shared) =
-            get_leaf_shared_using_optimistic_search(self.root.as_node_ref(), search_key)
-        {
-            let result = match leaf_node_shared.get(search_key) {
-                Some((_, v_ptr)) => Some(Ref::new(v_ptr)),
-                None => None,
-            };
-            leaf_node_shared.unlock_shared();
-            return result;
-        }
-
-        // fall back to shared search
-        let leaf_node_shared =
-            get_leaf_shared_using_shared_search(self.root.as_node_ref(), search_key);
-        debug_println!("top-level get {:?} done", search_key);
+        let leaf_node_shared = get_leaf_shared_using_optimistic_search_with_fallback(
+            self.root.as_node_ref(),
+            search_key,
+        );
         let result = match leaf_node_shared.get(search_key) {
             Some((_, v_ptr)) => Some(Ref::new(v_ptr)),
             None => None,
         };
         leaf_node_shared.unlock_shared();
-        debug_assert_no_locks_held::<'g'>();
         result
     }
 
@@ -106,17 +92,10 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         let graceful_key: GracefulArc<K> = GracefulArc::new(*key);
 
         // first try fully optimistic search
-        let mut optimistic_leaf = match get_leaf_exclusively_using_optimistic_search(
+        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
             &graceful_key,
-        ) {
-            Ok(leaf) => leaf,
-            // if that doesn't work, use shared search, which is still optimistic
-            // in the sense that we're assuming we don't need any structural modifications
-            Err(_) => {
-                get_leaf_exclusively_using_shared_search(self.root.as_node_ref(), &graceful_key)
-            }
-        };
+        );
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion)
             || optimistic_leaf.get(&graceful_key).is_some()
         {
@@ -168,11 +147,10 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
     }
 
     pub fn get_or_insert(&self, key: Box<K>, value: Box<V>) -> CursorMut<K, V> {
-        let mut optimistic_leaf =
-            match get_leaf_exclusively_using_optimistic_search(self.root.as_node_ref(), &key) {
-                Ok(leaf) => leaf,
-                Err(_) => get_leaf_exclusively_using_shared_search(self.root.as_node_ref(), &key),
-            };
+        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.root.as_node_ref(),
+            &key,
+        );
         let search_result = optimistic_leaf.binary_search_key(&key);
 
         // case 1: key already exists
@@ -234,14 +212,10 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
     pub fn remove(&self, key: &K) {
         debug_println!("top-level remove {:?}", key);
 
-        let mut optimistic_leaf =
-                // first try fully optimistic search
-                match get_leaf_exclusively_using_optimistic_search(self.root.as_node_ref(), key) {
-                    Ok(leaf) => leaf,
-                    // if that doesn't work, use shared search, which is still optimistic
-                    // in the sense that we're assuming we don't need any structural modifications
-                    Err(_) => get_leaf_exclusively_using_shared_search(self.root.as_node_ref(), key),
-                };
+        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.root.as_node_ref(),
+            key,
+        );
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal)
             || optimistic_leaf.get(&key).is_none()
         {
