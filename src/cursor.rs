@@ -1,3 +1,4 @@
+use crate::graceful_pointers::GracefulArc;
 use crate::node_ptr::marker;
 use crate::node_ptr::NodeRef;
 use crate::reference::Entry;
@@ -11,7 +12,8 @@ use crate::search::{
     get_last_leaf_shared_using_shared_search, get_leaf_exclusively_using_optimistic_search,
     get_leaf_exclusively_using_shared_search,
 };
-use crate::tree::{BTree, BTreeKey, BTreeValue};
+use crate::splitting::EntryLocation;
+use crate::tree::{BTree, BTreeKey, BTreeValue, ModificationType};
 use crate::util::UnwrapEither;
 
 pub struct Cursor<'a, K: BTreeKey, V: BTreeValue> {
@@ -175,12 +177,15 @@ pub struct CursorMut<'a, K: BTreeKey, V: BTreeValue> {
 }
 
 impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
+    pub fn new_from_location(tree: &'a BTree<K, V>, entry_location: EntryLocation<K, V>) -> Self {
+        Self::new_from_leaf_and_index(tree, entry_location.leaf, entry_location.index)
+    }
     pub fn new_from_leaf_and_index(
         tree: &'a BTree<K, V>,
         leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
         index: usize,
     ) -> Self {
-        Self {
+        CursorMut {
             tree,
             current_leaf: Some(leaf),
             current_index: index,
@@ -234,6 +239,44 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
     pub fn update_value(&mut self, value: Box<V>) {
         let mut leaf = self.current_leaf.unwrap();
         leaf.update(self.current_index, Box::into_raw(value));
+    }
+
+    pub fn insert_or_update<F>(&mut self, key: GracefulArc<K>, value: *mut V, update_fn: F)
+    where
+        F: Fn(*mut V) -> *mut V + Send + Sync,
+    {
+        self.seek(&key);
+
+        let mut leaf = self.current_leaf.unwrap();
+        let search_result = leaf.binary_search_key(&key);
+        if let Ok(index) = search_result {
+            let old_value = leaf.storage.get_value(index);
+            let new_value = update_fn(old_value);
+            leaf.update(index, new_value);
+            return;
+        } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
+            let index = search_result.unwrap_err();
+            leaf.insert_new_value_at_index(key, value, index);
+            return;
+        } else {
+            // we need to split the leaf, so give up the lock
+            leaf.unlock_exclusive();
+
+            let (entry_location, was_inserted) = self.tree.get_or_insert_pessimistic(key, value);
+
+            // someone may have inserted while we were searching
+            if was_inserted {
+                self.current_leaf = Some(entry_location.leaf);
+                self.current_index = entry_location.index;
+            } else {
+                // get_or_insert_pessimistic just did a get, so we need to update the value
+                let mut leaf = entry_location.leaf;
+                let new_value = update_fn(leaf.storage.get_value(entry_location.index));
+                leaf.update(entry_location.index, new_value);
+                self.current_leaf = Some(leaf);
+                self.current_index = entry_location.index;
+            }
+        }
     }
 
     fn seek_from_top(&mut self, key: &K) {

@@ -19,6 +19,12 @@ pub struct EntryLocation<K: BTreeKey, V: BTreeValue> {
     pub index: usize,
 }
 
+impl<K: BTreeKey, V: BTreeValue> EntryLocation<K, V> {
+    pub fn new(leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>, index: usize) -> Self {
+        Self { leaf, index }
+    }
+}
+
 enum Unlocker<K: BTreeKey, V: BTreeValue> {
     UnlockAll,
     RetainLock(NodeRef<K, V, marker::Exclusive, marker::Leaf>),
@@ -38,6 +44,7 @@ impl<K: BTreeKey, V: BTreeValue> Unlocker<K, V> {
         }
     }
 }
+
 fn split_leaf<K, V>(
     left_leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
     key_to_insert: GracefulArc<K>,

@@ -1,6 +1,8 @@
 use crate::array_types::MIN_KEYS_PER_NODE;
 use crate::bulk_load::{bulk_load_from_sorted_kv_pairs, bulk_load_from_sorted_kv_pairs_parallel};
-use crate::bulk_update::bulk_update_from_sorted_kv_pairs_parallel;
+use crate::bulk_update::{
+    bulk_insert_or_update_from_sorted_kv_pairs_parallel, bulk_update_from_sorted_kv_pairs_parallel,
+};
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
@@ -18,7 +20,7 @@ use crate::search::{
 };
 use crate::splitting::{
     insert_into_leaf_after_splitting,
-    insert_into_leaf_after_splitting_returning_leaf_with_new_entry,
+    insert_into_leaf_after_splitting_returning_leaf_with_new_entry, EntryLocation,
 };
 use std::fmt::{Debug, Display};
 use std::sync::atomic::Ordering;
@@ -31,10 +33,8 @@ impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 
 /// B+Tree
 /// Todo
-/// - conditional writes
-///   tree.cas("key1", None, new_val) -> insert_if
+/// - conditional removal
 ///   tree.cas("key1", old_val, None) -> remove_if
-///   tree.cas("key1", old_val, new_val) -> update_if
 /// Perf ideas:
 /// - try inlined key descriminator with node-level key prefixes
 /// - try the "no coalescing" or "relaxed" btree idea
@@ -58,6 +58,15 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
     }
     pub fn bulk_load_parallel(sorted_kv_pairs: Vec<(K, V)>) -> Self {
         bulk_load_from_sorted_kv_pairs_parallel(sorted_kv_pairs)
+    }
+    pub fn bulk_update_parallel(&self, updates: Vec<(K, V)>) {
+        bulk_update_from_sorted_kv_pairs_parallel(updates, self)
+    }
+    pub fn bulk_insert_or_update_parallel<F>(&self, entries: Vec<(K, V)>, update_fn: &F)
+    where
+        F: Fn(*mut V) -> *mut V + Send + Sync,
+    {
+        bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
 
     pub fn get(&self, search_key: &K) -> Option<Ref<V>> {
@@ -127,7 +136,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         );
         let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
-        // this should get us to 3 keys in the leaf
         if leaf_node.has_capacity_for_modification(ModificationType::Insertion) {
             leaf_node.insert(graceful_key, Box::into_raw(value));
             search_stack.drain().for_each(|n| {
@@ -157,10 +165,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         debug_assert_no_locks_held::<'i'>();
     }
 
-    pub fn bulk_update_parallel(&self, updates: Vec<(K, V)>) {
-        bulk_update_from_sorted_kv_pairs_parallel(updates, self)
-    }
-
     pub fn get_or_insert(&self, key: Box<K>, value: Box<V>) -> CursorMut<K, V> {
         let mut optimistic_leaf =
             match get_leaf_exclusively_using_optimistic_search(self.root.as_node_ref(), &key) {
@@ -188,6 +192,16 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         optimistic_leaf.unlock_exclusive();
 
         // case 3: key doesn't exist, and we need to split
+        let (entry_location, _) =
+            self.get_or_insert_pessimistic(GracefulArc::new(*key), Box::into_raw(value));
+        CursorMut::new_from_location(self, entry_location)
+    }
+
+    pub(crate) fn get_or_insert_pessimistic(
+        &self,
+        key: GracefulArc<K>,
+        value: *mut V,
+    ) -> (EntryLocation<K, V>, bool) {
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
             self.root.as_node_ref().lock_exclusive(),
             &key,
@@ -204,15 +218,15 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
                 n.assert_exclusive().unlock_exclusive();
             });
 
-            return CursorMut::new_from_leaf_and_index(self, leaf_node, index.unwrap());
+            return (EntryLocation::new(leaf_node, index.unwrap()), false);
         }
 
         let entry_location = insert_into_leaf_after_splitting_returning_leaf_with_new_entry(
             search_stack,
-            GracefulArc::new(*key),
-            Box::into_raw(value),
+            key,
+            value,
         );
-        return CursorMut::new_from_leaf_and_index(self, entry_location.leaf, entry_location.index);
+        (entry_location, true)
     }
 
     pub fn remove(&self, key: &K) {
