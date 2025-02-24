@@ -25,10 +25,10 @@ use crate::splitting::{
 use std::fmt::{Debug, Display};
 use std::sync::atomic::Ordering;
 
-pub trait BTreeKey: PartialOrd + Ord + Clone + Debug + Display + Send + 'static {}
+pub trait BTreeKey: PartialOrd + Ord + Debug + Display + Send + 'static {}
 pub trait BTreeValue: Debug + Display + Send + 'static {}
 
-impl<K: PartialOrd + Ord + Clone + Debug + Display + Send + 'static> BTreeKey for K {}
+impl<K: PartialOrd + Ord + Debug + Display + Send + 'static> BTreeKey for K {}
 impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 
 /// B+Tree
