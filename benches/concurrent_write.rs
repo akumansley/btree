@@ -10,42 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use std::thread::Scope;
 use std::time::Duration;
 
 const NUM_OPERATIONS: usize = 1_000_000;
-
-#[cfg(feature = "deadlock_detection")]
-pub fn check_deadlocks<'a, 'b>(
-    s: &'a Scope<'a, 'b>,
-    threads_done: Arc<AtomicUsize>,
-    num_threads: usize,
-) {
-    use parking_lot::deadlock;
-
-    s.spawn(move || loop {
-        if threads_done.load(Ordering::Relaxed) == num_threads {
-            break;
-        }
-        thread::sleep(Duration::from_secs(1));
-        let deadlocks = deadlock::check_deadlock();
-        if deadlocks.is_empty() {
-            continue;
-        }
-
-        println!("{} deadlocks detected", deadlocks.len());
-        for (i, threads) in deadlocks.iter().enumerate() {
-            println!("Deadlock #{}", i);
-            for t in threads {
-                println!("Thread Id {:#?}", t.thread_id());
-                println!("{:#?}", t.backtrace());
-            }
-        }
-    });
-}
-
-#[cfg(not(feature = "deadlock_detection"))]
-fn check_deadlocks(_: &Scope, _: Arc<AtomicUsize>, _: usize) {}
 
 fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize) {
     c.bench_with_input(
@@ -71,7 +38,7 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                                 let end = start + ops_per_thread;
 
                                 for _ in start..end {
-                                    let key = rng.gen_range(0..NUM_OPERATIONS);
+                                    let key = rng.random_range(0..NUM_OPERATIONS);
                                     let value = format!("value{}", key);
                                     tree.insert(Box::new(key), Box::new(value));
                                 }
@@ -80,7 +47,6 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
                         }
-                        check_deadlocks(s, threads_done, num_threads);
                     });
                     sum += start.elapsed();
                 }
@@ -124,8 +90,8 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                 qsbr_reclaimer().register_thread();
                                 let mut rng = StdRng::seed_from_u64(thread_id as u64);
                                 for _ in 0..ops_per_thread {
-                                    let operation = rng.gen_range(0..3);
-                                    let key = rng.gen_range(0..NUM_OPERATIONS);
+                                    let operation = rng.random_range(0..3);
+                                    let key = rng.random_range(0..NUM_OPERATIONS);
 
                                     match operation {
                                         0 => {
@@ -149,7 +115,6 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
                         }
-                        check_deadlocks(s, threads_done, num_threads);
                     });
                     sum += start.elapsed();
                 }
@@ -196,8 +161,8 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                 let mut rng = StdRng::seed_from_u64(thread_id as u64);
 
                                 for _ in 0..ops_per_thread {
-                                    let operation = rng.gen_range(0..100);
-                                    let key = rng.gen_range(0..NUM_OPERATIONS);
+                                    let operation = rng.random_range(0..100);
+                                    let key = rng.random_range(0..NUM_OPERATIONS);
 
                                     match operation {
                                         0 => {
@@ -225,7 +190,6 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
                         }
-                        check_deadlocks(s, threads_done, num_threads);
                     });
                     sum += start.elapsed();
                 }

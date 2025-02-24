@@ -5,12 +5,9 @@ edition = "2021"
 
 [dependencies]
 smallvec = "1.11.1"
-rand = "0.8.5"
-crossbeam = "0.8.4"
-tagptr = "0.2.0"
+rand = "0.9.0"
 fxhash = "0.2"
 usync = "0.2.1"
-parking_lot = "0.12.3"
 spin = "0.9.8"
 lock_api = "0.4.12"
 rayon = "1.10.0"
@@ -40,5 +37,4 @@ debug-assertions = true
 overflow-checks = true
 
 [features]
-deadlock_detection = []
 extra_verbose_debug_logging = []

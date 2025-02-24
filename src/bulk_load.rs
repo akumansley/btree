@@ -43,9 +43,9 @@ impl<T> DerefMut for AliasableBox<T> {
 unsafe impl<K: BTreeKey, V: BTreeValue> Send for AliasableBox<LeafNode<K, V>> {}
 
 fn calculate_chunk_size(target_utilization: f64, jitter_range: f64) -> usize {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let base_chunk_size = (ORDER as f64 * target_utilization) as usize;
-    let jitter = (ORDER as f64 * jitter_range * (2.0 * rng.gen::<f64>() - 1.0)) as usize;
+    let jitter = (ORDER as f64 * jitter_range * (2.0 * rng.random::<f64>() - 1.0)) as usize;
     base_chunk_size
         .saturating_add(jitter)
         .clamp(ORDER / 4, ORDER - 1)

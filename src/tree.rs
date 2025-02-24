@@ -437,7 +437,7 @@ mod tests {
 
         // Test with 10 random seeds
         for _ in 0..10 {
-            let random_seed: u64 = rand::thread_rng().gen();
+            let random_seed: u64 = rand::rng().random();
             println!("Using random seed: {}", random_seed);
             run_random_operations_with_seed_single_threaded(random_seed);
         }
@@ -452,11 +452,11 @@ mod tests {
 
         // Perform random operations for a while
         for _ in 0..NUM_OPERATIONS {
-            let operation = rng.gen_range(0..3);
+            let operation = rng.random_range(0..3);
             match operation {
                 0 => {
                     // Random insert
-                    let key = rng.gen_range(0..1000);
+                    let key = rng.random_range(0..1000);
                     let value = format!("value{}", key);
                     tree.insert(Box::new(key), Box::new(value.clone()));
                     reference_map.insert(key, value);
@@ -464,7 +464,7 @@ mod tests {
                 }
                 1 => {
                     // Random get
-                    let key = rng.gen_range(0..1000);
+                    let key = rng.random_range(0..1000);
                     let btree_result = tree.get(&key);
                     let hashmap_result = reference_map.get(&key);
                     if btree_result.as_deref() != hashmap_result {
@@ -513,7 +513,7 @@ mod tests {
         }
 
         // also run with a random seed
-        let random_seed: u64 = rand::thread_rng().gen();
+        let random_seed: u64 = rand::rng().random();
         println!("Using random seed: {}", random_seed);
         run_random_operations_with_seed_multi_threaded(random_seed);
     }
@@ -539,19 +539,19 @@ mod tests {
                     qsbr_reclaimer().register_thread();
                     let mut rng = StdRng::seed_from_u64(seed);
                     for _ in 0..operations_per_thread {
-                        let operation = rng.gen_range(0..3);
+                        let operation = rng.random_range(0..3);
                         match operation {
                             0 => {
-                                let key = rng.gen_range(0..1000);
+                                let key = rng.random_range(0..1000);
                                 let value = format!("value{}", key);
                                 tree_ref.insert(Box::new(key), Box::new(value.clone()));
                             }
                             1 => {
-                                let key = rng.gen_range(0..1000);
+                                let key = rng.random_range(0..1000);
                                 let _ = tree_ref.get(&key);
                             }
                             2 => {
-                                let key = rng.gen_range(0..1000);
+                                let key = rng.random_range(0..1000);
                                 tree_ref.remove(&key);
                             }
                             _ => unreachable!(),
