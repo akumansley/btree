@@ -10,7 +10,6 @@ use crate::qsbr::qsbr_reclaimer;
 pub trait GracefulAtomicPointer<T: Send + 'static> {
     type GracefulPointer: 'static;
 
-    fn new(inner: T) -> Self;
     fn load(&self, ordering: Ordering) -> Self::GracefulPointer;
     fn store(&self, gbox: Self::GracefulPointer, ordering: Ordering);
     fn swap(
@@ -23,9 +22,6 @@ pub trait GracefulAtomicPointer<T: Send + 'static> {
 impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicPtr<T> {
     type GracefulPointer = *mut T;
 
-    fn new(inner: T) -> Self {
-        Self::new(Box::into_raw(Box::new(inner)))
-    }
     fn load(&self, ordering: Ordering) -> *mut T {
         self.load(ordering)
     }
@@ -73,10 +69,6 @@ pub struct AtomicGracefulBox<T: Send + 'static> {
 impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulBox<T> {
     type GracefulPointer = GracefulBox<T>;
 
-    fn new(inner: T) -> Self {
-        let inner_ptr = Box::into_raw(Box::new(inner));
-        Self::new(inner_ptr)
-    }
     fn load(&self, ordering: Ordering) -> GracefulBox<T> {
         let ptr = self.inner.load(ordering);
         GracefulBox::new(ptr)
@@ -94,15 +86,6 @@ impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulBox<T> {
     }
 }
 
-impl<T: Send + 'static> AtomicGracefulBox<T> {
-    pub fn new(inner: *mut T) -> Self {
-        Self {
-            inner: AtomicPtr::new(inner),
-            phantom: PhantomData,
-        }
-    }
-}
-
 pub struct AtomicGracefulArc<T: Send + 'static> {
     inner: AtomicPtr<GracefulArcInner<T>>,
     phantom: PhantomData<GracefulArcInner<T>>,
@@ -110,18 +93,6 @@ pub struct AtomicGracefulArc<T: Send + 'static> {
 
 impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulArc<T> {
     type GracefulPointer = GracefulArc<T>;
-
-    fn new(inner: T) -> Self {
-        let inner = GracefulArcInner {
-            ref_count: AtomicUsize::new(1),
-            data: inner,
-        };
-        let inner_ptr = Box::into_raw(Box::new(inner));
-        AtomicGracefulArc {
-            inner: AtomicPtr::new(inner_ptr),
-            phantom: PhantomData,
-        }
-    }
     fn load(&self, ordering: Ordering) -> GracefulArc<T> {
         let ptr = self.inner.load(ordering);
         GracefulArc::from_ptr(ptr)

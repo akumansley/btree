@@ -95,6 +95,7 @@ pub struct RangeBTreeIterator<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K
     cursor: Option<Cursor<'a, K, V>>,
 }
 
+#[cfg(test)]
 impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> RangeBTreeIterator<'a, K, V, D> {
     pub fn new(tree: &'a BTree<K, V>, start: Option<&'a K>, end: Option<&'a K>) -> Self {
         RangeBTreeIterator {

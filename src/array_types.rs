@@ -18,11 +18,7 @@ pub const MAX_KEYS_PER_NODE: usize = ORDER - 1; // number of search keys per nod
 pub const MIN_KEYS_PER_NODE: usize = ORDER / 2; // number of search keys per node
 pub const KV_IDX_CENTER: usize = MAX_KEYS_PER_NODE / 2;
 pub const MAX_CHILDREN_PER_NODE: usize = ORDER;
-
-pub const KEY_TEMP_ARRAY_SIZE: usize = ORDER;
 pub const VALUE_TEMP_ARRAY_SIZE: usize = ORDER;
-
-pub const CHILD_TEMP_ARRAY_SIZE: usize = ORDER + 1;
 
 macro_rules! define_array_types {
     ($name:ident, $size:expr) => {

@@ -48,15 +48,15 @@ fn calculate_chunk_size(target_utilization: f64, jitter_range: f64) -> usize {
     let jitter = (ORDER as f64 * jitter_range * (2.0 * rng.random::<f64>() - 1.0)) as usize;
     base_chunk_size
         .saturating_add(jitter)
-        .clamp(ORDER / 4, ORDER - 1)
+        .clamp(ORDER / 4, ORDER - 2)
 }
 
 fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
     pairs_iter: impl Iterator<Item = (K, V)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> {
-    let mut leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> = Vec::new();
+) -> Vec<(AliasableBox<LeafNode<K, V>>, GracefulArc<K>)> {
+    let mut leaves: Vec<(AliasableBox<LeafNode<K, V>>, GracefulArc<K>)> = Vec::new();
     let mut pairs_iter = pairs_iter.peekable();
 
     while pairs_iter.peek().is_some() {
@@ -79,7 +79,7 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
 
         // Get the first key of this leaf to use as the split key
         let key = leaf_inner.storage.get_key(0);
-        let maybe_split_key = Some(key.clone_and_increment_ref_count());
+        let split_key = key.clone_and_increment_ref_count();
 
         // Link to previous leaf if any
         if let Some((prev_leaf, _)) = leaves.last() {
@@ -93,20 +93,19 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
             }
         }
 
-        leaves.push((leaf, maybe_split_key));
+        leaves.push((leaf, split_key));
     }
 
     leaves
 }
 
 fn construct_internal_level<K: BTreeKey, V: BTreeValue>(
-    children_with_split_keys: Vec<(*mut NodeHeader, Option<GracefulArc<K>>)>,
+    children_with_split_keys: Vec<(*mut NodeHeader, GracefulArc<K>)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> Vec<(*mut InternalNode<K, V>, Option<GracefulArc<K>>)> {
+) -> Vec<(*mut InternalNode<K, V>, GracefulArc<K>)> {
     let mut internal_nodes = Vec::new();
     let mut children_iter = children_with_split_keys.into_iter().peekable();
-    let mut is_leftmost = true;
 
     // Process children in chunks to create internal nodes
     while children_iter.peek().is_some() {
@@ -120,13 +119,7 @@ fn construct_internal_level<K: BTreeKey, V: BTreeValue>(
         // Get the first child and its split key
         let (first_child, first_child_split_key) = children_iter.next().unwrap();
 
-        // Get the split key for this node (None if leftmost)
-        let maybe_split_key = if is_leftmost {
-            is_leftmost = false;
-            None
-        } else {
-            first_child_split_key
-        };
+        let new_node_split_key = first_child_split_key;
 
         // Store first child
         node_inner
@@ -136,25 +129,30 @@ fn construct_internal_level<K: BTreeKey, V: BTreeValue>(
         // Add remaining children in this chunk
         for _ in 1..chunk_size {
             if let Some((child, child_split_key)) = children_iter.next() {
-                // Use the child's split key as the split key in this node
-                if let Some(split_key) = child_split_key {
-                    node_inner
-                        .storage
-                        .push(split_key, NodePtr::from_raw_ptr(child));
-                }
+                node_inner
+                    .storage
+                    .push(child_split_key, NodePtr::from_raw_ptr(child));
             } else {
                 break;
             }
         }
+        // If we've only got one more, we don't have enough for another internal node, so just add it here
+        // we clamp the chunk size to ORDER-2 so we should have room
+        if children_iter.len() == 1 {
+            let (child, split_key) = children_iter.next().unwrap();
+            node_inner
+                .storage
+                .push(split_key, NodePtr::from_raw_ptr(child));
+        }
 
-        internal_nodes.push((node_ptr, maybe_split_key));
+        internal_nodes.push((node_ptr, new_node_split_key));
     }
 
     internal_nodes
 }
 
 fn construct_tree_from_leaves<K: BTreeKey, V: BTreeValue>(
-    leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)>,
+    leaves: Vec<(AliasableBox<LeafNode<K, V>>, GracefulArc<K>)>,
     target_utilization: f64,
     jitter_range: f64,
 ) -> *mut NodeHeader {
@@ -164,7 +162,7 @@ fn construct_tree_from_leaves<K: BTreeKey, V: BTreeValue>(
     }
 
     // Convert leaves to NodeHeaders for the first level
-    let mut current_level: Vec<(*mut NodeHeader, Option<GracefulArc<K>>)> = leaves
+    let mut current_level: Vec<(*mut NodeHeader, GracefulArc<K>)> = leaves
         .into_iter()
         .map(|(node, split_key)| (node.as_ptr() as *mut NodeHeader, split_key))
         .collect();
@@ -180,7 +178,9 @@ fn construct_tree_from_leaves<K: BTreeKey, V: BTreeValue>(
             .collect();
     }
 
-    current_level[0].0
+    let (top_of_tree, extra_key) = current_level.pop().unwrap();
+    unsafe { extra_key.decrement_ref_count_and_drop_if_zero() };
+    top_of_tree
 }
 
 pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey, V: BTreeValue>(
@@ -217,7 +217,7 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
     let jitter_range = 0.1;
 
     let pool = qsbr_pool();
-    let leaves: Vec<(AliasableBox<LeafNode<K, V>>, Option<GracefulArc<K>>)> = pool.install(|| {
+    let leaves: Vec<(AliasableBox<LeafNode<K, V>>, GracefulArc<K>)> = pool.install(|| {
         let chunks = sorted_kv_pairs.into_par_iter().chunks(ORDER * 8);
         chunks
             .map(|chunk| construct_leaf_level(chunk.into_iter(), target_utilization, jitter_range))
