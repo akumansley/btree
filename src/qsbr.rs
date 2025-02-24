@@ -43,7 +43,7 @@ struct ThreadState {
 }
 
 impl MemoryReclaimer {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             inner: Mutex::new(MemoryReclaimerInner {
                 current_interval_callbacks: VecDeque::new(),

@@ -169,16 +169,26 @@ impl<'a, K: BTreeKey, V: BTreeValue> Drop for Cursor<'a, K, V> {
 }
 
 pub struct CursorMut<'a, K: BTreeKey, V: BTreeValue> {
-    pub tree: &'a BTree<K, V>,
-    pub current_leaf: Option<NodeRef<K, V, marker::Exclusive, marker::Leaf>>,
-    pub current_index: usize,
+    tree: &'a BTree<K, V>,
+    current_leaf: Option<NodeRef<K, V, marker::Exclusive, marker::Leaf>>,
+    current_index: usize,
 }
 
 impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
-    pub fn new_from_location(tree: &'a BTree<K, V>, entry_location: EntryLocation<K, V>) -> Self {
+    pub(crate) fn new(tree: &'a BTree<K, V>) -> Self {
+        Self {
+            tree,
+            current_leaf: None,
+            current_index: 0,
+        }
+    }
+    pub(crate) fn new_from_location(
+        tree: &'a BTree<K, V>,
+        entry_location: EntryLocation<K, V>,
+    ) -> Self {
         Self::new_from_leaf_and_index(tree, entry_location.leaf, entry_location.index)
     }
-    pub fn new_from_leaf_and_index(
+    pub(crate) fn new_from_leaf_and_index(
         tree: &'a BTree<K, V>,
         leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
         index: usize,

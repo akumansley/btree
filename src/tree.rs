@@ -31,17 +31,16 @@ pub trait BTreeValue: Debug + Display + Send + 'static {}
 impl<K: PartialOrd + Ord + Debug + Display + Send + 'static> BTreeKey for K {}
 impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 
-/// B+Tree
-/// Todo
-/// - conditional removal
-///   tree.cas("key1", old_val, None) -> remove_if
-/// Perf ideas:
-/// - try inlined key descriminator with node-level key prefixes
-/// - try the "no coalescing" or "relaxed" btree idea
-/// - try unordered leaf storage, or lazily sorted leaf storage
-/// To test with Miri:
-///   MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test
-
+/// Concurrent B+Tree
+// Todo
+// - conditional removal
+//   tree.cas("key1", old_val, None) -> remove_if
+// Perf ideas:
+// - try inlined key descriminator with node-level key prefixes
+// - try the "no coalescing" or "relaxed" btree idea
+// - try unordered leaf storage, or lazily sorted leaf storage
+// To test with Miri:
+//   MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test
 pub struct BTree<K: BTreeKey, V: BTreeValue> {
     pub root: RootNode<K, V>,
 }
@@ -347,11 +346,7 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
     }
 
     pub fn cursor_mut(&self) -> CursorMut<K, V> {
-        CursorMut {
-            tree: self,
-            current_leaf: None,
-            current_index: 0,
-        }
+        CursorMut::new(self)
     }
 }
 
