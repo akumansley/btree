@@ -5,8 +5,8 @@ use crate::leaf_node::LeafNodeInner;
 use crate::node_ptr::{marker, NodeRef};
 use crate::qsbr::qsbr_reclaimer;
 use crate::search_dequeue::SearchDequeue;
+use crate::sync::Ordering;
 use crate::tree::{BTreeKey, BTreeValue};
-use std::sync::atomic::Ordering;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum UnderfullNodePosition {

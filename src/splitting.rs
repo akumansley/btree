@@ -1,5 +1,5 @@
+use crate::sync::Ordering;
 use std::ptr;
-use std::sync::atomic::Ordering;
 
 use crate::array_types::{
     InternalChildTempArray, InternalKeyTempArray, LeafTempArray, KV_IDX_CENTER, MAX_KEYS_PER_NODE,

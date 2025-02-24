@@ -1,67 +1,4 @@
 use crate::hybrid_latch::{HybridLatch, LockInfo};
-use std::cell::Cell;
-
-// Define thread-local counters for shared and exclusive locks
-thread_local! {
-    static SHARED_LOCK_COUNT: Cell<usize> = Cell::new(0);
-    static EXCLUSIVE_LOCK_COUNT: Cell<usize> = Cell::new(0);
-}
-
-// Function to increment the shared lock counter
-fn increment_shared_lock_count() {
-    #[cfg(debug_assertions)]
-    {
-        SHARED_LOCK_COUNT.with(|count| {
-            count.set(count.get() + 1);
-        });
-    }
-}
-
-// Function to decrement the shared lock counter
-fn decrement_shared_lock_count() {
-    #[cfg(debug_assertions)]
-    {
-        SHARED_LOCK_COUNT.with(|count| {
-            count.set(count.get() - 1);
-        });
-    }
-}
-
-// Function to increment the exclusive lock counter
-fn increment_exclusive_lock_count() {
-    #[cfg(debug_assertions)]
-    {
-        EXCLUSIVE_LOCK_COUNT.with(|count| {
-            count.set(count.get() + 1);
-        });
-    }
-}
-
-// Function to decrement the exclusive lock counter
-fn decrement_exclusive_lock_count() {
-    #[cfg(debug_assertions)]
-    {
-        EXCLUSIVE_LOCK_COUNT.with(|count| {
-            count.set(count.get() - 1);
-        });
-    }
-}
-
-pub fn debug_assert_no_locks_held<const METHOD: char>() {
-    #[cfg(debug_assertions)]
-    {
-        let (shared_count, exclusive_count) = get_lock_counts();
-        assert_eq!(shared_count, 0);
-        assert_eq!(exclusive_count, 0, "method: {:?}", METHOD);
-    }
-}
-
-#[cfg(debug_assertions)]
-fn get_lock_counts() -> (usize, usize) {
-    let shared_count = SHARED_LOCK_COUNT.with(|count| count.get());
-    let exclusive_count = EXCLUSIVE_LOCK_COUNT.with(|count| count.get());
-    (shared_count, exclusive_count)
-}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Height {
@@ -96,12 +33,6 @@ impl Height {
     }
 }
 
-#[cfg(debug_assertions)]
-pub fn debug_perchance_yield() {}
-
-#[cfg(not(debug_assertions))]
-pub fn debug_perchance_yield() {}
-
 #[repr(C)]
 pub struct NodeHeader {
     height: Height,
@@ -116,10 +47,7 @@ impl NodeHeader {
         }
     }
     pub fn lock_exclusive(&self) {
-        debug_perchance_yield();
         self.lock.lock_exclusive();
-        debug_perchance_yield();
-        increment_exclusive_lock_count();
     }
     pub fn is_locked_exclusive(&self) -> bool {
         self.lock.is_locked_exclusive()
@@ -127,39 +55,28 @@ impl NodeHeader {
     pub fn unlock_exclusive(&self) {
         debug_assert!(self.is_locked_exclusive());
         self.lock.unlock_exclusive();
-        decrement_exclusive_lock_count();
     }
     pub fn lock_shared(&self) {
-        debug_perchance_yield();
         self.lock.lock_shared();
-        debug_perchance_yield();
-        increment_shared_lock_count();
     }
     pub fn is_locked_shared(&self) -> bool {
         self.lock.is_locked_shared()
     }
     pub fn try_lock_shared(&self) -> Result<(), ()> {
         match self.lock.try_lock_shared() {
-            Ok(_) => {
-                increment_shared_lock_count();
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(_) => Err(()),
         }
     }
     pub fn try_lock_exclusive(&self) -> Result<(), ()> {
         match self.lock.try_lock_exclusive() {
-            Ok(_) => {
-                increment_exclusive_lock_count();
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(_) => Err(()),
         }
     }
     pub fn unlock_shared(&self) {
         debug_assert!(self.is_locked_shared());
         self.lock.unlock_shared();
-        decrement_shared_lock_count();
     }
     pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {
         self.lock.lock_optimistic()
@@ -178,7 +95,6 @@ impl NodeHeader {
 
     pub fn retire(&self) {
         self.lock.retire();
-        decrement_exclusive_lock_count();
     }
 
     pub fn height(&self) -> Height {

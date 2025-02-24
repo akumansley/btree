@@ -8,6 +8,7 @@ use crate::leaf_node::LeafNode;
 use crate::node::NodeHeader;
 use crate::node_ptr::NodePtr;
 use crate::qsbr::qsbr_pool;
+use crate::sync::Ordering;
 use crate::tree::{BTree, BTreeKey, BTreeValue};
 use rand::Rng;
 use rayon::prelude::*;
@@ -85,11 +86,11 @@ fn construct_leaf_level<K: BTreeKey, V: BTreeValue>(
         if let Some((prev_leaf, _)) = leaves.last() {
             leaf_inner
                 .prev_leaf
-                .store(prev_leaf.as_ptr(), std::sync::atomic::Ordering::Release);
+                .store(prev_leaf.as_ptr(), Ordering::Release);
             unsafe {
-                (&mut *(*prev_leaf).inner.get())
+                (*(*prev_leaf).inner.get())
                     .next_leaf
-                    .store(leaf.as_ptr(), std::sync::atomic::Ordering::Release);
+                    .store(leaf.as_ptr(), Ordering::Release);
             }
         }
 
@@ -203,9 +204,7 @@ pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey, V: BTreeValue>(
     let tree = BTree::new();
     unsafe {
         let root_inner = &mut *tree.root.inner.get();
-        root_inner
-            .top_of_tree
-            .store(root_node, std::sync::atomic::Ordering::Release);
+        root_inner.top_of_tree.store(root_node, Ordering::Release);
     }
     tree
 }
@@ -227,14 +226,14 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
                     if let Some((last_leaf, _)) = acc.last_mut() {
                         if let Some((first_leaf, _)) = leaves.first_mut() {
                             unsafe {
-                                last_leaf.get_inner().next_leaf.store(
-                                    first_leaf.as_ptr(),
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
-                                first_leaf.get_inner().prev_leaf.store(
-                                    last_leaf.as_ptr(),
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
+                                last_leaf
+                                    .get_inner()
+                                    .next_leaf
+                                    .store(first_leaf.as_ptr(), Ordering::Relaxed);
+                                first_leaf
+                                    .get_inner()
+                                    .prev_leaf
+                                    .store(last_leaf.as_ptr(), Ordering::Relaxed);
                             }
                         }
                     }
@@ -249,9 +248,7 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
     let tree = BTree::new();
     unsafe {
         let root_inner = &mut *tree.root.inner.get();
-        root_inner
-            .top_of_tree
-            .store(root_node, std::sync::atomic::Ordering::Release);
+        root_inner.top_of_tree.store(root_node, Ordering::Release);
     }
     tree
 }

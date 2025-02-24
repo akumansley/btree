@@ -1,13 +1,13 @@
-use std::cell::UnsafeCell;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::node::{Height, NodeHeader};
 use crate::node_ptr::{marker, DiscriminatedNode, NodePtr, NodeRef};
+use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
 use crate::tree::BTreeValue;
 use crate::BTreeKey;
+use std::cell::UnsafeCell;
 
 #[repr(C)]
 pub struct RootNode<K: BTreeKey, V: BTreeValue> {

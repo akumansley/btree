@@ -19,6 +19,7 @@ mod root_node;
 mod search;
 mod search_dequeue;
 mod splitting;
+mod sync;
 mod tree;
 mod util;
 pub use cursor::{Cursor, CursorMut};

@@ -393,6 +393,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> Drop for CursorMut<'a, K, V> {
 mod tests {
     use crate::array_types::ORDER;
     use crate::qsbr::qsbr_reclaimer;
+    use std::sync::Barrier;
 
     use super::*;
 
@@ -620,7 +621,7 @@ mod tests {
             tree.check_invariants();
         }
 
-        let barrier = std::sync::Barrier::new(2);
+        let barrier = Barrier::new(2);
 
         std::thread::scope(|s| {
             // First thread starts at end with mut cursor and moves backwards

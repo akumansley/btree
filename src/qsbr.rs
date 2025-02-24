@@ -1,6 +1,5 @@
 use fxhash::FxHashSet;
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use std::thread;
 
 use std::sync::Mutex;
 use std::{collections::VecDeque, sync::OnceLock};
@@ -14,7 +13,14 @@ pub struct MemoryReclaimer {
 type ThreadId = u64;
 
 fn gettid() -> ThreadId {
-    unsafe { std::mem::transmute(thread::current().id()) }
+    #[cfg(feature = "shuttle")]
+    {
+        unsafe { std::mem::transmute(shuttle::thread::current().id()) }
+    }
+    #[cfg(not(feature = "shuttle"))]
+    {
+        unsafe { std::mem::transmute(std::thread::current().id()) }
+    }
 }
 
 struct MemoryReclaimerInner {
@@ -29,7 +35,8 @@ struct MemoryReclaimerInner {
     quiesced_threads: FxHashSet<ThreadId>,
 }
 
-thread_local! {
+#[cfg(not(feature = "shuttle"))]
+std::thread_local! {
     /// Each thread buffers callbacks locally until it quiesces
     static THREAD_STATE: std::cell::RefCell<ThreadState> = std::cell::RefCell::new(ThreadState {
         local_callbacks: VecDeque::new(),
@@ -37,6 +44,14 @@ thread_local! {
     });
 }
 
+#[cfg(feature = "shuttle")]
+shuttle::thread_local! {
+    /// Each thread buffers callbacks locally until it quiesces
+    static THREAD_STATE: std::cell::RefCell<ThreadState> = std::cell::RefCell::new(ThreadState {
+        local_callbacks: VecDeque::new(),
+        is_registered: false,
+    });
+}
 struct ThreadState {
     local_callbacks: VecDeque<Box<dyn FnOnce() + Send>>,
     is_registered: bool,
@@ -184,11 +199,11 @@ pub fn qsbr_pool() -> &'static ThreadPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Barrier,
+    use crate::sync::{AtomicUsize, Ordering};
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
     };
-    use std::thread;
 
     /// In a single-thread scenario, callbacks added in one interval are executed
     /// immediately when the thread quiesces.

@@ -1,10 +1,6 @@
-use std::{
-    marker::PhantomData,
-    mem::MaybeUninit,
-    ptr,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
-};
+use std::{marker::PhantomData, mem::MaybeUninit, ptr};
 
+use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
 use smallvec::Array;
 
 use crate::{

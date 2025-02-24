@@ -13,7 +13,8 @@ use crate::{
     tree::{BTreeKey, BTreeValue, ModificationType},
     util::UnwrapEither,
 };
-use std::{cell::UnsafeCell, marker::PhantomData};
+use std::cell::UnsafeCell;
+use std::marker::PhantomData;
 
 // this is the shared node data
 pub struct InternalNodeInner<K: BTreeKey, V: BTreeValue> {

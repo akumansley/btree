@@ -1,9 +1,5 @@
-use std::{
-    marker::PhantomData,
-    ops::Deref,
-    ptr::NonNull,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
-};
+use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
+use std::{marker::PhantomData, ops::Deref, ptr::NonNull};
 
 use crate::qsbr::qsbr_reclaimer;
 
@@ -47,9 +43,6 @@ impl<T: Send + 'static> GracefulBox<T> {
             phantom: PhantomData,
         }
     }
-    pub fn as_ptr(&self) -> *mut T {
-        self.inner.as_ptr()
-    }
 }
 unsafe impl<T: Send + 'static> Send for GracefulBox<T> {}
 
@@ -57,31 +50,6 @@ impl<T: Send + 'static> Drop for GracefulBox<T> {
     fn drop(&mut self) {
         unsafe {
             drop(Box::from_raw(self.inner.as_ptr()));
-        }
-    }
-}
-
-pub struct AtomicGracefulBox<T: Send + 'static> {
-    inner: AtomicPtr<T>,
-    phantom: PhantomData<T>,
-}
-
-impl<T: Send + 'static> GracefulAtomicPointer<T> for AtomicGracefulBox<T> {
-    type GracefulPointer = GracefulBox<T>;
-
-    fn load(&self, ordering: Ordering) -> GracefulBox<T> {
-        let ptr = self.inner.load(ordering);
-        GracefulBox::new(ptr)
-    }
-    fn store(&self, gbox: GracefulBox<T>, ordering: Ordering) {
-        self.inner.store(gbox.as_ptr(), ordering);
-    }
-    fn swap(&self, gbox: GracefulBox<T>, ordering: Ordering) -> Option<GracefulBox<T>> {
-        let old_ptr = self.inner.swap(gbox.as_ptr(), ordering);
-        if old_ptr.is_null() {
-            None
-        } else {
-            Some(GracefulBox::new(old_ptr))
         }
     }
 }

@@ -8,7 +8,6 @@ use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
 use crate::graceful_pointers::GracefulArc;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
-use crate::node::debug_assert_no_locks_held;
 use crate::node_ptr::{marker, DiscriminatedNode, NodeRef};
 use crate::reference::Ref;
 use crate::root_node::RootNode;
@@ -21,8 +20,8 @@ use crate::splitting::{
     insert_into_leaf_after_splitting,
     insert_into_leaf_after_splitting_returning_leaf_with_new_entry, EntryLocation,
 };
+use crate::sync::Ordering;
 use std::fmt::{Debug, Display};
-use std::sync::atomic::Ordering;
 
 pub trait BTreeKey: PartialOrd + Ord + Debug + Display + Send + 'static {}
 pub trait BTreeValue: Debug + Display + Send + 'static {}
@@ -102,7 +101,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             if inserted {
                 self.root.len.fetch_add(1, Ordering::Relaxed);
             }
-            debug_assert_no_locks_held::<'i'>();
             return;
         }
         optimistic_leaf.unlock_exclusive();
@@ -133,7 +131,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
                 search_stack.drain().for_each(|n| {
                     n.assert_exclusive().unlock_exclusive();
                 });
-                debug_assert_no_locks_held::<'i'>();
                 return;
             } else {
                 insert_into_leaf_after_splitting(search_stack, graceful_key, Box::into_raw(value));
@@ -141,7 +138,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         }
         self.root.len.fetch_add(1, Ordering::Relaxed);
         debug_println!("top-level insert done");
-        debug_assert_no_locks_held::<'i'>();
     }
 
     pub fn get_or_insert(&self, key: Box<K>, value: Box<V>) -> CursorMut<K, V> {
@@ -209,7 +205,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
     pub fn remove(&self, key: &K) {
         debug_println!("top-level remove {:?}", key);
         self.remove_if(key, |_| true);
-        debug_assert_no_locks_held::<'c'>();
     }
 
     pub fn remove_if(&self, key: &K, predicate: impl Fn(&V) -> bool) {
@@ -223,13 +218,11 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             Some((_, v_ptr)) => v_ptr,
             None => {
                 optimistic_leaf.unlock_exclusive();
-                debug_assert_no_locks_held::<'d'>();
                 return;
             } // nothing to remove
         };
         if !predicate(unsafe { &*value }) {
             optimistic_leaf.unlock_exclusive();
-            debug_assert_no_locks_held::<'e'>();
             return;
         }
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal) {
@@ -239,7 +232,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             }
             debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
             optimistic_leaf.unlock_exclusive();
-            debug_assert_no_locks_held::<'a'>();
             return;
         }
         optimistic_leaf.unlock_exclusive();
@@ -259,7 +251,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
             Ok(index) => {
                 let value = leaf_node_exclusive.storage.get_value(index);
                 if !predicate(unsafe { &*value }) {
-                    debug_assert_no_locks_held::<'f'>();
                 } else {
                     leaf_node_exclusive.remove_at_index(search_result.unwrap());
                     self.root.len.fetch_sub(1, Ordering::Relaxed);
@@ -276,7 +267,6 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
         search_stack.drain().for_each(|n| {
             n.assert_exclusive().unlock_exclusive();
         });
-        debug_assert_no_locks_held::<'b'>();
     }
 
     pub fn print_tree(&self) {
@@ -406,11 +396,12 @@ mod tests {
         qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
     }
 
+    use crate::sync::AtomicUsize;
     use rand::rngs::StdRng;
     use rand::seq::IteratorRandom;
     use rand::{Rng, SeedableRng};
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicUsize;
+
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
@@ -643,7 +634,6 @@ mod tests {
             assert_eq!(cursor.current().unwrap().key(), &((ORDER - 1) * 2));
         }
 
-        debug_assert_no_locks_held::<'t'>();
         // Verify tree invariants after all operations
         tree.check_invariants();
 
@@ -702,5 +692,137 @@ mod tests {
         tree.check_invariants();
 
         qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+    }
+
+    #[test]
+    #[cfg(feature = "shuttle")]
+    fn test_concurrent_operations_under_shuttle() {
+        shuttle::check_random(
+            || {
+                // Register the main thread with QSBR
+                qsbr_reclaimer().register_thread();
+                // Create a shared B-tree
+                let tree = Arc::new(BTree::<usize, String>::new());
+                let insert_count = Arc::new(AtomicUsize::new(0));
+                let remove_count = Arc::new(AtomicUsize::new(0));
+                let get_count = Arc::new(AtomicUsize::new(0));
+
+                // Pre-populate the tree with some values that will be targets for removal and gets
+                for i in 0..50 {
+                    tree.insert(Box::new(i), Box::new(format!("initial-value-{}", i)));
+                }
+
+                // Create threads for different operations
+                let mut handles = Vec::new();
+
+                // Create insert threads
+                for thread_id in 0..3 {
+                    let tree_clone = Arc::clone(&tree);
+                    let insert_count_clone = Arc::clone(&insert_count);
+
+                    let handle = shuttle::thread::spawn(move || {
+                        // Register this thread with QSBR
+                        qsbr_reclaimer().register_thread();
+
+                        for i in 0..10 {
+                            // Use a unique key for each thread and insertion
+                            let key = thread_id * 100 + i + 100; // Start at 100 to avoid overlap with pre-populated values
+                            let value = format!("insert-{}-{}", thread_id, i);
+
+                            // Insert the key-value pair
+                            tree_clone.insert(Box::new(key), Box::new(value.clone()));
+
+                            // Verify the insertion worked
+                            let result = tree_clone.get(&key);
+                            if result.as_deref() == Some(&value) {
+                                insert_count_clone.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+
+                        // Deregister this thread from QSBR and mark it quiescent
+                        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                    });
+
+                    handles.push(handle);
+                }
+
+                // Create remove threads
+                for thread_id in 0..3 {
+                    let tree_clone = Arc::clone(&tree);
+                    let remove_count_clone = Arc::clone(&remove_count);
+
+                    let handle = shuttle::thread::spawn(move || {
+                        // Register this thread with QSBR
+                        qsbr_reclaimer().register_thread();
+
+                        for i in 0..10 {
+                            // Remove from the pre-populated values
+                            let key = thread_id * 10 + i;
+
+                            // Remove the key-value pair
+                            tree_clone.remove(&key);
+
+                            // Verify the removal worked
+                            let result = tree_clone.get(&key);
+                            if result.is_none() {
+                                remove_count_clone.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+
+                        // Deregister this thread from QSBR and mark it quiescent
+                        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                    });
+
+                    handles.push(handle);
+                }
+
+                // Create get threads
+                for thread_id in 0..3 {
+                    let tree_clone = Arc::clone(&tree);
+                    let get_count_clone = Arc::clone(&get_count);
+
+                    let handle = shuttle::thread::spawn(move || {
+                        // Register this thread with QSBR
+                        qsbr_reclaimer().register_thread();
+
+                        for i in 0..10 {
+                            // Get from the pre-populated values that shouldn't be removed
+                            let key = 30 + thread_id * 5 + i % 5; // This ensures we're accessing values that won't be removed
+
+                            // Get the key-value pair
+                            let result = tree_clone.get(&key);
+                            if result.is_some() {
+                                get_count_clone.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+
+                        // Deregister this thread from QSBR and mark it quiescent
+                        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                    });
+
+                    handles.push(handle);
+                }
+
+                // Join all threads
+                for handle in handles {
+                    handle.join().unwrap();
+                }
+
+                // // Verify some specific inserted values
+                assert_eq!(tree.get(&100).as_deref(), Some(&format!("insert-0-0")));
+
+                // // Verify some specific removed values
+                assert_eq!(tree.get(&5), None);
+
+                // // Verify some specific values that should still exist
+                assert_eq!(tree.get(&45).as_deref(), Some(&format!("initial-value-45")));
+
+                tree.check_invariants();
+
+                // Deregister the main thread from QSBR and mark it quiescent
+                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+            },
+            1000, // Number of iterations
+        );
     }
 }

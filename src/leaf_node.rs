@@ -1,3 +1,4 @@
+use crate::sync::{AtomicPtr, Ordering};
 use crate::{
     array_types::{LeafNodeStorageArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
     graceful_pointers::{GracefulArc, GracefulAtomicPointer, GracefulBox},
@@ -9,11 +10,8 @@ use crate::{
     qsbr::qsbr_reclaimer,
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
-use std::{
-    cell::UnsafeCell,
-    ptr,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use std::cell::UnsafeCell;
+use std::ptr;
 
 #[repr(C)]
 pub struct LeafNode<K: BTreeKey, V: BTreeValue> {

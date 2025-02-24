@@ -1,7 +1,6 @@
-use lock_api::RawRwLock;
+use crate::sync::RawRwLock;
+use crate::sync::{AtomicU64, Ordering, RwLock};
 use std::fmt::Display;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
@@ -56,22 +55,17 @@ impl Display for LockInfo {
         }
     }
 }
+
 // doesn't handle poisoning
 pub(crate) struct HybridLatch {
-    #[cfg(not(miri))]
-    rw_lock: usync::RawRwLock,
-    #[cfg(miri)]
-    rw_lock: spin::RwLock<()>,
+    rw_lock: RwLock,
     version: AtomicU64,
 }
 
 impl HybridLatch {
     pub fn new() -> Self {
         Self {
-            #[cfg(not(miri))]
-            rw_lock: usync::RawRwLock::INIT,
-            #[cfg(miri)]
-            rw_lock: spin::RwLock::new(()),
+            rw_lock: RwLock::new(),
             version: AtomicU64::new(LockInfo::LOWEST_VERSION),
         }
     }
@@ -111,23 +105,17 @@ impl HybridLatch {
     }
 
     pub fn unlock_shared(&self) {
-        unsafe {
-            self.rw_lock.unlock_shared();
-        }
+        self.rw_lock.unlock_shared();
     }
 
     pub fn unlock_exclusive(&self) {
         self.version.fetch_add(1, Ordering::Release);
-        unsafe {
-            self.rw_lock.unlock_exclusive();
-        }
+        self.rw_lock.unlock_exclusive();
     }
 
     pub fn retire(&self) {
         self.version.store(LockInfo::RETIRED, Ordering::Release);
-        unsafe {
-            self.rw_lock.unlock_exclusive();
-        }
+        self.rw_lock.unlock_exclusive();
     }
     pub fn is_retired(&self) -> bool {
         self.version.load(Ordering::Acquire) == LockInfo::RETIRED
