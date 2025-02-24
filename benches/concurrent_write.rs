@@ -1,5 +1,5 @@
 use btree::qsbr_reclaimer;
-use btree::{debug_println, BTree};
+use btree::BTree;
 use criterion::measurement::WallTime;
 use criterion::{
     criterion_group, criterion_main, Bencher, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode,
@@ -42,7 +42,6 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                                     let value = format!("value{}", key);
                                     tree.insert(Box::new(key), Box::new(value));
                                 }
-                                debug_println!("pure_insert_benchmark: thread done");
                                 threads_done.fetch_add(1, Ordering::Relaxed);
                                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
@@ -110,7 +109,6 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                         _ => unreachable!(),
                                     }
                                 }
-                                debug_println!("mixed_operations_benchmark: thread done");
                                 threads_done.fetch_add(1, Ordering::Relaxed);
                                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
@@ -186,7 +184,6 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                     }
                                 }
                                 threads_done.fetch_add(1, Ordering::Relaxed);
-                                debug_println!("read_heavy_benchmark: thread done");
                                 qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
                             });
                         }

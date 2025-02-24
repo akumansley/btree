@@ -2,7 +2,6 @@ use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use crate::debug_println;
 use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::node::{Height, NodeHeader};

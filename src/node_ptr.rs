@@ -4,7 +4,6 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 
-use crate::debug_println;
 use crate::hybrid_latch::LockInfo;
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};

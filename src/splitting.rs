@@ -11,7 +11,7 @@ use crate::node::NodeHeader;
 use crate::node_ptr::{marker, NodePtr, NodeRef};
 use crate::search_dequeue::SearchDequeue;
 use crate::util::UnwrapEither;
-use crate::{debug_println, BTreeKey, BTreeValue};
+use crate::{BTreeKey, BTreeValue};
 use smallvec::SmallVec;
 
 pub struct EntryLocation<K: BTreeKey, V: BTreeValue> {

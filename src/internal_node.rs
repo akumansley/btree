@@ -3,7 +3,6 @@ use crate::{
     array_types::{
         InternalNodeStorage, MAX_CHILDREN_PER_NODE, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE,
     },
-    debug_println,
     graceful_pointers::{GracefulArc, GracefulBox},
     node::{Height, NodeHeader},
     node_ptr::{

@@ -1,9 +1,11 @@
+#[macro_use]
+mod debug;
+
 mod array_types;
 mod bulk_load;
 mod bulk_update;
 mod coalescing;
 mod cursor;
-mod debug;
 mod graceful_pointers;
 mod hybrid_latch;
 mod internal_node;
