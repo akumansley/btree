@@ -1,4 +1,4 @@
-use btree::qsbr::qsbr_reclaimer;
+use btree::qsbr_reclaimer;
 use btree::{debug_println, BTree};
 use criterion::measurement::WallTime;
 use criterion::{

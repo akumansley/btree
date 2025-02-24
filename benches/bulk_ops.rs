@@ -1,4 +1,4 @@
-use btree::qsbr::qsbr_reclaimer;
+use btree::qsbr_reclaimer;
 use btree::BTree;
 use criterion::{criterion_group, criterion_main, Bencher, BenchmarkGroup, BenchmarkId, Criterion};
 use std::time::Duration;

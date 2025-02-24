@@ -93,6 +93,7 @@ impl<K: BTreeKey, V: BTreeValue> SearchDequeue<K, V> {
         self.index_after_lowest_node == self.index_of_highest_node
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.index_after_lowest_node - self.index_of_highest_node
     }

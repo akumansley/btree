@@ -56,15 +56,6 @@ pub fn debug_assert_no_locks_held<const METHOD: char>() {
     }
 }
 
-pub fn debug_assert_one_shared_lock_held() {
-    #[cfg(debug_assertions)]
-    {
-        let (shared_count, exclusive_count) = get_lock_counts();
-        assert_eq!(shared_count, 1);
-        assert_eq!(exclusive_count, 0);
-    }
-}
-
 #[cfg(debug_assertions)]
 fn get_lock_counts() -> (usize, usize) {
     let shared_count = SHARED_LOCK_COUNT.with(|count| count.get());
