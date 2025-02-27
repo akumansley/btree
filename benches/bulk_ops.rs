@@ -23,7 +23,7 @@ fn bulk_load_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::WallTi
                     let start = std::time::Instant::now();
                     let _tree = BTree::bulk_load_parallel(pairs);
                     sum += start.elapsed();
-                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                    unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                 }
                 println!(
                     "done - iters: {}, elapsed: {:?}, num_elements: {}",
@@ -64,7 +64,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                     sum += start.elapsed();
                 }
 
-                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                 println!(
                     "done - iters: {}, elapsed: {:?}, num_elements: {}",
                     iters, sum, num_elements

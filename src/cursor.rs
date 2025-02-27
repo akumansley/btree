@@ -446,7 +446,7 @@ mod tests {
         cursor.seek(&7);
         assert_eq!(*cursor.current().unwrap().value(), "value7");
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
             format!("value{}", ORDER - 1)
         ); // Should cross back to first leaf
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -552,7 +552,7 @@ mod tests {
         cursor.seek(&7);
         assert_eq!(*cursor.current().unwrap().value(), "value7");
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -606,7 +606,7 @@ mod tests {
             format!("value{}", ORDER - 1)
         ); // Should cross back to first leaf
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -649,7 +649,7 @@ mod tests {
                     std::thread::yield_now();
                 }
                 assert_eq!(expected, 0);
-                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
             });
 
             // Second thread starts at beginning with shared cursor and moves forwards
@@ -677,10 +677,10 @@ mod tests {
                     std::thread::yield_now();
                 }
                 assert_eq!(expected, n - 1);
-                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
             });
         });
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 }

@@ -466,6 +466,6 @@ mod tests {
             right.unlock_exclusive();
         }
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 }

@@ -43,7 +43,9 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                                     tree.insert(Box::new(key), Box::new(value));
                                 }
                                 threads_done.fetch_add(1, Ordering::Relaxed);
-                                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                                unsafe {
+                                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent()
+                                };
                             });
                         }
                     });
@@ -78,7 +80,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                     }
                     let tree = BTree::bulk_load(pairs);
 
-                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                    unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
 
                     let start = std::time::Instant::now();
                     thread::scope(|s| {
@@ -110,7 +112,9 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                     }
                                 }
                                 threads_done.fetch_add(1, Ordering::Relaxed);
-                                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                                unsafe {
+                                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent()
+                                };
                             });
                         }
                     });
@@ -146,7 +150,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                     }
                     let tree = BTree::bulk_load(pairs);
 
-                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                    unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
 
                     let start = std::time::Instant::now();
 
@@ -184,7 +188,9 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                     }
                                 }
                                 threads_done.fetch_add(1, Ordering::Relaxed);
-                                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                                unsafe {
+                                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent()
+                                };
                             });
                         }
                     });

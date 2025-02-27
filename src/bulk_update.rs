@@ -25,7 +25,7 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
             });
     });
     pool.broadcast(|_| {
-        qsbr_reclaimer().mark_current_thread_quiescent();
+        unsafe { qsbr_reclaimer().mark_current_thread_quiescent() };
     });
 }
 
@@ -55,7 +55,7 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
             });
     });
     pool.broadcast(|_| {
-        qsbr_reclaimer().mark_current_thread_quiescent();
+        unsafe { qsbr_reclaimer().mark_current_thread_quiescent() };
     });
 }
 
@@ -106,7 +106,7 @@ mod tests {
         // Verify tree invariants
         tree.check_invariants();
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -178,6 +178,6 @@ mod tests {
         // Verify tree invariants
         tree.check_invariants();
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 }

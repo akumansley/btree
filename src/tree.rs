@@ -23,10 +23,10 @@ use crate::splitting::{
 use crate::sync::Ordering;
 use std::fmt::{Debug, Display};
 
-pub trait BTreeKey: PartialOrd + Ord + Debug + Display + Send + 'static {}
+pub trait BTreeKey: PartialOrd + Ord + Debug + Display + Send + Sync + 'static {}
 pub trait BTreeValue: Debug + Display + Send + 'static {}
 
-impl<K: PartialOrd + Ord + Debug + Display + Send + 'static> BTreeKey for K {}
+impl<K: PartialOrd + Ord + Debug + Display + Send + Sync + 'static> BTreeKey for K {}
 impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
 
 /// Concurrent B+Tree
@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(tree.get(&1), None);
         assert_eq!(tree.get(&2), None);
         assert_eq!(tree.get(&3), None);
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     use crate::sync::AtomicUsize;
@@ -477,7 +477,7 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        qsbr_reclaimer().mark_current_thread_quiescent();
+        unsafe { qsbr_reclaimer().mark_current_thread_quiescent() };
 
         // Verify all keys at the end
         for key in reference_map.keys() {
@@ -488,7 +488,7 @@ mod tests {
                 key
             );
         }
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -543,7 +543,7 @@ mod tests {
                         }
                     }
                     // Increment the counter when this thread completes
-                    qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                    unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                     completed_threads.fetch_add(1, Ordering::Release);
                 });
             }
@@ -557,11 +557,11 @@ mod tests {
                     thread::sleep(Duration::from_secs(1));
                     tree_ref.check_invariants();
                 }
-                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
             });
         });
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -637,7 +637,7 @@ mod tests {
         // Verify tree invariants after all operations
         tree.check_invariants();
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -691,7 +691,7 @@ mod tests {
         }
         tree.check_invariants();
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -740,7 +740,7 @@ mod tests {
                         }
 
                         // Deregister this thread from QSBR and mark it quiescent
-                        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                     });
 
                     handles.push(handle);
@@ -770,7 +770,7 @@ mod tests {
                         }
 
                         // Deregister this thread from QSBR and mark it quiescent
-                        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                     });
 
                     handles.push(handle);
@@ -797,7 +797,7 @@ mod tests {
                         }
 
                         // Deregister this thread from QSBR and mark it quiescent
-                        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                     });
 
                     handles.push(handle);
@@ -820,7 +820,7 @@ mod tests {
                 tree.check_invariants();
 
                 // Deregister the main thread from QSBR and mark it quiescent
-                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
             },
             1000, // Number of iterations
         );

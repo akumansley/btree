@@ -94,7 +94,7 @@ impl MemoryReclaimer {
 
     /// Marks the current thread as quiescent
     /// Panics if not registered
-    pub fn mark_current_thread_quiescent(&self) {
+    pub unsafe fn mark_current_thread_quiescent(&self) {
         let thread_id = gettid();
         let mut inner = self.inner.lock().unwrap();
 
@@ -121,7 +121,7 @@ impl MemoryReclaimer {
 
     /// Deregisters the current thread and marks it quiescent
     /// Panics if not registered
-    pub fn deregister_current_thread_and_mark_quiescent(&self) {
+    pub unsafe fn deregister_current_thread_and_mark_quiescent(&self) {
         let thread_id = gettid();
         let mut inner = self.inner.lock().unwrap();
 
@@ -188,7 +188,7 @@ pub fn qsbr_pool() -> &'static ThreadPool {
                 ()
             })
             .exit_handler(|_| {
-                qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+                unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                 ()
             })
             .build()
@@ -222,7 +222,7 @@ mod tests {
 
         // First interval: flush thread-local callbacks; since only one thread is registered,
         // both previous (empty) and current callbacks are executed immediately.
-        reclaimer.mark_current_thread_quiescent();
+        unsafe { reclaimer.mark_current_thread_quiescent() };
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
         // Now add another callback and quiesce again.
@@ -232,7 +232,7 @@ mod tests {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
             }));
         }
-        reclaimer.mark_current_thread_quiescent();
+        unsafe { reclaimer.mark_current_thread_quiescent() };
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 
@@ -257,11 +257,11 @@ mod tests {
                     reclaimer.add_callback(Box::new(move || {
                         counter_clone.fetch_add(1, Ordering::SeqCst);
                     }));
-                    reclaimer.mark_current_thread_quiescent();
+                    unsafe { reclaimer.mark_current_thread_quiescent() };
 
                     // start of interval 2
                     barrier_clone.wait();
-                    reclaimer.mark_current_thread_quiescent();
+                    unsafe { reclaimer.mark_current_thread_quiescent() };
                 });
             }
         });
@@ -275,7 +275,7 @@ mod tests {
     #[should_panic(expected = "not registered")]
     fn test_unregistered_thread_panics() {
         let reclaimer = MemoryReclaimer::new();
-        reclaimer.mark_current_thread_quiescent();
+        unsafe { reclaimer.mark_current_thread_quiescent() };
     }
 
     /// A thread can deregister and mark quiescence.
@@ -294,7 +294,7 @@ mod tests {
                         counter_clone1.fetch_add(1, Ordering::SeqCst);
                     }
                 }));
-                reclaimer.deregister_current_thread_and_mark_quiescent();
+                unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
             });
 
             reclaimer.add_callback(Box::new({
@@ -304,7 +304,7 @@ mod tests {
             }));
         });
 
-        reclaimer.deregister_current_thread_and_mark_quiescent();
+        unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 }

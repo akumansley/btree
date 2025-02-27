@@ -164,7 +164,7 @@ mod tests {
         }
         assert_eq!(iter.next(), None);
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -186,7 +186,7 @@ mod tests {
         }
         assert_eq!(iter.next(), None);
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
         }
         assert_eq!(iter.next(), None);
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         }
         assert_eq!(iter.next(), None);
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -305,7 +305,7 @@ mod tests {
         );
         assert_eq!(range_iter.next(), None);
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
@@ -335,6 +335,6 @@ mod tests {
             RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&2), Some(&3));
         assert_eq!(range_iter.next(), None);
 
-        qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 }
