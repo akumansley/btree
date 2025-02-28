@@ -21,13 +21,13 @@ use crate::splitting::{
     insert_into_leaf_after_splitting_returning_leaf_with_new_entry, EntryLocation,
 };
 use crate::sync::Ordering;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 
-pub trait BTreeKey: PartialOrd + Ord + Debug + Display + Send + Sync + 'static {}
-pub trait BTreeValue: Debug + Display + Send + 'static {}
+pub trait BTreeKey: PartialOrd + Ord + Debug + Send + Sync + 'static {}
+pub trait BTreeValue: Debug + Send + 'static {}
 
-impl<K: PartialOrd + Ord + Debug + Display + Send + Sync + 'static> BTreeKey for K {}
-impl<V: Debug + Display + Send + 'static> BTreeValue for V {}
+impl<K: PartialOrd + Ord + Debug + Send + Sync + 'static> BTreeKey for K {}
+impl<V: Debug + Send + 'static> BTreeValue for V {}
 
 /// Concurrent B+Tree
 // Todo

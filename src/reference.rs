@@ -32,7 +32,7 @@ impl<V: BTreeValue> Debug for Ref<V> {
     }
 }
 
-impl<V: BTreeValue> Display for Ref<V> {
+impl<V: BTreeValue + Display> Display for Ref<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.deref())
     }
@@ -96,13 +96,13 @@ impl<V: BTreeValue> Deref for ValueRef<V> {
     }
 }
 
-impl<V: BTreeValue> Debug for ValueRef<V> {
+impl<V: BTreeValue + Display> Debug for ValueRef<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.deref())
     }
 }
 
-impl<V: BTreeValue> Display for ValueRef<V> {
+impl<V: BTreeValue + Display> Display for ValueRef<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.deref())
     }
