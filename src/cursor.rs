@@ -249,7 +249,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
         leaf.update(self.current_index, Box::into_raw(value));
     }
 
-    pub fn insert_or_update<F>(&mut self, key: GracefulArc<K>, value: *mut V, update_fn: F)
+    pub fn insert_or_update<F>(&mut self, key: GracefulArc<K>, value: *mut V, update_fn: F) -> bool
     where
         F: Fn(*mut V) -> *mut V + Send + Sync,
     {
@@ -261,11 +261,11 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
             let old_value = leaf.storage.get_value(index);
             let new_value = update_fn(old_value);
             leaf.update(index, new_value);
-            return;
+            return false; // Key already existed, no insertion
         } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
             let index = search_result.unwrap_err();
             leaf.insert_new_value_at_index(key, value, index);
-            return;
+            return true; // New key inserted
         } else {
             // we need to split the leaf, so give up the lock
             leaf.unlock_exclusive();
@@ -284,6 +284,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
                 self.current_leaf = Some(leaf);
                 self.current_index = entry_location.index;
             }
+            return was_inserted; // Return whether a new key was inserted
         }
     }
 

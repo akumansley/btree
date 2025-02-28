@@ -190,6 +190,9 @@ pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey, V: BTreeValue>(
     let target_utilization = 0.69;
     let jitter_range = 0.1;
 
+    // Store the number of pairs for setting the length
+    let num_pairs = sorted_kv_pairs.len();
+
     // Create leaf nodes with target utilization
     let leaves = construct_leaf_level(
         sorted_kv_pairs.into_iter(),
@@ -206,6 +209,10 @@ pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey, V: BTreeValue>(
         let root_inner = &mut *tree.root.inner.get();
         root_inner.top_of_tree.store(root_node, Ordering::Release);
     }
+
+    // Set the tree length to the number of pairs
+    tree.root.len.store(num_pairs, Ordering::Relaxed);
+
     tree
 }
 
@@ -214,6 +221,9 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
 ) -> BTree<K, V> {
     let target_utilization = 0.69;
     let jitter_range = 0.1;
+
+    // Store the number of pairs for setting the length
+    let num_pairs = sorted_kv_pairs.len();
 
     let pool = qsbr_pool();
     let leaves: Vec<(AliasableBox<LeafNode<K, V>>, GracefulArc<K>)> = pool.install(|| {
@@ -250,6 +260,10 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
         let root_inner = &mut *tree.root.inner.get();
         root_inner.top_of_tree.store(root_node, Ordering::Release);
     }
+
+    // Set the tree length to the number of pairs
+    tree.root.len.store(num_pairs, Ordering::Relaxed);
+
     tree
 }
 

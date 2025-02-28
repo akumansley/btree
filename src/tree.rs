@@ -160,14 +160,22 @@ impl<K: BTreeKey, V: BTreeValue> BTree<K, V> {
                 Box::into_raw(value),
                 index,
             );
+            // Increment the tree length since we inserted a new key
+            self.root.len.fetch_add(1, Ordering::Relaxed);
             return CursorMut::new_from_leaf_and_index(self, optimistic_leaf, index);
         }
         // unlock the leaf so we can restart our search
         optimistic_leaf.unlock_exclusive();
 
         // case 3: key doesn't exist, and we need to split
-        let (entry_location, _) =
+        let (entry_location, was_inserted) =
             self.get_or_insert_pessimistic(GracefulArc::new(*key), Box::into_raw(value));
+
+        // Increment the tree length if a new key was inserted
+        if was_inserted {
+            self.root.len.fetch_add(1, Ordering::Relaxed);
+        }
+
         CursorMut::new_from_location(self, entry_location)
     }
 
@@ -824,5 +832,162 @@ mod tests {
             },
             1000, // Number of iterations
         );
+    }
+
+    #[test]
+    fn test_len_updates() {
+        qsbr_reclaimer().register_thread();
+
+        // Test 1: Insert and remove
+        {
+            let tree = BTree::<usize, String>::new();
+            assert_eq!(tree.len(), 0, "Initial tree length should be 0");
+
+            // Insert 10 elements
+            for i in 0..10 {
+                tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+                assert_eq!(
+                    tree.len(),
+                    i + 1,
+                    "Tree length should be {} after {} inserts",
+                    i + 1,
+                    i + 1
+                );
+            }
+
+            // Remove 5 elements
+            for i in 0..5 {
+                tree.remove(&i);
+                assert_eq!(
+                    tree.len(),
+                    10 - (i + 1),
+                    "Tree length should be {} after removing {} elements",
+                    10 - (i + 1),
+                    i + 1
+                );
+            }
+        }
+
+        // Test 2: bulk_load
+        {
+            let mut pairs = Vec::new();
+            for i in 0..100 {
+                pairs.push((i, format!("value{}", i)));
+            }
+            let tree = BTree::bulk_load(pairs.clone());
+            assert_eq!(tree.len(), 100, "Tree length should be 100 after bulk_load");
+        }
+
+        // Test 3: bulk_load_parallel
+        {
+            let mut pairs = Vec::new();
+            for i in 0..100 {
+                pairs.push((i, format!("value{}", i)));
+            }
+            let tree = BTree::bulk_load_parallel(pairs.clone());
+            assert_eq!(
+                tree.len(),
+                100,
+                "Tree length should be 100 after bulk_load_parallel"
+            );
+        }
+
+        // Test 4: get_or_insert
+        {
+            let tree = BTree::<usize, String>::new();
+            assert_eq!(tree.len(), 0, "Initial tree length should be 0");
+
+            // Insert 10 elements using get_or_insert
+            for i in 0..10 {
+                let cursor = tree.get_or_insert(Box::new(i), Box::new(format!("value{}", i)));
+                assert_eq!(
+                    tree.len(),
+                    i + 1,
+                    "Tree length should be {} after {} get_or_inserts",
+                    i + 1,
+                    i + 1
+                );
+                assert_eq!(cursor.current().unwrap().key(), &i);
+            }
+
+            // Call get_or_insert on existing keys (should not change length)
+            for i in 0..10 {
+                let cursor = tree.get_or_insert(Box::new(i), Box::new(format!("new_value{}", i)));
+                assert_eq!(
+                    tree.len(),
+                    10,
+                    "Tree length should still be 10 after get_or_insert on existing keys"
+                );
+                assert_eq!(cursor.current().unwrap().key(), &i);
+                // Value should not change
+                assert_eq!(cursor.current().unwrap().value(), &format!("value{}", i));
+            }
+        }
+
+        // Test 5: bulk_update_parallel (should not change length)
+        {
+            let tree = BTree::<usize, String>::new();
+
+            // Insert initial elements
+            for i in 0..20 {
+                tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            }
+            assert_eq!(tree.len(), 20, "Tree length should be 20 after inserts");
+
+            // Update existing elements
+            let updates: Vec<(usize, String)> = (0..20)
+                .map(|i| (i, format!("updated_value{}", i)))
+                .collect();
+
+            tree.bulk_update_parallel(updates);
+            assert_eq!(
+                tree.len(),
+                20,
+                "Tree length should still be 20 after bulk_update_parallel"
+            );
+        }
+
+        // Test 6: bulk_insert_or_update_parallel
+        {
+            let tree = BTree::<usize, String>::new();
+
+            // Insert initial elements (even numbers)
+            for i in 0..20 {
+                if i % 2 == 0 {
+                    tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+                }
+            }
+            assert_eq!(
+                tree.len(),
+                10,
+                "Tree length should be 10 after inserting even numbers"
+            );
+
+            // Mix of updates (even numbers) and inserts (odd numbers)
+            let entries: Vec<(usize, String)> = (0..20)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        (i, format!("updated_value{}", i))
+                    } else {
+                        (i, format!("value{}", i))
+                    }
+                })
+                .collect();
+
+            // Define update function
+            let update_fn = |old_value: *mut String| {
+                let old_string = unsafe { Box::from_raw(old_value) };
+                Box::into_raw(Box::new(format!("updated_{}", old_string)))
+            };
+
+            tree.bulk_insert_or_update_parallel(entries, &update_fn);
+            assert_eq!(
+                tree.len(),
+                20,
+                "Tree length should be 20 after bulk_insert_or_update_parallel"
+            );
+        }
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 }
