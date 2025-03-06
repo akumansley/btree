@@ -1,3 +1,5 @@
+use std::ptr;
+
 use crate::hybrid_latch::{HybridLatch, LockInfo};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -27,16 +29,19 @@ impl Height {
             _ => panic!("can't decrement root or leaf"),
         }
     }
-
-    pub(crate) fn is_internal(&self) -> bool {
-        matches!(self, Height::Internal(_))
-    }
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct NodeHeader {
     height: Height,
     lock: HybridLatch,
+}
+
+impl PartialEq for NodeHeader {
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self, other)
+    }
 }
 
 impl NodeHeader {
@@ -61,6 +66,9 @@ impl NodeHeader {
     }
     pub fn is_locked_shared(&self) -> bool {
         self.lock.is_locked_shared()
+    }
+    pub fn is_unlocked(&self) -> bool {
+        self.lock.is_unlocked()
     }
     pub fn try_lock_shared(&self) -> Result<(), ()> {
         match self.lock.try_lock_shared() {

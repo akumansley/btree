@@ -1,6 +1,6 @@
 use crate::sync::RawRwLock;
 use crate::sync::{AtomicU64, Ordering, RwLock};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
@@ -62,6 +62,12 @@ pub(crate) struct HybridLatch {
     version: AtomicU64,
 }
 
+impl Debug for HybridLatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HybridLatch {{ {:p} }}", self)
+    }
+}
+
 impl HybridLatch {
     pub fn new() -> Self {
         Self {
@@ -93,7 +99,11 @@ impl HybridLatch {
     }
 
     pub fn is_locked_shared(&self) -> bool {
-        self.rw_lock.is_locked()
+        self.rw_lock.is_locked() && !self.rw_lock.is_locked_exclusive()
+    }
+
+    pub fn is_unlocked(&self) -> bool {
+        !self.rw_lock.is_locked()
     }
 
     pub fn try_lock_exclusive(&self) -> Result<(), ()> {

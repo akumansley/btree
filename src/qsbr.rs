@@ -137,6 +137,16 @@ impl MemoryReclaimer {
             inner
                 .current_interval_callbacks
                 .append(&mut state.borrow_mut().local_callbacks);
+        });
+
+        inner.quiesced_threads.insert(thread_id);
+
+        // Attempt to complete the interval if possible.
+        // (If there are no remaining registered threads, or if all remaining have quiesced,
+        // the interval is complete.)
+        Self::complete_interval_if_possible(&mut inner);
+
+        THREAD_STATE.with(|state| {
             state.borrow_mut().is_registered = false;
         });
 
@@ -144,11 +154,6 @@ impl MemoryReclaimer {
         inner.registered_threads.remove(&thread_id);
         // Also remove it from the quiescence set, if present.
         inner.quiesced_threads.remove(&thread_id);
-
-        // Attempt to complete the interval if possible.
-        // (If there are no remaining registered threads, or if all remaining have quiesced,
-        // the interval is complete.)
-        Self::complete_interval_if_possible(&mut inner);
     }
 
     /// Completes the interval if all threads are quiescent

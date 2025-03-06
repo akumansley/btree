@@ -6,16 +6,18 @@ use crate::reference::ValueRef;
 use crate::tree::{BTreeKey, BTreeValue};
 use crate::BTree;
 
-pub trait IterDirection<K: BTreeKey, V: BTreeValue> {
+pub trait IterDirection<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     fn advance(cursor: &mut Cursor<K, V>);
     fn start(cursor: &mut Cursor<K, V>);
     fn compare_key(current_cursor_key: &K, boundary_key: &K) -> Ordering;
 }
 
-pub struct ForwardIterDirection<K: BTreeKey, V: BTreeValue> {
-    phantom: PhantomData<(K, V)>,
+pub struct ForwardIterDirection<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+    phantom: PhantomData<(*mut K, *mut V)>,
 }
-impl<K: BTreeKey, V: BTreeValue> IterDirection<K, V> for ForwardIterDirection<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> IterDirection<K, V>
+    for ForwardIterDirection<K, V>
+{
     fn advance(cursor: &mut Cursor<K, V>) {
         cursor.move_next();
     }
@@ -28,10 +30,12 @@ impl<K: BTreeKey, V: BTreeValue> IterDirection<K, V> for ForwardIterDirection<K,
         current_cursor_key.cmp(boundary_key)
     }
 }
-pub struct BackwardIterDirection<K: BTreeKey, V: BTreeValue> {
-    phantom: PhantomData<(K, V)>,
+pub struct BackwardIterDirection<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+    phantom: PhantomData<(*mut K, *mut V)>,
 }
-impl<K: BTreeKey, V: BTreeValue> IterDirection<K, V> for BackwardIterDirection<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> IterDirection<K, V>
+    for BackwardIterDirection<K, V>
+{
     fn advance(cursor: &mut Cursor<K, V>) {
         cursor.move_prev();
     }
@@ -45,13 +49,15 @@ impl<K: BTreeKey, V: BTreeValue> IterDirection<K, V> for BackwardIterDirection<K
     }
 }
 
-pub struct BTreeIterator<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> {
+pub struct BTreeIterator<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, D: IterDirection<K, V>> {
     cursor: Option<Cursor<'a, K, V>>,
     tree: &'a BTree<K, V>,
     phantom: PhantomData<D>,
 }
 
-impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> BTreeIterator<'a, K, V, D> {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, D: IterDirection<K, V>>
+    BTreeIterator<'a, K, V, D>
+{
     pub fn new(tree: &'a BTree<K, V>) -> Self {
         BTreeIterator {
             cursor: None,
@@ -143,6 +149,7 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
 mod tests {
     use super::*;
     use crate::array_types::ORDER;
+    use crate::pointers::{OwnedThinArc, OwnedThinPtr};
     use crate::qsbr::qsbr_reclaimer;
 
     #[test]
@@ -153,7 +160,10 @@ mod tests {
         // Insert test data
         let n = ORDER * 3; // Multiple leaves
         for i in 0..n {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
         }
 
         // Test forward iteration
@@ -170,21 +180,26 @@ mod tests {
     #[test]
     fn test_backward_iterator() {
         qsbr_reclaimer().register_thread();
-        let tree = BTree::<usize, String>::new();
+        {
+            let tree = BTree::<usize, String>::new();
 
-        // Insert test data
-        let n = ORDER * 3; // Multiple leaves
-        for i in 0..n {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
-        }
+            // Insert test data
+            let n = ORDER * 3; // Multiple leaves
+            for i in 0..n {
+                tree.insert(
+                    OwnedThinArc::new(i),
+                    OwnedThinPtr::new(format!("value{}", i)),
+                );
+            }
 
-        // Test backward iteration
-        let mut iter = tree.iter_rev();
-        for i in (0..n).rev() {
-            let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            // Test backward iteration
+            let mut iter = tree.iter_rev();
+            for i in (0..n).rev() {
+                let value = iter.next().unwrap();
+                assert_eq!(*value, format!("value{}", i));
+            }
+            assert_eq!(iter.next(), None);
         }
-        assert_eq!(iter.next(), None);
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
@@ -192,47 +207,58 @@ mod tests {
     #[test]
     fn test_range_iterator_forward() {
         qsbr_reclaimer().register_thread();
-        let tree = BTree::<usize, String>::new();
+        {
+            let tree = BTree::<usize, String>::new();
 
-        // Insert test data
-        let n = ORDER * 3;
-        for i in 0..n {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            // Insert test data
+            let n = ORDER * 3;
+            for i in 0..n {
+                tree.insert(
+                    OwnedThinArc::new(i),
+                    OwnedThinPtr::new(format!("value{}", i)),
+                );
+            }
+
+            // Test various range scenarios
+            let start = n / 3;
+            let end = 2 * n / 3;
+
+            // Test with both bounds
+            let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&start),
+                Some(&end),
+            );
+            for i in start..end {
+                let value = iter.next().unwrap();
+                assert_eq!(*value, format!("value{}", i));
+            }
+            assert_eq!(iter.next(), None);
+
+            // Test with only start bound
+            let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&start),
+                None,
+            );
+            for i in start..n {
+                let value = iter.next().unwrap();
+                assert_eq!(*value, format!("value{}", i));
+            }
+            assert_eq!(iter.next(), None);
+
+            // Test with only end bound
+            let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+                &tree,
+                None,
+                Some(&end),
+            );
+            for i in 0..end {
+                let value = iter.next().unwrap();
+                assert_eq!(*value, format!("value{}", i));
+            }
+            assert_eq!(iter.next(), None);
         }
-
-        // Test various range scenarios
-        let start = n / 3;
-        let end = 2 * n / 3;
-
-        // Test with both bounds
-        let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
-            &tree,
-            Some(&start),
-            Some(&end),
-        );
-        for i in start..end {
-            let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
-        }
-        assert_eq!(iter.next(), None);
-
-        // Test with only start bound
-        let mut iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&start), None);
-        for i in start..n {
-            let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
-        }
-        assert_eq!(iter.next(), None);
-
-        // Test with only end bound
-        let mut iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, None, Some(&end));
-        for i in 0..end {
-            let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
-        }
-        assert_eq!(iter.next(), None);
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
@@ -240,47 +266,58 @@ mod tests {
     #[test]
     fn test_range_iterator_backward() {
         qsbr_reclaimer().register_thread();
-        let tree = BTree::<usize, String>::new();
+        {
+            let tree = BTree::<usize, String>::new();
 
-        // Insert test data
-        let n = ORDER * 3;
-        for i in 0..n {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            // Insert test data
+            let n = ORDER * 3;
+            for i in 0..n {
+                tree.insert(
+                    OwnedThinArc::new(i),
+                    OwnedThinPtr::new(format!("value{}", i)),
+                );
+            }
+
+            // Test various range scenarios
+            let start = n / 3;
+            let end = 2 * n / 3;
+
+            // Test with both bounds
+            let mut iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&end),
+                Some(&start),
+            );
+            for i in (start + 1..=end).rev() {
+                let value = iter.next().unwrap();
+                assert_eq!(*value, format!("value{}", i));
+            }
+            assert_eq!(iter.next(), None);
+
+            // Test with only start bound
+            let mut iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&start),
+                None,
+            );
+            for i in (0..=start).rev() {
+                let value = iter.next().unwrap();
+                assert_eq!(*value, format!("value{}", i));
+            }
+            assert_eq!(iter.next(), None);
+
+            // Test with only end bound
+            let mut iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
+                &tree,
+                None,
+                Some(&end),
+            );
+            for i in (end + 1..n).rev() {
+                let value = iter.next().unwrap();
+                assert_eq!(*value, format!("value{}", i));
+            }
+            assert_eq!(iter.next(), None);
         }
-
-        // Test various range scenarios
-        let start = n / 3;
-        let end = 2 * n / 3;
-
-        // Test with both bounds
-        let mut iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
-            &tree,
-            Some(&end),
-            Some(&start),
-        );
-        for i in (start + 1..=end).rev() {
-            let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
-        }
-        assert_eq!(iter.next(), None);
-
-        // Test with only start bound
-        let mut iter =
-            RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(&tree, Some(&start), None);
-        for i in (0..=start).rev() {
-            let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
-        }
-        assert_eq!(iter.next(), None);
-
-        // Test with only end bound
-        let mut iter =
-            RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(&tree, None, Some(&end));
-        for i in (end + 1..n).rev() {
-            let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
-        }
-        assert_eq!(iter.next(), None);
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
@@ -288,22 +325,27 @@ mod tests {
     #[test]
     fn test_empty_tree_iterators() {
         qsbr_reclaimer().register_thread();
-        let tree = BTree::<usize, String>::new();
+        {
+            let tree = BTree::<usize, String>::new();
 
-        // Test all iterator types on empty tree
-        assert_eq!(tree.iter().next(), None);
-        assert_eq!(tree.iter_rev().next(), None);
+            // Test all iterator types on empty tree
+            assert_eq!(tree.iter().next(), None);
+            assert_eq!(tree.iter_rev().next(), None);
 
-        let mut range_iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&0), Some(&10));
-        assert_eq!(range_iter.next(), None);
+            let mut range_iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&0),
+                Some(&10),
+            );
+            assert_eq!(range_iter.next(), None);
 
-        let mut range_iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
-            &tree,
-            Some(&0),
-            Some(&10),
-        );
-        assert_eq!(range_iter.next(), None);
+            let mut range_iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&0),
+                Some(&10),
+            );
+            assert_eq!(range_iter.next(), None);
+        }
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
@@ -311,29 +353,40 @@ mod tests {
     #[test]
     fn test_single_element_iterators() {
         qsbr_reclaimer().register_thread();
-        let tree = BTree::<usize, String>::new();
-        tree.insert(Box::new(1), Box::new("value1".to_string()));
+        {
+            let tree = BTree::<usize, String>::new();
+            tree.insert(
+                OwnedThinArc::new(1),
+                OwnedThinPtr::new("value1".to_string()),
+            );
 
-        // Test forward iterator
-        let mut iter = tree.iter();
-        assert_eq!(*iter.next().unwrap(), "value1");
-        assert_eq!(iter.next(), None);
+            // Test forward iterator
+            let mut iter = tree.iter();
+            assert_eq!(*iter.next().unwrap(), "value1");
+            assert_eq!(iter.next(), None);
 
-        // Test backward iterator
-        let mut iter = tree.iter_rev();
-        assert_eq!(*iter.next().unwrap(), "value1");
-        assert_eq!(iter.next(), None);
+            // Test backward iterator
+            let mut iter = tree.iter_rev();
+            assert_eq!(*iter.next().unwrap(), "value1");
+            assert_eq!(iter.next(), None);
 
-        // Test range iterator with bounds including the element
-        let mut range_iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&0), Some(&2));
-        assert_eq!(*range_iter.next().unwrap(), "value1");
-        assert_eq!(range_iter.next(), None);
+            // Test range iterator with bounds including the element
+            let mut range_iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&0),
+                Some(&2),
+            );
+            assert_eq!(*range_iter.next().unwrap(), "value1");
+            assert_eq!(range_iter.next(), None);
 
-        // Test range iterator with bounds excluding the element
-        let mut range_iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&2), Some(&3));
-        assert_eq!(range_iter.next(), None);
+            // Test range iterator with bounds excluding the element
+            let mut range_iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+                &tree,
+                Some(&2),
+                Some(&3),
+            );
+            assert_eq!(range_iter.next(), None);
+        }
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }

@@ -1,6 +1,5 @@
-use crate::graceful_pointers::GracefulArc;
-use crate::node_ptr::marker;
-use crate::node_ptr::NodeRef;
+use crate::pointers::node_ref::{marker, SharedNodeRef};
+use crate::pointers::{OwnedThinArc, OwnedThinPtr, SharedThinPtr};
 use crate::reference::Entry;
 use crate::search::get_leaf_exclusively_using_optimistic_search_with_fallback;
 use crate::search::get_leaf_shared_using_optimistic_search_with_fallback;
@@ -15,15 +14,15 @@ use crate::splitting::EntryLocation;
 use crate::tree::{BTree, BTreeKey, BTreeValue, ModificationType};
 use crate::util::UnwrapEither;
 
-pub struct Cursor<'a, K: BTreeKey, V: BTreeValue> {
+pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub tree: &'a BTree<K, V>,
-    pub current_leaf: Option<NodeRef<K, V, marker::Shared, marker::Leaf>>,
+    pub current_leaf: Option<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>>,
     pub current_index: usize,
 }
 
-impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
     pub fn seek_to_start(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref() {
+        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
             leaf.unlock_shared();
         }
         let leaf = match get_first_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref())
@@ -36,7 +35,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
     }
 
     pub fn seek_to_end(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref() {
+        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
             leaf.unlock_shared();
         }
         let leaf = match get_last_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref())
@@ -44,8 +43,8 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
             Ok(leaf) => leaf,
             Err(_) => get_last_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
         };
-        self.current_leaf = Some(leaf);
         self.current_index = leaf.num_keys().saturating_sub(1);
+        self.current_leaf = Some(leaf);
     }
 
     pub fn seek(&mut self, key: &K) {
@@ -78,7 +77,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
     }
 
     pub fn current(&self) -> Option<Entry<K, V>> {
-        if let Some(leaf) = self.current_leaf {
+        if let Some(leaf) = &self.current_leaf {
             if self.current_index < leaf.num_keys() {
                 return Some(Entry::new(
                     leaf.storage.get_key(self.current_index),
@@ -154,13 +153,13 @@ impl<'a, K: BTreeKey, V: BTreeValue> Cursor<'a, K, V> {
                 }
             };
             self.current_leaf.take().unwrap().unlock_shared();
-            self.current_leaf = Some(prev_leaf);
             self.current_index = prev_leaf.num_keys();
+            self.current_leaf = Some(prev_leaf);
         }
     }
 }
 
-impl<'a, K: BTreeKey, V: BTreeValue> Drop for Cursor<'a, K, V> {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for Cursor<'a, K, V> {
     fn drop(&mut self) {
         if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_shared();
@@ -168,13 +167,13 @@ impl<'a, K: BTreeKey, V: BTreeValue> Drop for Cursor<'a, K, V> {
     }
 }
 
-pub struct CursorMut<'a, K: BTreeKey, V: BTreeValue> {
+pub struct CursorMut<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     tree: &'a BTree<K, V>,
-    current_leaf: Option<NodeRef<K, V, marker::Exclusive, marker::Leaf>>,
+    current_leaf: Option<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>>,
     current_index: usize,
 }
 
-impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     pub(crate) fn new(tree: &'a BTree<K, V>) -> Self {
         Self {
             tree,
@@ -190,7 +189,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
     }
     pub(crate) fn new_from_leaf_and_index(
         tree: &'a BTree<K, V>,
-        leaf: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
         index: usize,
     ) -> Self {
         CursorMut {
@@ -200,7 +199,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
         }
     }
     pub fn seek_to_start(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref() {
+        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
             leaf.unlock_exclusive();
         }
         let leaf = match get_first_leaf_exclusively_using_optimistic_search(
@@ -214,7 +213,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
     }
 
     pub fn seek_to_end(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref() {
+        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
             leaf.unlock_exclusive();
         }
         let leaf =
@@ -224,8 +223,8 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
                     get_last_leaf_exclusively_using_shared_search(self.tree.root.as_node_ref())
                 }
             };
-        self.current_leaf = Some(leaf);
         self.current_index = leaf.num_keys() - 1;
+        self.current_leaf = Some(leaf);
     }
 
     pub fn seek(&mut self, key: &K) {
@@ -244,14 +243,19 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
         self.seek_from_top(key);
     }
 
-    pub fn update_value(&mut self, value: Box<V>) {
-        let mut leaf = self.current_leaf.unwrap();
-        leaf.update(self.current_index, Box::into_raw(value));
+    pub fn update_value(&mut self, value: OwnedThinPtr<V>) {
+        let leaf = self.current_leaf.as_mut().unwrap();
+        leaf.update(self.current_index, value);
     }
 
-    pub fn insert_or_update<F>(&mut self, key: GracefulArc<K>, value: *mut V, update_fn: F) -> bool
+    pub fn insert_or_update<F>(
+        &mut self,
+        key: OwnedThinArc<K>,
+        value: OwnedThinPtr<V>,
+        update_fn: F,
+    ) -> bool
     where
-        F: Fn(*mut V) -> *mut V + Send + Sync,
+        F: Fn(SharedThinPtr<V>) -> OwnedThinPtr<V> + Send + Sync,
     {
         self.seek(&key);
 
@@ -302,7 +306,7 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
     }
 
     pub fn current(&self) -> Option<Entry<K, V>> {
-        if let Some(leaf) = self.current_leaf {
+        if let Some(leaf) = &self.current_leaf {
             if self.current_index < leaf.num_keys() {
                 return Some(Entry::new(
                     leaf.storage.get_key(self.current_index),
@@ -374,15 +378,15 @@ impl<'a, K: BTreeKey, V: BTreeValue> CursorMut<'a, K, V> {
                     }
                 };
                 self.current_leaf.take().unwrap().unlock_exclusive();
-                self.current_leaf = Some(prev_leaf);
                 self.current_index = prev_leaf.num_keys() - 1;
+                self.current_leaf = Some(prev_leaf);
                 return true;
             }
         }
     }
 }
 
-impl<'a, K: BTreeKey, V: BTreeValue> Drop for CursorMut<'a, K, V> {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for CursorMut<'a, K, V> {
     fn drop(&mut self) {
         if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_exclusive();
@@ -401,51 +405,56 @@ mod tests {
     #[test]
     fn test_cursor() {
         qsbr_reclaimer().register_thread();
-        let tree = BTree::<usize, String>::new();
+        {
+            let tree = BTree::<usize, String>::new();
 
-        // Insert some test data
-        for i in 0..10 {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
-        }
+            // Insert some test data
+            for i in 0..10 {
+                tree.insert(
+                    OwnedThinArc::new(i),
+                    OwnedThinPtr::new(format!("value{}", i)),
+                );
+            }
 
-        // Test forward traversal
-        let mut cursor = tree.cursor();
-        cursor.seek_to_start();
-        for i in 0..10 {
-            let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            // Test forward traversal
+            let mut cursor = tree.cursor();
+            cursor.seek_to_start();
+            for i in 0..10 {
+                let entry = cursor.current().unwrap();
+                assert_eq!(*entry.value(), format!("value{}", i));
+                cursor.move_next();
+            }
+            assert_eq!(cursor.current().is_none(), true);
+
+            // Test backward traversal
+            cursor.seek_to_end();
+            for i in (0..10).rev() {
+                let entry = cursor.current().unwrap();
+                assert_eq!(*entry.value(), format!("value{}", i));
+                cursor.move_prev();
+            }
+            assert_eq!(cursor.current().is_none(), true);
+
+            // Test mixed traversal
+            cursor.seek_to_start();
+            assert_eq!(*cursor.current().unwrap().value(), "value0");
             cursor.move_next();
-        }
-        assert_eq!(cursor.current().is_none(), true);
-
-        // Test backward traversal
-        cursor.seek_to_end();
-        for i in (0..10).rev() {
-            let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*cursor.current().unwrap().value(), "value1");
+            cursor.move_next();
+            assert_eq!(*cursor.current().unwrap().value(), "value2");
             cursor.move_prev();
+            assert_eq!(*cursor.current().unwrap().value(), "value1");
+            cursor.move_prev();
+            assert_eq!(*cursor.current().unwrap().value(), "value0");
+            cursor.move_next();
+            assert_eq!(*cursor.current().unwrap().value(), "value1");
+
+            // Test seeking
+            cursor.seek(&5);
+            assert_eq!(*cursor.current().unwrap().value(), "value5");
+            cursor.seek(&7);
+            assert_eq!(*cursor.current().unwrap().value(), "value7");
         }
-        assert_eq!(cursor.current().is_none(), true);
-
-        // Test mixed traversal
-        cursor.seek_to_start();
-        assert_eq!(*cursor.current().unwrap().value(), "value0");
-        cursor.move_next();
-        assert_eq!(*cursor.current().unwrap().value(), "value1");
-        cursor.move_next();
-        assert_eq!(*cursor.current().unwrap().value(), "value2");
-        cursor.move_prev();
-        assert_eq!(*cursor.current().unwrap().value(), "value1");
-        cursor.move_prev();
-        assert_eq!(*cursor.current().unwrap().value(), "value0");
-        cursor.move_next();
-        assert_eq!(*cursor.current().unwrap().value(), "value1");
-
-        // Test seeking
-        cursor.seek(&5);
-        assert_eq!(*cursor.current().unwrap().value(), "value5");
-        cursor.seek(&7);
-        assert_eq!(*cursor.current().unwrap().value(), "value7");
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
@@ -459,7 +468,10 @@ mod tests {
         // Using ORDER * 2 ensures we have at least 2 leaves
         let n = ORDER * 2;
         for i in 0..n {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
             tree.check_invariants();
         }
 
@@ -511,7 +523,10 @@ mod tests {
 
         // Insert some test data
         for i in 0..10 {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
         }
 
         // Test forward traversal
@@ -553,6 +568,8 @@ mod tests {
         cursor.seek(&7);
         assert_eq!(*cursor.current().unwrap().value(), "value7");
 
+        drop(cursor);
+        drop(tree);
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
@@ -565,7 +582,10 @@ mod tests {
         // Using ORDER * 2 ensures we have at least 2 leaves
         let n = ORDER * 2;
         for i in 0..n {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
             tree.check_invariants();
         }
 
@@ -607,6 +627,8 @@ mod tests {
             format!("value{}", ORDER - 1)
         ); // Should cross back to first leaf
 
+        drop(cursor);
+        drop(tree);
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
@@ -618,7 +640,10 @@ mod tests {
         // Insert enough elements to ensure multiple leaves
         let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
         for i in 0..n {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
             tree.check_invariants();
         }
 

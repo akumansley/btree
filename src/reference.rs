@@ -1,16 +1,16 @@
 use std::fmt::{Debug, Display};
 use std::ops::Deref;
 
-use crate::graceful_pointers::GracefulArc;
+use crate::pointers::{SharedThinArc, SharedThinPtr};
 use crate::tree::{BTreeKey, BTreeValue};
 
-pub struct Ref<V: BTreeValue> {
-    value: *const V,
+pub struct Ref<V: BTreeValue + ?Sized> {
+    value: SharedThinPtr<V>,
     _phantom: std::marker::PhantomData<V>,
 }
 
-impl<V: BTreeValue> Ref<V> {
-    pub fn new(value: *const V) -> Self {
+impl<V: BTreeValue + ?Sized> Ref<V> {
+    pub fn new(value: SharedThinPtr<V>) -> Self {
         Ref {
             value,
             _phantom: std::marker::PhantomData,
@@ -18,27 +18,27 @@ impl<V: BTreeValue> Ref<V> {
     }
 }
 
-impl<V: BTreeValue> Deref for Ref<V> {
+impl<V: BTreeValue + ?Sized> Deref for Ref<V> {
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.value }
+        self.value.deref()
     }
 }
 
-impl<V: BTreeValue> Debug for Ref<V> {
+impl<V: BTreeValue + ?Sized> Debug for Ref<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.deref())
     }
 }
 
-impl<V: BTreeValue + Display> Display for Ref<V> {
+impl<V: BTreeValue + Display + ?Sized> Display for Ref<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.deref())
     }
 }
 
-impl<V: BTreeValue> PartialEq for Ref<V>
+impl<V: BTreeValue + ?Sized> PartialEq for Ref<V>
 where
     V: PartialEq,
 {
@@ -47,7 +47,7 @@ where
     }
 }
 
-impl<V: BTreeValue> PartialEq<&V> for Ref<V>
+impl<V: BTreeValue + ?Sized> PartialEq<&V> for Ref<V>
 where
     V: PartialEq,
 {
@@ -55,60 +55,60 @@ where
         **self == **other
     }
 }
-pub struct Entry<K: BTreeKey, V: BTreeValue> {
-    key: GracefulArc<K>,
-    value: *const V,
+pub struct Entry<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+    key: SharedThinArc<K>,
+    value: SharedThinPtr<V>,
 }
 
-impl<K: BTreeKey, V: BTreeValue> Entry<K, V> {
-    pub fn new(key: GracefulArc<K>, value: *const V) -> Self {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Entry<K, V> {
+    pub fn new(key: SharedThinArc<K>, value: SharedThinPtr<V>) -> Self {
         Entry { key, value }
     }
 }
 
-impl<K: BTreeKey, V: BTreeValue> Entry<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Entry<K, V> {
     pub fn key(&self) -> &K {
-        self.key.as_ref()
+        self.key.deref()
     }
     pub fn value(&self) -> &V {
-        unsafe { &*self.value }
+        self.value.deref()
     }
     pub fn into_value(self) -> ValueRef<V> {
         ValueRef::new(self.value)
     }
 }
 
-pub struct ValueRef<V: BTreeValue> {
-    value: *const V,
+pub struct ValueRef<V: BTreeValue + ?Sized> {
+    value: SharedThinPtr<V>,
 }
 
-impl<V: BTreeValue> ValueRef<V> {
-    pub fn new(value: *const V) -> Self {
+impl<V: BTreeValue + ?Sized> ValueRef<V> {
+    pub fn new(value: SharedThinPtr<V>) -> Self {
         ValueRef { value }
     }
 }
 
-impl<V: BTreeValue> Deref for ValueRef<V> {
+impl<V: BTreeValue + ?Sized> Deref for ValueRef<V> {
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.value }
+        self.value.deref()
     }
 }
 
-impl<V: BTreeValue + Display> Debug for ValueRef<V> {
+impl<V: BTreeValue + Display + ?Sized> Debug for ValueRef<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.deref())
     }
 }
 
-impl<V: BTreeValue + Display> Display for ValueRef<V> {
+impl<V: BTreeValue + Display + ?Sized> Display for ValueRef<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.deref())
     }
 }
 
-impl<V: BTreeValue> PartialEq for ValueRef<V>
+impl<V: BTreeValue + PartialEq + ?Sized> PartialEq for ValueRef<V>
 where
     V: PartialEq,
 {
@@ -117,7 +117,7 @@ where
     }
 }
 
-impl<V: BTreeValue> PartialEq<&V> for ValueRef<V>
+impl<V: BTreeValue + PartialEq + ?Sized> PartialEq<&V> for ValueRef<V>
 where
     V: PartialEq,
 {
@@ -126,7 +126,7 @@ where
     }
 }
 
-impl<V: BTreeValue> PartialEq<V> for ValueRef<V>
+impl<V: BTreeValue + PartialEq + ?Sized> PartialEq<V> for ValueRef<V>
 where
     V: PartialEq,
 {

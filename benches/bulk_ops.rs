@@ -1,5 +1,4 @@
-use btree::qsbr_reclaimer;
-use btree::BTree;
+use btree::{qsbr_reclaimer, BTree, OwnedThinArc, OwnedThinPtr};
 use criterion::{criterion_group, criterion_main, Bencher, BenchmarkGroup, BenchmarkId, Criterion};
 use std::time::Duration;
 
@@ -16,7 +15,10 @@ fn bulk_load_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::WallTi
                     // Generate sorted key-value pairs
                     let mut pairs = Vec::with_capacity(num_elements);
                     for i in 0..num_elements {
-                        pairs.push((i, format!("value{}", i)));
+                        pairs.push((
+                            OwnedThinArc::new(i),
+                            OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                        ));
                     }
 
                     qsbr_reclaimer().register_thread();
@@ -47,16 +49,22 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                 qsbr_reclaimer().register_thread();
                 let mut pairs = Vec::with_capacity(num_elements);
                 for i in 0..num_elements {
-                    pairs.push((i, format!("value{}", i)));
+                    pairs.push((
+                        OwnedThinArc::new(i),
+                        OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                    ));
                 }
-                let tree: BTree<usize, String> = BTree::bulk_load_parallel(pairs);
+                let tree: BTree<usize, str> = BTree::bulk_load_parallel(pairs);
 
                 // Time the updates
                 for iter in 0..iters {
                     // Generate update pairs
                     let mut updates = Vec::with_capacity(num_elements);
                     for i in 0..num_elements {
-                        updates.push((i, format!("updated_value - {}, {}", iter, i)));
+                        updates.push((
+                            OwnedThinArc::new(i),
+                            OwnedThinPtr::new_from_str(&format!("updated_value - {}, {}", iter, i)),
+                        ));
                     }
 
                     let start = std::time::Instant::now();

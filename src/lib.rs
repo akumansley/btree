@@ -9,8 +9,15 @@
 //! and must be dropped via the tree's methods or manually via QSBR.
 //!
 //! The tree is intended to be used with variable sized keys -- nodes only store pointers to keys and values. Keys are reference counted when
-//! they're used for split keys, not cloned. The tree uses "hybrid locks" for good scalability when the tree is large, and the tree provides
+//! they're used for split keys, not cloned. The tree uses "hybrid locks" for scalability when the tree is large, and the tree provides
 //! several parallel bulk operations that should be very fast with large amounts of data.
+
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+#[cfg(not(miri))]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[macro_use]
 mod debug;
 
@@ -19,13 +26,12 @@ mod bulk_load;
 mod bulk_update;
 mod coalescing;
 mod cursor;
-mod graceful_pointers;
 mod hybrid_latch;
 mod internal_node;
 mod iter;
 mod leaf_node;
 mod node;
-mod node_ptr;
+mod pointers;
 mod qsbr;
 mod reference;
 mod root_node;
@@ -37,6 +43,7 @@ mod tree;
 mod util;
 pub use cursor::{Cursor, CursorMut};
 pub use iter::{BackwardBTreeIterator, ForwardBTreeIterator};
+pub use pointers::{OwnedThinArc, OwnedThinPtr, SharedThinPtr};
 pub use qsbr::{qsbr_reclaimer, MemoryReclaimer};
 pub use reference::{Entry, Ref};
 pub use tree::{BTree, BTreeKey, BTreeValue};

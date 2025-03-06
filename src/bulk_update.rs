@@ -1,16 +1,18 @@
-use crate::sync::AtomicUsize;
+use crate::{
+    pointers::{OwnedThinArc, OwnedThinPtr, SharedThinPtr},
+    sync::AtomicUsize,
+};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use std::sync::Arc;
 
 use crate::{
     array_types::ORDER,
-    graceful_pointers::GracefulArc,
     qsbr::{qsbr_pool, qsbr_reclaimer},
     BTree, BTreeKey, BTreeValue,
 };
 
-pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
-    sorted_kv_pairs: Vec<(K, V)>,
+pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+    sorted_kv_pairs: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>,
     tree: &BTree<K, V>,
 ) {
     let pool = qsbr_pool();
@@ -22,7 +24,7 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
                 let mut cursor = tree.cursor_mut();
                 for (key, value) in chunk {
                     cursor.seek(&key);
-                    cursor.update_value(Box::new(value));
+                    cursor.update_value(value);
                 }
             });
     });
@@ -32,11 +34,11 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey, V: BTreeValue>(
 }
 
 pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
-    K: BTreeKey,
-    V: BTreeValue,
-    F: Fn(*mut V) -> *mut V + Send + Sync,
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    F: Fn(SharedThinPtr<V>) -> OwnedThinPtr<V> + Send + Sync,
 >(
-    sorted_kv_pairs: Vec<(K, V)>,
+    sorted_kv_pairs: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>,
     update_fn: &F,
     tree: &BTree<K, V>,
 ) {
@@ -52,11 +54,7 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
                 let insertion_count = Arc::clone(&insertion_count);
                 let mut cursor = tree.cursor_mut();
                 for (key, value) in chunk {
-                    let was_inserted = cursor.insert_or_update(
-                        GracefulArc::new(key),
-                        Box::into_raw(Box::new(value)),
-                        update_fn,
-                    );
+                    let was_inserted = cursor.insert_or_update(key, value, update_fn);
 
                     // Increment the insertion count if a new key was inserted
                     if was_inserted {
@@ -81,10 +79,13 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+
     use super::*;
     use crate::qsbr::qsbr_reclaimer;
 
     #[test]
+    #[cfg(not(miri))]
     fn test_bulk_update() {
         qsbr_reclaimer().register_thread();
 
@@ -94,27 +95,34 @@ mod tests {
 
         // Insert initial values
         for i in 0..num_elements {
-            tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
         }
 
         // Create updates with modified values
-        let updates: Vec<(usize, String)> = (0..num_elements)
+        let updates_for_comparison: Vec<(usize, String)> = (0..num_elements)
             .map(|i| (i, format!("updated_value{}", i)))
+            .collect();
+        let updates: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = updates_for_comparison
+            .iter()
+            .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
             .collect();
 
         // Perform bulk update
-        bulk_update_from_sorted_kv_pairs_parallel(updates.clone(), &tree);
+        bulk_update_from_sorted_kv_pairs_parallel(updates, &tree);
 
         // Verify all values were updated correctly
         let mut cursor = tree.cursor();
         cursor.seek_to_start();
 
-        for (i, (key, value)) in updates.iter().enumerate() {
+        for (i, (key, value)) in updates_for_comparison.iter().enumerate() {
             let entry = cursor.current().unwrap();
             assert_eq!(entry.key(), key);
             assert_eq!(entry.value(), value);
 
-            if i < updates.len() - 1 {
+            if i < updates_for_comparison.len() - 1 {
                 cursor.move_next();
             }
         }
@@ -130,6 +138,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_bulk_insert_or_update() {
         qsbr_reclaimer().register_thread();
 
@@ -140,44 +149,49 @@ mod tests {
         // Insert initial values (even numbers)
         for i in 0..num_elements {
             if i % 2 == 0 {
-                tree.insert(Box::new(i), Box::new(format!("value{}", i)));
+                tree.insert(
+                    OwnedThinArc::new(i),
+                    OwnedThinPtr::new(format!("value{}", i)),
+                );
             }
         }
 
         // Create a mix of updates and inserts
         // - Even numbers: update existing values
         // - Odd numbers: insert new values
-        let entries: Vec<(usize, String)> = (0..num_elements)
+        let entries_for_comparison: Vec<(usize, String)> = (0..num_elements)
             .map(|i| {
                 if i % 2 == 0 {
-                    // Update: append "_updated" to existing values
                     (i, format!("value{}_updated", i))
                 } else {
-                    // Insert: new values for odd numbers
                     (i, format!("value{}_new", i))
                 }
             })
             .collect();
+        let entries: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = entries_for_comparison
+            .iter()
+            .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
+            .collect();
 
         // Define update function that appends "_updated" to existing values
-        let update_fn = |old_value: *mut String| {
-            let old_string = unsafe { Box::from_raw(old_value) };
-            Box::into_raw(Box::new(format!("{}_updated", old_string)))
+        let update_fn = |old_value: SharedThinPtr<String>| {
+            let old_string = old_value.deref();
+            OwnedThinPtr::new(format!("{}_updated", old_string))
         };
 
         // Perform bulk insert/update
-        tree.bulk_insert_or_update_parallel(entries.clone(), &update_fn);
+        tree.bulk_insert_or_update_parallel(entries, &update_fn);
 
         // Verify all values are correct
         let mut cursor = tree.cursor();
         cursor.seek_to_start();
 
-        for (i, (key, expected_value)) in entries.iter().enumerate() {
+        for (i, (key, expected_value)) in entries_for_comparison.iter().enumerate() {
             let entry = cursor.current().unwrap();
             assert_eq!(entry.key(), key);
             assert_eq!(entry.value(), expected_value);
 
-            if i < entries.len() - 1 {
+            if i < entries_for_comparison.len() - 1 {
                 cursor.move_next();
             }
         }

@@ -1,14 +1,16 @@
-use std::{marker::PhantomData, mem::MaybeUninit, ptr};
-
-use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
-use smallvec::Array;
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use crate::{
-    graceful_pointers::{AtomicGracefulArc, GracefulArc, GracefulAtomicPointer},
-    node::NodeHeader,
-    node_ptr::{marker, NodePtr, NodeRef},
-    BTreeKey, BTreeValue,
+    pointers::{
+        marker, Arcable, AtomicPointerArrayValue, OwnedAtomicThinArc, OwnedNodeRef, OwnedThinArc,
+        OwnedThinAtomicPtr, OwnedThinPtr, SharedThinArc,
+    },
+    sync::{AtomicUsize, Ordering},
+    SharedThinPtr,
 };
+use smallvec::Array;
+
+use crate::{node::NodeHeader, BTreeKey, BTreeValue};
 pub const ORDER: usize = 2_usize.pow(6);
 pub const MAX_KEYS_PER_NODE: usize = ORDER - 1; // number of search keys per node
 pub const MIN_KEYS_PER_NODE: usize = ORDER / 2; // number of search keys per node
@@ -33,12 +35,16 @@ define_array_types!(InternalKeyTempArray, MAX_KEYS_PER_NODE);
 define_array_types!(InternalChildTempArray, MAX_CHILDREN_PER_NODE);
 define_array_types!(LeafTempArray, VALUE_TEMP_ARRAY_SIZE);
 
-struct NodeStorageArray<const CAPACITY: usize, T: Send + 'static, P: GracefulAtomicPointer<T>> {
+struct NodeStorageArray<
+    const CAPACITY: usize,
+    T: Send + 'static + ?Sized,
+    P: AtomicPointerArrayValue<T>,
+> {
     array: [MaybeUninit<P>; CAPACITY],
     phantom: PhantomData<T>,
 }
 
-impl<const CAPACITY: usize, T: Send + 'static, P: GracefulAtomicPointer<T>>
+impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayValue<T>>
     NodeStorageArray<CAPACITY, T, P>
 {
     pub fn new() -> Self {
@@ -48,15 +54,18 @@ impl<const CAPACITY: usize, T: Send + 'static, P: GracefulAtomicPointer<T>>
         }
     }
 
-    // panics if from is null
     fn atomic_copy_ptr(&self, from: usize, to: usize) {
         unsafe {
             self.array.get_unchecked(to).assume_init_ref().store(
+                // ORDERING: the writing thread must have sync'd when it exclusively locked the node,
+                // so we can be relaxed
                 self.array
                     .get_unchecked(from)
                     .assume_init_ref()
-                    .load(Ordering::Relaxed),
-                Ordering::Relaxed,
+                    .must_load_for_move(Ordering::Relaxed),
+                // ORDERING: an optimistic reader may or may not have seen the value whose pointer we're moving
+                // (we might've added it anew and then shifted it), so we need to release that write
+                Ordering::Release,
             );
         }
     }
@@ -74,64 +83,97 @@ impl<const CAPACITY: usize, T: Send + 'static, P: GracefulAtomicPointer<T>>
         }
     }
 
-    fn atomic_write_ptr(&self, index: usize, ptr: P::GracefulPointer) {
+    fn atomic_write_ptr(&self, index: usize, ptr: P::OwnedPointer) {
         unsafe {
             self.array
                 .get_unchecked(index)
                 .assume_init_ref()
-                .store(ptr, Ordering::Relaxed);
+                // ORDERING: this may be a newly initialized value, so we need to release the pointer write
+                // for optimistic readers
+                .store(ptr, Ordering::Release);
         }
     }
 
-    fn set(&self, index: usize, ptr: P::GracefulPointer) {
+    fn set(&self, index: usize, ptr: P::OwnedPointer) {
         unsafe {
             self.array
                 .get_unchecked(index)
                 .assume_init_ref()
-                .store(ptr, Ordering::Relaxed);
+                // ORDERING: this may be a newly initialized value, so we need to release the pointer write
+                // for optimistic readers
+                .store(ptr, Ordering::Release);
         }
     }
-    fn replace(&self, index: usize, ptr: P::GracefulPointer) -> P::GracefulPointer {
+    fn replace(&self, index: usize, ptr: P::OwnedPointer) -> P::OwnedPointer {
         unsafe {
             self.array
                 .get_unchecked(index)
                 .assume_init_ref()
-                .swap(ptr, Ordering::Relaxed)
+                // ORDERING: this may be a newly initialized value, so we need to release the pointer write
+                // for optimistic readers, but the writer should've synchronized when it acquired a lock on the node
+                .swap(ptr, Ordering::Release)
                 .unwrap()
         }
     }
 
-    fn push(&self, ptr: P::GracefulPointer, num_elements: usize) {
+    fn push(&self, ptr: P::OwnedPointer, num_elements: usize) {
         self.atomic_write_ptr(num_elements, ptr);
     }
 
-    fn get(&self, index: usize, num_elements: usize) -> P::GracefulPointer {
+    fn get(&self, index: usize, num_elements: usize) -> P::SharedPointer {
         debug_assert!(index < num_elements);
         unsafe {
             self.array
                 .get_unchecked(index)
                 .assume_init_ref()
-                .load(Ordering::Relaxed)
+                // ORDERING: this may be an optimistic read, so we need to Acquire any associated values
+                .load_shared(Ordering::Acquire)
+                .unwrap()
         }
     }
 
-    fn insert(&self, ptr: P::GracefulPointer, index: usize, num_elements: usize) {
+    fn into_owned(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
+        debug_assert!(index < num_elements);
+
+        unsafe {
+            self.array
+                .get_unchecked(index)
+                .assume_init_ref()
+                // ORDERING: if we're claiming we own the value pointed herein, we should've synchronized using locks
+                .into_owned(Ordering::Relaxed)
+                .unwrap()
+        }
+    }
+
+    fn insert(&self, ptr: P::OwnedPointer, index: usize, num_elements: usize) {
         self.atomic_shift_right(index, num_elements);
         self.atomic_write_ptr(index, ptr);
     }
 
-    fn remove(&self, index: usize, num_elements: usize) -> P::GracefulPointer {
-        let ptr = self.get(index, num_elements);
+    fn remove(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
+        let ptr = self.into_owned(index, num_elements);
         self.atomic_shift_left(index, num_elements);
         ptr
     }
 
-    fn iter<'a>(&'a self, num_elements: usize) -> impl Iterator<Item = P::GracefulPointer> + 'a {
+    fn iter<'a>(&'a self, num_elements: usize) -> impl Iterator<Item = P::SharedPointer> + 'a {
         (0..num_elements).map(move |i| unsafe {
             self.array
                 .get_unchecked(i)
                 .assume_init_ref()
-                .load(Ordering::Relaxed)
+                // ORDERING: this may be an optimistic read, so we need to Acquire any associated values
+                .load_shared(Ordering::Acquire)
+                .unwrap()
+        })
+    }
+
+    fn iter_owned<'a>(&'a self, num_elements: usize) -> impl Iterator<Item = P::OwnedPointer> + 'a {
+        (0..num_elements).map(move |i| unsafe {
+            self.array
+                .get_unchecked(i)
+                .assume_init_ref()
+                .into_owned(Ordering::Relaxed)
+                .unwrap()
         })
     }
 
@@ -140,32 +182,65 @@ impl<const CAPACITY: usize, T: Send + 'static, P: GracefulAtomicPointer<T>>
     }
 }
 
+impl<const CAPACITY: usize, T: Send + 'static + ?Sized + Arcable>
+    NodeStorageArray<CAPACITY, T, OwnedAtomicThinArc<T>>
+{
+    fn get_cloned(&self, index: usize, num_elements: usize) -> OwnedThinArc<T> {
+        debug_assert!(index < num_elements);
+        unsafe {
+            self.array
+                .get_unchecked(index)
+                .assume_init_ref()
+                .load_cloned(Ordering::Relaxed)
+        }
+    }
+}
+
 // two generic parameters to work around missing const generic expressions
 // does not drop keys or children when dropped
 pub struct InternalNodeStorage<
     const CAPACITY: usize,
     const CAPACITY_PLUS_ONE: usize,
-    K: BTreeKey,
-    V: BTreeValue,
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
 > {
-    keys: NodeStorageArray<CAPACITY, K, AtomicGracefulArc<K>>,
-    children: NodeStorageArray<CAPACITY_PLUS_ONE, NodeHeader, AtomicPtr<NodeHeader>>,
+    keys: NodeStorageArray<CAPACITY, K, OwnedAtomicThinArc<K>>,
+    children: NodeStorageArray<CAPACITY_PLUS_ONE, NodeHeader, OwnedThinAtomicPtr<NodeHeader>>,
     num_keys: AtomicUsize,
     phantom: PhantomData<V>,
 }
 
-impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTreeValue> Drop
-    for InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
+impl<
+        const CAPACITY: usize,
+        const CAPACITY_PLUS_ONE: usize,
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+    > Drop for InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
 {
     fn drop(&mut self) {
-        for key in self.keys.iter(self.num_keys()) {
-            unsafe { key.decrement_ref_count_and_drop_if_zero() };
+        for key in self.keys.iter_owned(self.num_keys()) {
+            // OK to drop immediately -- if we're dropping an internal node while it still has keys, we're dropping the entire tree
+            unsafe { OwnedThinArc::drop_immediately(key) };
+        }
+
+        if self.num_keys() > 0 {
+            for child in self.children.iter_owned(self.num_children()) {
+                OwnedNodeRef::drop_immediately(
+                    OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                        child,
+                    ),
+                )
+            }
         }
     }
 }
 
-impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTreeValue>
-    InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
+impl<
+        const CAPACITY: usize,
+        const CAPACITY_PLUS_ONE: usize,
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+    > InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
 {
     pub fn new() -> Self {
         Self {
@@ -177,8 +252,12 @@ impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTre
     }
 }
 
-impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTreeValue>
-    InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
+impl<
+        const CAPACITY: usize,
+        const CAPACITY_PLUS_ONE: usize,
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+    > InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
 {
     pub fn num_keys(&self) -> usize {
         self.num_keys.load(Ordering::Acquire)
@@ -193,126 +272,146 @@ impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTre
         (num_keys, num_keys + 1)
     }
 
-    pub fn iter_keys<'a>(&'a self) -> impl Iterator<Item = GracefulArc<K>> + 'a {
+    pub fn iter_keys<'a>(&'a self) -> impl Iterator<Item = SharedThinArc<K>> + 'a {
         self.keys.iter(self.num_keys())
+    }
+
+    pub fn iter_keys_owned<'a>(&'a self) -> impl Iterator<Item = OwnedThinArc<K>> + 'a {
+        self.keys.iter_owned(self.num_keys())
     }
 
     pub fn binary_search_keys(&self, key: &K) -> Result<usize, usize> {
         let num_keys = self.num_keys();
         self.keys
             .as_slice(num_keys)
-            .binary_search_by(|k| k.load(Ordering::Relaxed).cmp(key))
-    }
-    pub fn get_child(&self, index: usize) -> NodePtr {
-        NodePtr::from_raw_ptr(self.children.get(index, self.num_children()))
+            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().cmp(key))
     }
 
-    pub fn get_key(&self, index: usize) -> GracefulArc<K> {
+    pub fn get_child(&self, index: usize) -> SharedThinPtr<NodeHeader> {
+        self.children.get(index, self.num_children())
+    }
+
+    pub fn remove_only_child(&self) -> OwnedThinPtr<NodeHeader> {
+        self.children.remove(0, self.num_children())
+    }
+
+    pub fn get_key(&self, index: usize) -> SharedThinArc<K> {
         self.keys.get(index, self.num_keys())
     }
 
-    pub fn iter_children<'a>(&'a self) -> impl Iterator<Item = NodePtr> + 'a {
-        self.children
-            .iter(self.num_children())
-            .map(|ptr| NodePtr::from_raw_ptr(ptr))
+    pub fn iter_children<'a>(&'a self) -> impl Iterator<Item = SharedThinPtr<NodeHeader>> + 'a {
+        self.children.iter(self.num_children())
     }
 
-    pub fn insert(&self, key: GracefulArc<K>, child: NodePtr, index: usize) {
-        let (num_keys, num_children) = self.num_keys_and_children();
-        self.keys.insert(key, index, num_keys);
-        self.children
-            .insert(child.as_raw_ptr(), index, num_children);
-        self.num_keys.fetch_add(1, Ordering::Release);
+    pub fn iter_children_owned<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = OwnedThinPtr<NodeHeader>> + 'a {
+        self.children.iter_owned(self.num_children())
     }
-    pub fn insert_child_with_split_key(&self, key: GracefulArc<K>, child: NodePtr, index: usize) {
+
+    pub fn insert(&self, key: OwnedThinArc<K>, child: OwnedThinPtr<NodeHeader>, index: usize) {
         let (num_keys, num_children) = self.num_keys_and_children();
         self.keys.insert(key, index, num_keys);
-        self.children
-            .insert(child.as_raw_ptr(), index + 1, num_children);
+        self.children.insert(child, index, num_children);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn push(&self, key: GracefulArc<K>, child: NodePtr) {
+    pub fn replace_key(&self, index: usize, key: OwnedThinArc<K>) -> OwnedThinArc<K> {
+        self.keys.replace(index, key)
+    }
+
+    pub fn insert_child_with_split_key(
+        &self,
+        key: OwnedThinArc<K>,
+        child: OwnedThinPtr<NodeHeader>,
+        index: usize,
+    ) {
+        let (num_keys, num_children) = self.num_keys_and_children();
+        self.keys.insert(key, index, num_keys);
+        self.children.insert(child, index + 1, num_children);
+        self.num_keys.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn push(&self, key: OwnedThinArc<K>, child: OwnedThinPtr<NodeHeader>) {
         let (num_keys, num_children) = self.num_keys_and_children();
         self.keys.push(key, num_keys);
-        self.children.push(child.as_raw_ptr(), num_children);
+        self.children.push(child, num_children);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
-    pub fn push_key(&self, key: GracefulArc<K>) {
+    pub fn push_key(&self, key: OwnedThinArc<K>) {
         let num_keys = self.num_keys();
         self.keys.push(key, num_keys);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn pop(&self) -> (GracefulArc<K>, NodePtr) {
+    pub fn pop(&self) -> (OwnedThinArc<K>, OwnedThinPtr<NodeHeader>) {
         let index = self.num_children() - 1;
         self.remove_child_at_index(index)
     }
 
-    pub fn set_key(&self, index: usize, key: GracefulArc<K>) {
+    pub fn set_key(&self, index: usize, key: OwnedThinArc<K>) {
         self.keys.set(index, key);
     }
 
-    pub fn remove_child_at_index(&self, index: usize) -> (GracefulArc<K>, NodePtr) {
+    pub fn remove_child_at_index(
+        &self,
+        index: usize,
+    ) -> (OwnedThinArc<K>, OwnedThinPtr<NodeHeader>) {
         debug_assert!(index > 0);
         let (num_keys, num_children) = self.num_keys_and_children();
         let child = self.children.remove(index, num_children);
         let key = self.keys.remove(index - 1, num_keys);
         self.num_keys.fetch_sub(1, Ordering::Release);
-        (key, NodePtr::from_raw_ptr(child))
+        (key, child)
     }
 
-    pub fn remove(&self, index: usize) -> (GracefulArc<K>, NodePtr) {
+    pub fn remove(&self, index: usize) -> (OwnedThinArc<K>, OwnedThinPtr<NodeHeader>) {
         let (num_keys, num_children) = self.num_keys_and_children();
         let key = self.keys.remove(index, num_keys);
         let child = self.children.remove(index, num_children);
         // I suspect this can be relaxed
         self.num_keys.fetch_sub(1, Ordering::Release);
-        (key, NodePtr::from_raw_ptr(child))
+        (key, child)
     }
 
     pub fn drain<'a>(
         &'a self,
-        new_split_key: GracefulArc<K>,
-    ) -> impl Iterator<Item = (GracefulArc<K>, NodePtr)> + 'a {
-        let num_keys = self.num_keys.swap(0, Ordering::Relaxed);
-        let keys = std::iter::once(new_split_key).chain(self.keys.iter(num_keys));
+        new_split_key: OwnedThinArc<K>,
+    ) -> impl Iterator<Item = (OwnedThinArc<K>, OwnedThinPtr<NodeHeader>)> + 'a {
+        let num_keys = self.num_keys.swap(0, Ordering::AcqRel);
+        let keys = std::iter::once(new_split_key).chain(self.keys.iter_owned(num_keys));
 
-        let children = self.children.iter(num_keys + 1);
-        keys.zip(children)
-            .map(|(key, child)| (key, NodePtr::from_raw_ptr(child)))
+        let children = self.children.iter_owned(num_keys + 1);
+        keys.zip(children).map(|(key, child)| (key, child))
     }
 
-    pub fn push_extra_child(&self, child: NodePtr) {
-        self.children.set(self.num_keys(), child.as_raw_ptr());
+    pub fn push_extra_child(&self, child: OwnedThinPtr<NodeHeader>) {
+        self.children.set(self.num_keys(), child);
     }
 
-    pub fn extend(&self, other: impl Iterator<Item = (GracefulArc<K>, NodePtr)>) {
+    pub fn extend(&self, other: impl Iterator<Item = (OwnedThinArc<K>, OwnedThinPtr<NodeHeader>)>) {
         let num_keys = self.num_keys();
         let mut added = 0;
 
         for (key, child) in other {
             self.keys.insert(key, num_keys + added, num_keys + added);
-            self.children.insert(
-                child.as_raw_ptr(),
-                num_keys + added + 1,
-                num_keys + added + 1,
-            );
+            self.children
+                .insert(child, num_keys + added + 1, num_keys + added + 1);
             added += 1;
         }
         self.num_keys.fetch_add(added, Ordering::Release);
     }
 
-    pub fn extend_children(&self, other: impl Iterator<Item = NodePtr>) {
+    pub fn extend_children(&self, other: impl Iterator<Item = OwnedThinPtr<NodeHeader>>) {
         let num_keys = self.num_keys();
         let mut added = 0;
         for child in other {
-            self.children.push(child.as_raw_ptr(), num_keys + added);
+            self.children.push(child, num_keys + added);
             added += 1;
         }
     }
 
-    pub fn extend_keys(&self, other: impl Iterator<Item = GracefulArc<K>>) {
+    pub fn extend_keys(&self, other: impl Iterator<Item = OwnedThinArc<K>>) {
         let num_keys = self.num_keys();
         let mut added = 0;
         for key in other {
@@ -322,11 +421,11 @@ impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTre
         self.num_keys.fetch_add(added, Ordering::Release);
     }
 
-    pub fn keys(&self) -> &[AtomicGracefulArc<K>] {
+    pub fn keys(&self) -> &[OwnedAtomicThinArc<K>] {
         self.keys.as_slice(self.num_keys())
     }
 
-    pub fn children(&self) -> &[AtomicPtr<NodeHeader>] {
+    pub fn children(&self) -> &[OwnedThinAtomicPtr<NodeHeader>] {
         self.children.as_slice(self.num_children())
     }
 
@@ -338,42 +437,44 @@ impl<const CAPACITY: usize, const CAPACITY_PLUS_ONE: usize, K: BTreeKey, V: BTre
         assert!(self.num_keys() <= CAPACITY);
         for (key1, key2) in self.keys().into_iter().zip(self.keys().into_iter().skip(1)) {
             assert!(
-                &*key1.load(Ordering::Relaxed) < &*key2.load(Ordering::Relaxed),
+                &*key1.load(Ordering::Relaxed).unwrap() < &*key2.load(Ordering::Relaxed).unwrap(),
                 "key1: {:?} key2: {:?}",
-                &*key1.load(Ordering::Relaxed),
-                &*key2.load(Ordering::Relaxed)
+                &*key1.load(Ordering::Relaxed).unwrap(),
+                &*key2.load(Ordering::Relaxed).unwrap()
             );
         }
         for child in self.children() {
-            assert!(child.load(Ordering::Relaxed) != ptr::null_mut());
+            assert!(child.load_shared(Ordering::Relaxed).is_some());
         }
     }
 }
 
 // drops keys and values when dropped
 pub type LeafNodeStorageArray<K, V> = LeafNodeStorage<MAX_KEYS_PER_NODE, K, V>;
-pub struct LeafNodeStorage<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> {
-    keys: NodeStorageArray<CAPACITY, K, AtomicGracefulArc<K>>,
-    values: NodeStorageArray<CAPACITY, V, AtomicPtr<V>>,
+pub struct LeafNodeStorage<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+    keys: NodeStorageArray<CAPACITY, K, OwnedAtomicThinArc<K>>,
+    values: NodeStorageArray<CAPACITY, V, OwnedThinAtomicPtr<V>>,
     num_keys: AtomicUsize,
 }
 
-impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> Drop for LeafNodeStorage<CAPACITY, K, V> {
+impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop
+    for LeafNodeStorage<CAPACITY, K, V>
+{
     fn drop(&mut self) {
         let num_keys = self.num_keys();
         for i in 0..num_keys {
-            unsafe {
-                let key = self.keys.get(i, num_keys);
-                key.decrement_ref_count_and_drop_if_zero();
+            let key = self.keys.into_owned(i, num_keys);
+            unsafe { OwnedThinArc::drop_immediately(key) };
 
-                let value = self.values.get(i, num_keys);
-                drop(Box::from_raw(value));
-            }
+            let value = self.values.into_owned(i, num_keys);
+            OwnedThinPtr::drop_immediately(value);
         }
     }
 }
 
-impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY, K, V> {
+impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
+    LeafNodeStorage<CAPACITY, K, V>
+{
     pub fn new() -> Self {
         Self {
             keys: NodeStorageArray::new(),
@@ -383,40 +484,47 @@ impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY
     }
 }
 
-impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY, K, V> {
+impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
+    LeafNodeStorage<CAPACITY, K, V>
+{
     pub fn num_keys(&self) -> usize {
         self.num_keys.load(Ordering::Acquire)
     }
 
-    pub fn keys(&self) -> &[AtomicGracefulArc<K>] {
+    pub fn keys(&self) -> &[OwnedAtomicThinArc<K>] {
         self.keys.as_slice(self.num_keys())
     }
 
-    pub fn values(&self) -> &[AtomicPtr<V>] {
+    pub fn values(&self) -> &[OwnedThinAtomicPtr<V>] {
         self.values.as_slice(self.num_keys())
     }
 
-    pub fn push(&self, key: GracefulArc<K>, value: *mut V) {
+    pub fn push(&self, key: OwnedThinArc<K>, value: OwnedThinPtr<V>) {
         let num_keys = self.num_keys();
         self.keys.push(key, num_keys);
         self.values.push(value, num_keys);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn get_key(&self, index: usize) -> GracefulArc<K> {
+    pub fn get_key(&self, index: usize) -> SharedThinArc<K> {
         self.keys.get(index, self.num_keys())
     }
 
-    pub fn get_value(&self, index: usize) -> *mut V {
+    pub fn clone_key(&self, index: usize) -> OwnedThinArc<K> {
+        let arc = self.keys.get_cloned(index, self.num_keys());
+        arc
+    }
+
+    pub fn get_value(&self, index: usize) -> SharedThinPtr<V> {
         self.values.get(index, self.num_keys())
     }
 
-    pub fn pop(&self) -> (GracefulArc<K>, *mut V) {
+    pub fn pop(&self) -> (OwnedThinArc<K>, OwnedThinPtr<V>) {
         let index = self.num_keys() - 1;
         self.remove(index)
     }
 
-    pub fn extend(&self, other: impl Iterator<Item = (GracefulArc<K>, *mut V)>) {
+    pub fn extend(&self, other: impl Iterator<Item = (OwnedThinArc<K>, OwnedThinPtr<V>)>) {
         for (key, value) in other {
             self.push(key, value);
         }
@@ -426,50 +534,37 @@ impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY
         let num_keys = self.num_keys();
         self.keys
             .as_slice(num_keys)
-            .binary_search_by(|k| (&*k.load(Ordering::Relaxed)).cmp(key))
+            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().cmp(key))
     }
 
-    pub fn binary_search_keys_optimistic(
-        &self,
-        key: &K,
-        node_ref: NodeRef<K, V, marker::Optimistic, marker::Leaf>,
-    ) -> Result<usize, usize> {
-        let num_keys = self.num_keys();
-        self.keys.as_slice(num_keys).binary_search_by(|k| {
-            let read_ptr = k.load(Ordering::Relaxed);
-            match node_ref.validate_lock() {
-                Ok(()) => (*read_ptr).cmp(key),
-                Err(_) => std::cmp::Ordering::Equal, // we say equal immediately and give up searching -- the reader will fail validation later
-            }
-        })
+    pub fn drain<'a>(&'a self) -> impl Iterator<Item = (OwnedThinArc<K>, OwnedThinPtr<V>)> + 'a {
+        let num_keys = self.num_keys.swap(0, Ordering::AcqRel);
+        self.keys
+            .iter_owned(num_keys)
+            .zip(self.values.iter_owned(num_keys))
     }
 
-    pub fn drain<'a>(&'a self) -> impl Iterator<Item = (GracefulArc<K>, *mut V)> + 'a {
-        let num_keys = self.num_keys.swap(0, Ordering::Relaxed);
-        self.keys.iter(num_keys).zip(self.values.iter(num_keys))
-    }
-
-    pub fn set(&self, index: usize, value: *mut V) -> *mut V {
+    pub fn set(&self, index: usize, value: OwnedThinPtr<V>) -> Option<OwnedThinPtr<V>> {
         if index < self.num_keys() {
-            self.values.replace(index, value)
+            Some(self.values.replace(index, value))
         } else {
             self.values.set(index, value);
-            ptr::null_mut()
+            None
         }
     }
 
-    pub fn insert(&self, key: GracefulArc<K>, value: *mut V, index: usize) {
+    pub fn insert(&self, key: OwnedThinArc<K>, value: OwnedThinPtr<V>, index: usize) {
         let num_keys = self.num_keys();
         self.keys.insert(key, index, num_keys);
         self.values.insert(value, index, num_keys);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn remove(&self, index: usize) -> (GracefulArc<K>, *mut V) {
+    pub fn remove(&self, index: usize) -> (OwnedThinArc<K>, OwnedThinPtr<V>) {
         let num_keys = self.num_keys();
         let key = self.keys.remove(index, num_keys);
         let value = self.values.remove(index, num_keys);
-        self.num_keys.fetch_sub(1, Ordering::Relaxed);
+        self.num_keys.fetch_sub(1, Ordering::Release);
         (key, value)
     }
 
@@ -477,10 +572,10 @@ impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY
         assert!(self.num_keys() <= CAPACITY);
         for (key1, key2) in self.keys().into_iter().zip(self.keys().into_iter().skip(1)) {
             assert!(
-                &*key1.load(Ordering::Relaxed) < &*key2.load(Ordering::Relaxed),
+                &*key1.load(Ordering::Relaxed).unwrap() < &*key2.load(Ordering::Relaxed).unwrap(),
                 "key1: {:?} key2: {:?}",
-                &*key1.load(Ordering::Relaxed),
-                &*key2.load(Ordering::Relaxed)
+                &*key1.load(Ordering::Relaxed).unwrap(),
+                &*key2.load(Ordering::Relaxed).unwrap()
             );
         }
     }
@@ -488,74 +583,99 @@ impl<const CAPACITY: usize, K: BTreeKey, V: BTreeValue> LeafNodeStorage<CAPACITY
 
 #[cfg(test)]
 mod tests {
-    use crate::node::Height;
+    use crate::{leaf_node::LeafNode, pointers::OwnedThinPtr, qsbr_reclaimer};
 
     use super::*;
 
     #[test]
     fn test_internal_node_storage_array() {
-        let array = InternalNodeStorage::<3, 4, u32, String>::new();
+        qsbr_reclaimer().register_thread();
+        {
+            let array = OwnedThinPtr::new(InternalNodeStorage::<3, 4, u32, String>::new());
 
-        // Create some test data
-        let key1 = GracefulArc::new(1u32);
-        let key2 = GracefulArc::new(2u32);
-        let node1 = Box::into_raw(Box::new(NodeHeader::new(Height::Leaf)));
-        let node2 = Box::into_raw(Box::new(NodeHeader::new(Height::Leaf)));
-        let node3 = Box::into_raw(Box::new(NodeHeader::new(Height::Leaf)));
+            // Create some test data
+            let key1 = OwnedThinArc::new(1u32);
+            let key2 = OwnedThinArc::new(2u32);
 
-        // Test insert
-        array.push_extra_child(NodePtr::from_raw_ptr(node1));
-        array.insert_child_with_split_key(
-            key1.clone_without_incrementing_ref_count(),
-            NodePtr::from_raw_ptr(node2),
-            0,
-        );
-        array.insert_child_with_split_key(
-            key2.clone_without_incrementing_ref_count(),
-            NodePtr::from_raw_ptr(node3),
-            1,
-        );
-        assert_eq!(array.num_keys(), 2);
+            let node1 =
+                unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+            let node1_shared = node1.share();
+            let node2 =
+                unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+            let node2_shared = node2.share();
+            let node3 =
+                unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+            let node3_shared = node3.share();
 
-        assert_eq!(*array.keys()[0].load(Ordering::Relaxed), 1u32);
-        assert_eq!(*array.keys()[1].load(Ordering::Relaxed), 2u32);
-        assert_eq!(array.children()[0].load(Ordering::Relaxed), node1);
-        assert_eq!(array.children()[1].load(Ordering::Relaxed), node2);
-        assert_eq!(array.children()[2].load(Ordering::Relaxed), node3);
+            // Test insert
+            array.push_extra_child(node1);
+            array.insert_child_with_split_key(key1, node2, 0);
+            array.insert_child_with_split_key(key2, node3, 1);
+            assert_eq!(array.num_keys(), 2);
 
-        // Test remove
-        array.remove(0);
-        // removes node1 and 1u32
-        assert_eq!(array.num_keys(), 1);
+            assert_eq!(*array.keys()[0].load(Ordering::Relaxed).unwrap(), 1u32);
+            assert_eq!(*array.keys()[1].load(Ordering::Relaxed).unwrap(), 2u32);
+            assert_eq!(
+                array.children()[0].load_shared(Ordering::Relaxed).unwrap(),
+                node1_shared
+            );
+            assert_eq!(
+                array.children()[1].load_shared(Ordering::Relaxed).unwrap(),
+                node2_shared
+            );
+            assert_eq!(
+                array.children()[2].load_shared(Ordering::Relaxed).unwrap(),
+                node3_shared
+            );
 
-        array.remove_child_at_index(1);
-        // removes node3 and 2u32
+            // Test remove
+            let (_, child) = array.remove(0);
+            OwnedNodeRef::drop_immediately(OwnedNodeRef::<
+                u32,
+                String,
+                marker::Unknown,
+                marker::Unknown,
+            >::from_unknown_node_ptr(child));
+            // removes node1 and 1u32
+            assert_eq!(array.num_keys(), 1);
 
-        assert_eq!(array.num_keys(), 0);
-        assert_eq!(array.keys().len(), 0);
-        assert_eq!(array.children().len(), 1);
-        assert_eq!(array.children()[0].load(Ordering::Relaxed), node2);
+            let (key, child) = array.remove_child_at_index(1);
+            drop(key);
+            drop(unsafe { child.cast::<LeafNode<u32, String>>() });
+            // removes node3 and 2u32
 
-        // AtomicKeyNodePtrArray does not drop keys or children when dropped
-        unsafe {
-            key1.drop_in_place();
-            key2.drop_in_place();
-            drop(Box::from_raw(node1));
-            drop(Box::from_raw(node2));
-            drop(Box::from_raw(node3));
+            assert_eq!(array.num_keys(), 0);
+            assert_eq!(array.keys().len(), 0);
+            assert_eq!(array.children().len(), 1);
+            assert_eq!(
+                array.children()[0].load_shared(Ordering::Relaxed).unwrap(),
+                node2_shared
+            );
+            let child = array.remove_only_child();
+            OwnedNodeRef::drop_immediately(OwnedNodeRef::<
+                u32,
+                String,
+                marker::Unknown,
+                marker::Unknown,
+            >::from_unknown_node_ptr(child));
         }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 
     #[test]
     fn test_leaf_node_storage_array() {
+        qsbr_reclaimer().register_thread();
         let array = LeafNodeStorage::<3, u32, String>::new();
 
         // Create test data
-        let key = GracefulArc::new(1u32);
-        let value = Box::into_raw(Box::new(String::from("test")));
+        let key = OwnedThinArc::new(1u32);
+        assert_eq!(*key, 1u32);
+        let key_shared = key.share();
+        assert_eq!(*key_shared, 1u32);
+        let value = OwnedThinPtr::new(String::from("test"));
 
         // Test insert
-        array.insert(key.clone_without_incrementing_ref_count(), value, 0);
+        array.insert(key, value, 0);
         assert_eq!(array.num_keys(), 1);
 
         // Test keys() and values() methods
@@ -564,19 +684,15 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert_eq!(values.len(), 1);
 
-        unsafe {
-            assert_eq!(*keys[0].load(Ordering::Relaxed), 1u32);
-            assert_eq!(*values[0].load(Ordering::Relaxed), "test");
-        }
+        assert_eq!(*keys[0].load_shared(Ordering::Relaxed).unwrap(), 1u32);
+        assert_eq!(*values[0].load_shared(Ordering::Relaxed).unwrap(), "test");
 
         // Test remove
-        array.remove(0);
+        let (key, value) = array.remove(0);
         assert_eq!(array.num_keys(), 0);
 
-        // AtomicKeyNodePtrArray does not drop keys or values when dropped
-        unsafe {
-            key.drop_in_place();
-            drop(Box::from_raw(value));
-        }
+        drop(key);
+        drop(value);
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
 }

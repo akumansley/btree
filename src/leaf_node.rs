@@ -1,39 +1,61 @@
-use crate::sync::{AtomicPtr, Ordering};
+use crate::pointers::atomic::SharedThinAtomicPtr;
+use crate::pointers::node_ref::SharedNodeRef;
+use crate::pointers::{OwnedNodeRef, SharedThinArc};
+use crate::sync::Ordering;
 use crate::{
     array_types::{LeafNodeStorageArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
-    graceful_pointers::{GracefulArc, GracefulAtomicPointer, GracefulBox},
     node::{Height, NodeHeader},
-    node_ptr::{
-        marker::{self},
-        NodeRef,
-    },
-    qsbr::qsbr_reclaimer,
+    pointers::node_ref::marker,
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
+use crate::{OwnedThinArc, OwnedThinPtr, SharedThinPtr};
 use std::cell::UnsafeCell;
-use std::ptr;
+use std::ops::Deref;
+use std::{fmt, ptr};
 
 #[repr(C)]
-pub struct LeafNode<K: BTreeKey, V: BTreeValue> {
+pub struct LeafNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     header: NodeHeader,
     pub inner: UnsafeCell<LeafNodeInner<K, V>>,
 }
-pub struct LeafNodeInner<K: BTreeKey, V: BTreeValue> {
-    pub storage: LeafNodeStorageArray<K, V>,
-    pub next_leaf: AtomicPtr<LeafNode<K, V>>,
-    pub prev_leaf: AtomicPtr<LeafNode<K, V>>,
+
+unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Send for LeafNode<K, V> {}
+unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Sync for LeafNode<K, V> {}
+
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> PartialEq for LeafNode<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self as *const _, other as *const _)
+    }
 }
 
-impl<K: BTreeKey, V: BTreeValue> LeafNode<K, V> {
-    pub fn new() -> *mut Self {
-        Box::into_raw(Box::new(LeafNode {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Eq for LeafNode<K, V> {}
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> fmt::Debug for LeafNode<K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LeafNode({:p})", self)
+    }
+}
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for LeafNode<K, V> {
+    fn drop(&mut self) {
+        assert!(matches!(self.header.height(), Height::Leaf));
+    }
+}
+
+pub struct LeafNodeInner<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+    pub storage: LeafNodeStorageArray<K, V>,
+    pub next_leaf: SharedThinAtomicPtr<LeafNode<K, V>>,
+    pub prev_leaf: SharedThinAtomicPtr<LeafNode<K, V>>,
+}
+
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNode<K, V> {
+    pub fn new() -> Self {
+        LeafNode {
             header: NodeHeader::new(Height::Leaf),
             inner: UnsafeCell::new(LeafNodeInner {
                 storage: LeafNodeStorageArray::new(),
-                next_leaf: AtomicPtr::new(ptr::null_mut()),
-                prev_leaf: AtomicPtr::new(ptr::null_mut()),
+                next_leaf: SharedThinAtomicPtr::null(),
+                prev_leaf: SharedThinAtomicPtr::null(),
             }),
-        }))
+        }
     }
 
     pub unsafe fn get_inner(&mut self) -> &LeafNodeInner<K, V> {
@@ -41,34 +63,28 @@ impl<K: BTreeKey, V: BTreeValue> LeafNode<K, V> {
     }
 }
 
-impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
-    pub fn next_leaf(&self) -> Option<NodeRef<K, V, marker::Unlocked, marker::Leaf>> {
-        let next_leaf_ptr = self.next_leaf.load(Ordering::Acquire);
-        if next_leaf_ptr.is_null() {
-            None
-        } else {
-            Some(NodeRef::from_leaf_unlocked(next_leaf_ptr as *mut _))
-        }
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
+    pub fn next_leaf(&self) -> Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>> {
+        let next_leaf_ptr = self.next_leaf.load_shared(Ordering::Acquire);
+        next_leaf_ptr.map(|next_leaf| SharedNodeRef::from_leaf_ptr(next_leaf).assume_unlocked())
     }
-    pub fn prev_leaf(&self) -> Option<NodeRef<K, V, marker::Unlocked, marker::Leaf>> {
-        let prev_leaf_ptr = self.prev_leaf.load(Ordering::Acquire);
-        if prev_leaf_ptr.is_null() {
-            None
-        } else {
-            Some(NodeRef::from_leaf_unlocked(prev_leaf_ptr as *mut _))
-        }
+    pub fn prev_leaf(&self) -> Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>> {
+        let prev_leaf_ptr = self.prev_leaf.load_shared(Ordering::Acquire);
+        prev_leaf_ptr.map(|prev_leaf| SharedNodeRef::from_leaf_ptr(prev_leaf).assume_unlocked())
     }
 
     pub fn binary_search_key(&self, search_key: &K) -> Result<usize, usize> {
         self.storage.binary_search_keys(search_key)
     }
 
-    pub fn get(&self, search_key: &K) -> Option<(GracefulArc<K>, *const V)> {
+    pub fn get(&self, search_key: &K) -> Option<(SharedThinArc<K>, SharedThinPtr<V>)> {
         debug_println!("LeafNode get {:?}", search_key);
         match self.binary_search_key(search_key) {
             Ok(index) => Some((
-                self.storage.keys()[index].load(Ordering::Relaxed),
-                self.storage.values()[index].load(Ordering::Relaxed) as *const V,
+                self.storage.keys()[index].load(Ordering::Acquire).unwrap(),
+                self.storage.values()[index]
+                    .load_shared(Ordering::Acquire)
+                    .unwrap(),
             )),
             Err(_) => {
                 debug_println!("LeafNode get {:?} not found", search_key);
@@ -76,20 +92,16 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
             }
         }
     }
-    pub fn insert(&mut self, key_to_insert: GracefulArc<K>, value: *mut V) -> bool {
-        match self.binary_search_key(&*key_to_insert) {
+    pub fn insert(&mut self, key_to_insert: OwnedThinArc<K>, value: OwnedThinPtr<V>) -> bool {
+        match self.binary_search_key(key_to_insert.deref()) {
             Ok(index) => {
                 let old_value = self.storage.set(index, value);
-                if old_value != ptr::null_mut() {
-                    let value_box = GracefulBox::new(old_value);
-                    qsbr_reclaimer().add_callback(Box::new(move || {
-                        drop(value_box);
-                    }));
+                if old_value.is_some() {
+                    let owned_value = old_value.unwrap();
+                    drop(owned_value);
                 }
                 // no need to qsbr this key -- it can't have been published yet
-                unsafe {
-                    key_to_insert.drop_in_place();
-                }
+                drop(key_to_insert);
                 false
             }
             Err(index) => {
@@ -101,28 +113,17 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
 
     pub fn insert_new_value_at_index(
         &mut self,
-        key_to_insert: GracefulArc<K>,
-        value: *mut V,
+        key_to_insert: OwnedThinArc<K>,
+        value: OwnedThinPtr<V>,
         index: usize,
     ) {
         self.storage.insert(key_to_insert, value, index);
     }
 
-    pub fn update(&mut self, index: usize, value: *mut V) {
+    pub fn update(&mut self, index: usize, value: OwnedThinPtr<V>) {
         let old_value = self.storage.set(index, value);
-        if old_value == ptr::null_mut() {
-            println!(
-                "update: old_value is null, thread: {:?}, index: {}, value: {:?}",
-                std::thread::current().id(),
-                index,
-                unsafe { &*value }
-            );
-        }
-        assert!(old_value != ptr::null_mut());
-        let value_box = GracefulBox::new(old_value);
-        qsbr_reclaimer().add_callback(Box::new(move || {
-            drop(value_box);
-        }));
+        let owned_value = old_value.unwrap();
+        drop(owned_value);
     }
 
     pub fn remove(&mut self, key: &K) -> bool {
@@ -135,12 +136,10 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
         }
     }
     pub fn remove_at_index(&mut self, index: usize) {
-        let (stored_key, value) = self.storage.remove(index);
-        stored_key.decrement_ref_count();
-        let value_box = GracefulBox::new(value);
-        qsbr_reclaimer().add_callback(Box::new(move || {
-            drop(value_box);
-        }));
+        let (key, value) = self.storage.remove(index);
+
+        drop(key);
+        drop(value);
     }
 
     pub fn num_keys(&self) -> usize {
@@ -168,9 +167,9 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
     }
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
-        mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
-        from: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        to: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
+        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+        from: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        to: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
     ) {
         // update sibling pointers
         if let Some(right_neighbor_next_leaf) = from.next_leaf() {
@@ -178,66 +177,67 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
 
             right_neighbor_next_leaf
                 .prev_leaf
-                .store(to.to_raw_leaf_ptr(), Ordering::Relaxed);
+                .store(to.to_shared_leaf_ptr(), Ordering::Release);
 
             to.next_leaf.store(
-                right_neighbor_next_leaf.to_raw_leaf_ptr(),
-                Ordering::Relaxed,
+                right_neighbor_next_leaf.to_shared_leaf_ptr(),
+                Ordering::Release,
             );
             right_neighbor_next_leaf.unlock_exclusive();
         } else {
-            to.next_leaf.store(ptr::null_mut(), Ordering::Relaxed);
+            to.next_leaf.clear(Ordering::Release);
         }
 
         to.storage.extend(from.storage.drain());
-        let key = parent.remove(from.node_ptr());
-        key.decrement_ref_count();
+        let (key, from_owned) = parent.remove_child(from.into_ptr());
+        let from_owned =
+            OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                from_owned,
+            )
+            .assert_leaf()
+            .assert_exclusive();
         // retire the leaf -- this ensures that any optimistic readers will fail
         // we've already drained it, so any moved keys won't be freed (which is what we want)
-        from.retire();
+        from_owned.retire();
+        drop(key);
         // qsbr-drop the leaf
-        let from_box = GracefulBox::new(from.to_raw_leaf_ptr());
-        qsbr_reclaimer().add_callback(Box::new(move || {
-            drop(from_box);
-        }));
+        drop(from_owned);
     }
 
     pub fn move_last_to_front_of(
-        left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        left: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        right: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
     ) {
         debug_println!("LeafNode move_last_to_front_of");
 
         let (last_key, last_value) = left.storage.pop();
-        right
-            .storage
-            .insert(last_key.clone_and_increment_ref_count(), last_value, 0);
+        right.storage.insert(last_key.clone(), last_value, 0);
 
         // Update the split key in the parent -- and we did need to increment the ref count above
         // because we're copying the first key to the parent
-        let old_key = parent.update_split_key(right.node_ptr(), last_key);
+        let old_key = parent.update_split_key(right.into_ptr(), last_key);
 
         // and we need to decrement the ref count on the old key
-        old_key.decrement_ref_count();
+        drop(old_key);
     }
 
     pub fn move_first_to_end_of(
-        right: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        left: NodeRef<K, V, marker::Exclusive, marker::Leaf>,
-        mut parent: NodeRef<K, V, marker::Exclusive, marker::Internal>,
+        right: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        left: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
     ) {
         debug_println!("LeafNode move_first_to_end_of ");
         let (first_key, first_value) = right.storage.remove(0);
         left.storage.push(first_key, first_value);
 
         // Update the split key in the parent for self, cloning it upwards
-        let new_split_key = right.storage.keys()[0]
-            .load(Ordering::Relaxed)
-            .clone_and_increment_ref_count();
+        let new_split_key = right.storage.keys()[0].load_cloned(Ordering::Acquire);
+
         // and we need to decrement the ref count on the old key
-        let old_key = parent.update_split_key(right.node_ptr(), new_split_key);
-        old_key.decrement_ref_count();
+        let old_key = parent.update_split_key(right.into_ptr(), new_split_key);
+
+        drop(old_key);
     }
 
     pub fn print_node(&self) {
@@ -254,7 +254,7 @@ impl<K: BTreeKey, V: BTreeValue> LeafNodeInner<K, V> {
                 );
                 println!(
                     "|  - Value: {:?}       |",
-                    self.storage.values()[i].load(Ordering::Relaxed)
+                    self.storage.values()[i].load_shared(Ordering::Relaxed)
                 );
             }
         }
