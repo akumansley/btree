@@ -37,6 +37,7 @@ impl<V: Debug + Send + Pointable + ?Sized + 'static> BTreeValue for V {}
 // - try inlined key descriminator with node-level key prefixes
 // - try the "no coalescing" or "relaxed" btree idea
 // - try unordered leaf storage, or lazily sorted leaf storage
+// - experiment with chili instead of rayon
 // To test with Miri:
 //   MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test
 // Run one experimental shuttle test:
