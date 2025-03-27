@@ -219,6 +219,19 @@ fn init_thin_slice<T>(init: &[T]) -> *mut () {
     }
 }
 
+fn init_thin_slice_uninitialized<T>(len: usize) -> *mut () {
+    let layout = ArcArray::<T>::layout(len);
+    let ptr = unsafe { alloc::alloc(layout).cast::<ArcArray<T>>() };
+    if ptr.is_null() {
+        alloc::handle_alloc_error(layout);
+    }
+    unsafe {
+        ptr::addr_of_mut!((*ptr).len).write(len);
+        ptr::addr_of_mut!((*ptr).ref_count).write(RefCount::new());
+        ptr as *mut ()
+    }
+}
+
 impl<T> Arcable for [T] {
     fn ref_count(ptr: *mut ()) -> usize {
         let arc_inner_ptr = ptr as *mut ArcArray<T>;
@@ -341,6 +354,12 @@ impl<T: ?Sized + Arcable> OwnedThinArc<T> {
             T::drop_arc(ptr);
         }
     }
+
+    pub fn into_ptr(self) -> *mut () {
+        let ptr = self.ptr;
+        mem::forget(self);
+        ptr
+    }
 }
 
 impl<T: ?Sized + Arcable> Clone for OwnedThinArc<T> {
@@ -382,6 +401,16 @@ impl<T> OwnedThinArc<[T]> {
     }
 }
 
+impl<T> OwnedThinArc<[MaybeUninit<T>]> {
+    pub fn new_uninitialized(len: usize) -> Self {
+        Self::new_with(|| init_thin_slice_uninitialized::<T>(len))
+    }
+
+    pub unsafe fn assume_init(self) -> OwnedThinArc<[T]> {
+        OwnedThinArc::from_ptr(self.into_ptr())
+    }
+}
+
 impl<T: ?Sized + Arcable + 'static> Drop for OwnedThinArc<T> {
     fn drop(&mut self) {
         if T::decrement_ref_count(self.ptr) {
@@ -390,6 +419,12 @@ impl<T: ?Sized + Arcable + 'static> Drop for OwnedThinArc<T> {
                 unsafe { T::drop_arc(send_ptr.into_ptr()) };
             }));
         }
+    }
+}
+
+impl<T: ?Sized + Arcable> std::ops::DerefMut for OwnedThinArc<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { T::deref_mut_arc(self.ptr) }
     }
 }
 
@@ -648,6 +683,46 @@ mod tests {
 
             // Workaround: Use explicit dereferencing
             assert_eq!(*value_ref, *arc);
+        }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_thin_arc_variants() {
+        qsbr_reclaimer().register_thread();
+        {
+            // Test str variant
+            let thin_str = OwnedThinArc::new_from_str("hello");
+            assert_eq!(thin_str.len(), 5);
+            assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
+
+            // Test basic sized type
+            let thin_usize = OwnedThinArc::new(42);
+            assert_eq!(*thin_usize, 42);
+
+            // Test slice variant
+            let thin_slice = OwnedThinArc::new_from_slice(&[1, 2, 3]);
+            assert_eq!(thin_slice.len(), 3);
+            assert_eq!(thin_slice[0], 1);
+
+            // Test uninitialized array
+            let mut uninit_slice = OwnedThinArc::new_uninitialized(3);
+            assert_eq!(uninit_slice.len(), 3);
+            for i in 0..3 {
+                uninit_slice[i].write(i as usize);
+            }
+
+            // Use assume_init which now correctly transfers ownership
+            let thin_slice_init = unsafe { uninit_slice.assume_init() };
+
+            assert_eq!(thin_slice_init.len(), 3);
+            assert_eq!(thin_slice_init[1], 1);
+
+            // Test immediate dropping
+            unsafe { OwnedThinArc::drop_immediately(thin_str) };
+            unsafe { OwnedThinArc::drop_immediately(thin_slice) };
+            unsafe { OwnedThinArc::drop_immediately(thin_usize) };
+            unsafe { OwnedThinArc::drop_immediately(thin_slice_init) };
         }
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }

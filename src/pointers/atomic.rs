@@ -263,7 +263,7 @@ impl<T: Send + 'static> OwnedThinPtr<[MaybeUninit<T>]> {
     }
 
     pub unsafe fn assume_init(self) -> OwnedThinPtr<[T]> {
-        unsafe { mem::transmute(self) }
+        unsafe { OwnedThinPtr::from_ptr(self.into_ptr()) }
     }
 }
 
@@ -474,7 +474,7 @@ impl<T: Send + 'static + ?Sized + Pointable> AtomicPointerArrayValue<T> for Owne
 
 #[cfg(test)]
 mod tests {
-    use std::{mem::MaybeUninit, ops::Deref};
+    use std::ops::Deref;
 
     use super::OwnedThinPtr;
 
