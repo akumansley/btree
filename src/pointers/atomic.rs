@@ -97,6 +97,18 @@ fn init_thin_slice<'a, T>(init: &'a [T]) -> *mut () {
     }
 }
 
+fn init_thin_slice_uninitialized<T>(len: usize) -> *mut () {
+    let layout = Array::<T>::layout(len);
+    unsafe {
+        let ptr = alloc::alloc(layout).cast::<Array<T>>();
+        if ptr.is_null() {
+            alloc::handle_alloc_error(layout);
+        }
+        ptr::addr_of_mut!((*ptr).len).write(len);
+        ptr as *mut ()
+    }
+}
+
 impl<T: Send + 'static> Pointable for [T] {
     unsafe fn deref<'a>(ptr: *mut ()) -> &'a Self {
         let array = &*(ptr as *const Array<T>);
@@ -242,6 +254,16 @@ impl_thin_ptr_traits!(SharedThinPtr);
 impl<T: Send + 'static> OwnedThinPtr<[T]> {
     pub fn new_from_slice(init: &[T]) -> Self {
         OwnedThinPtr::new_with(|| init_thin_slice(init))
+    }
+}
+
+impl<T: Send + 'static> OwnedThinPtr<[MaybeUninit<T>]> {
+    pub fn new_uninitialized(len: usize) -> Self {
+        OwnedThinPtr::new_with(|| init_thin_slice_uninitialized::<T>(len))
+    }
+
+    pub unsafe fn assume_init(self) -> OwnedThinPtr<[T]> {
+        unsafe { mem::transmute(self) }
     }
 }
 
@@ -452,7 +474,7 @@ impl<T: Send + 'static + ?Sized + Pointable> AtomicPointerArrayValue<T> for Owne
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
+    use std::{mem::MaybeUninit, ops::Deref};
 
     use super::OwnedThinPtr;
 
@@ -468,8 +490,20 @@ mod tests {
         let thin_slice = OwnedThinPtr::new_from_slice(&[1, 2, 3]);
         assert_eq!(thin_slice.len(), 3);
         assert_eq!(thin_slice[0], 1);
+
+        let mut thin_slice_uninitialized = OwnedThinPtr::new_uninitialized(3);
+        assert_eq!(thin_slice_uninitialized.len(), 3);
+        for i in 0..3 {
+            thin_slice_uninitialized[i].write(i as usize);
+        }
+        let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
+
+        assert_eq!(thin_slice_init.len(), 3);
+        assert_eq!(thin_slice_init[1], 1);
+
         OwnedThinPtr::drop_immediately(thin_str);
         OwnedThinPtr::drop_immediately(thin_slice);
         OwnedThinPtr::drop_immediately(thin_usize);
+        OwnedThinPtr::drop_immediately(thin_slice_init);
     }
 }
