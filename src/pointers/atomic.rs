@@ -1,12 +1,19 @@
 use std::{
     alloc::{self, Layout},
+    cmp::Ordering as CmpOrdering,
     fmt::{self},
+    hash::{Hash, Hasher},
     marker::PhantomData,
     mem,
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     slice,
+};
+
+use serde::{
+    de::{SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::{
@@ -202,23 +209,41 @@ macro_rules! impl_thin_ptr_traits {
             }
         }
 
-        impl<T: ?Sized + Pointable> PartialEq for $struct_name<T> {
-            fn eq(&self, other: &Self) -> bool {
-                self.ptr == other.ptr
+        impl<T: ?Sized + Pointable + Hash> Hash for $struct_name<T> {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                (**self).hash(state)
             }
         }
 
-        impl<T: ?Sized + Pointable> Eq for $struct_name<T> {}
+        impl<T: ?Sized + Pointable + PartialEq> PartialEq<T> for $struct_name<T> {
+            fn eq(&self, other: &T) -> bool {
+                T::eq(self.deref(), other)
+            }
+        }
+
+        impl<T: ?Sized + Pointable + PartialEq> PartialEq<&T> for $struct_name<T> {
+            fn eq(&self, other: &&T) -> bool {
+                self.deref() == *other
+            }
+        }
+
+        impl<T: ?Sized + Pointable + PartialEq> PartialEq for $struct_name<T> {
+            fn eq(&self, other: &Self) -> bool {
+                **self == **other
+            }
+        }
+
+        impl<T: ?Sized + Pointable + Eq> Eq for $struct_name<T> {}
 
         impl<T: ?Sized + Pointable + PartialOrd> PartialOrd for $struct_name<T> {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                self.deref().partial_cmp(&other.deref())
+            fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+                (**self).partial_cmp(&**other)
             }
         }
 
         impl<T: ?Sized + Pointable + Ord> Ord for $struct_name<T> {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                self.deref().cmp(&other.deref())
+            fn cmp(&self, other: &Self) -> CmpOrdering {
+                (**self).cmp(&**other)
             }
         }
 
@@ -474,36 +499,180 @@ impl<T: Send + 'static + ?Sized + Pointable> AtomicPointerArrayValue<T> for Owne
 
 #[cfg(test)]
 mod tests {
+    use serde_json;
+    use std::cmp::Ordering as CmpOrdering;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     use std::ops::Deref;
 
     use super::OwnedThinPtr;
+    use crate::qsbr_reclaimer;
 
     #[test]
     fn test_thin_box() {
-        let thin_str = OwnedThinPtr::new_from_str("hello");
-        assert_eq!(thin_str.len(), 5);
-        assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
+        qsbr_reclaimer().register_thread();
+        {
+            let thin_str = OwnedThinPtr::new_from_str("hello");
+            assert_eq!(thin_str.len(), 5);
+            assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
 
-        let thin_usize = OwnedThinPtr::new(42);
-        assert_eq!(*thin_usize, 42);
+            let thin_usize = OwnedThinPtr::new(42);
+            assert_eq!(*thin_usize, 42);
 
-        let thin_slice = OwnedThinPtr::new_from_slice(&[1, 2, 3]);
-        assert_eq!(thin_slice.len(), 3);
-        assert_eq!(thin_slice[0], 1);
+            let thin_slice = OwnedThinPtr::new_from_slice(&[1, 2, 3]);
+            assert_eq!(thin_slice.len(), 3);
+            assert_eq!(thin_slice[0], 1);
 
-        let mut thin_slice_uninitialized = OwnedThinPtr::new_uninitialized(3);
-        assert_eq!(thin_slice_uninitialized.len(), 3);
-        for i in 0..3 {
-            thin_slice_uninitialized[i].write(i as usize);
+            let mut thin_slice_uninitialized = OwnedThinPtr::new_uninitialized(3);
+            assert_eq!(thin_slice_uninitialized.len(), 3);
+            for i in 0..3 {
+                thin_slice_uninitialized[i].write(i as usize);
+            }
+            let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
+
+            assert_eq!(thin_slice_init.len(), 3);
+            assert_eq!(thin_slice_init[1], 1);
+
+            OwnedThinPtr::drop_immediately(thin_str);
+            OwnedThinPtr::drop_immediately(thin_slice);
+            OwnedThinPtr::drop_immediately(thin_usize);
+            OwnedThinPtr::drop_immediately(thin_slice_init);
         }
-        let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
 
-        assert_eq!(thin_slice_init.len(), 3);
-        assert_eq!(thin_slice_init[1], 1);
+    #[test]
+    fn test_derived_traits() {
+        qsbr_reclaimer().register_thread();
+        {
+            let ptr1 = OwnedThinPtr::new(42);
+            let ptr2 = OwnedThinPtr::new(42);
+            let ptr3 = OwnedThinPtr::new(43);
 
-        OwnedThinPtr::drop_immediately(thin_str);
-        OwnedThinPtr::drop_immediately(thin_slice);
-        OwnedThinPtr::drop_immediately(thin_usize);
-        OwnedThinPtr::drop_immediately(thin_slice_init);
+            // Test Eq
+            assert!(ptr1 == ptr2);
+            assert!(ptr1 != ptr3);
+
+            // Test Ord
+            assert!(ptr1 < ptr3);
+            assert!(ptr3 > ptr1);
+            assert_eq!(ptr1.cmp(&ptr2), CmpOrdering::Equal);
+
+            // Test Hash
+            let mut hasher1 = DefaultHasher::new();
+            let mut hasher2 = DefaultHasher::new();
+            ptr1.hash(&mut hasher1);
+            ptr2.hash(&mut hasher2);
+            assert_eq!(hasher1.finish(), hasher2.finish());
+
+            // Different values should hash differently
+            let mut hasher3 = DefaultHasher::new();
+            ptr3.hash(&mut hasher3);
+            assert_ne!(hasher1.finish(), hasher3.finish());
+        }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_serde() {
+        qsbr_reclaimer().register_thread();
+        {
+            let ptr = OwnedThinPtr::new(42);
+            let serialized = serde_json::to_string(&ptr).unwrap();
+            let deserialized: OwnedThinPtr<i32> = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(&*ptr, &*deserialized);
+        }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_serde_array() {
+        qsbr_reclaimer().register_thread();
+        {
+            let array = OwnedThinPtr::new_from_slice(&[1usize, 2, 3, 4, 5]);
+            let serialized = serde_json::to_string(&array).unwrap();
+            let deserialized: OwnedThinPtr<[usize]> = serde_json::from_str(&serialized).unwrap();
+
+            assert_eq!(array.len(), deserialized.len());
+            assert_eq!(&*array, &*deserialized);
+        }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+}
+
+// Serde implementations for OwnedThinPtr
+impl<'de, T> Deserialize<'de> for OwnedThinPtr<T>
+where
+    T: Deserialize<'de> + Pointable + Sized,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(OwnedThinPtr::new)
+    }
+}
+
+impl<T: Serialize + ?Sized + Pointable> Serialize for OwnedThinPtr<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (**self).serialize(serializer)
+    }
+}
+
+struct ThinArrayDeserializer<T> {
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<'de, T> Visitor<'de> for ThinArrayDeserializer<T>
+where
+    T: Deserialize<'de> + Send + 'static,
+{
+    type Value = OwnedThinPtr<[T]>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a sequence")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        if let Some(len) = seq.size_hint() {
+            let mut uninit = OwnedThinPtr::new_uninitialized(len);
+            for i in 0..len {
+                if let Some(value) = seq.next_element()? {
+                    uninit[i].write(value);
+                } else {
+                    return Err(serde::de::Error::invalid_length(
+                        i,
+                        &format!("expected {} elements", len).as_str(),
+                    ));
+                }
+            }
+            Ok(unsafe { uninit.assume_init() })
+        } else {
+            let mut vec = Vec::new();
+            while let Some(value) = seq.next_element()? {
+                vec.push(value);
+            }
+            Ok(OwnedThinPtr::new_from_slice(&vec))
+        }
+    }
+}
+
+impl<'de, T> Deserialize<'de> for OwnedThinPtr<[T]>
+where
+    T: Deserialize<'de> + Send + 'static,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ThinArrayDeserializer {
+            _phantom: std::marker::PhantomData,
+        })
     }
 }

@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, mem::MaybeUninit};
+use std::{marker::PhantomData, mem::MaybeUninit, ops::Deref};
 
 use crate::{
     pointers::{
@@ -284,7 +284,7 @@ impl<
         let num_keys = self.num_keys();
         self.keys
             .as_slice(num_keys)
-            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().cmp(key))
+            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().cmp(key))
     }
 
     pub fn get_child(&self, index: usize) -> SharedThinPtr<NodeHeader> {
@@ -534,7 +534,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
         let num_keys = self.num_keys();
         self.keys
             .as_slice(num_keys)
-            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().cmp(key))
+            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().cmp(key))
     }
 
     pub fn drain<'a>(&'a self) -> impl Iterator<Item = (OwnedThinArc<K>, OwnedThinPtr<V>)> + 'a {

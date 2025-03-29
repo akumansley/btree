@@ -1,10 +1,17 @@
 use std::{
     alloc::{self, Layout},
+    cmp::Ordering as CmpOrdering,
+    hash::{Hash, Hasher},
     marker::PhantomData,
     mem::{self, MaybeUninit},
     ops::Deref,
     ptr::{self, NonNull},
     slice,
+};
+
+use serde::{
+    de::{SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::qsbr_reclaimer;
@@ -319,6 +326,13 @@ macro_rules! impl_thin_arc_traits {
                 unsafe { SharedThinArc::from_ptr(ptr.as_ptr()) }
             }
         }
+
+        impl<T: ?Sized + Arcable + Hash> Hash for $arc_type<T> {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                (**self).hash(state)
+            }
+        }
+
         impl<T: ?Sized + Arcable + PartialEq> PartialEq<T> for $arc_type<T> {
             fn eq(&self, other: &T) -> bool {
                 T::eq(self.deref(), other)
@@ -328,6 +342,26 @@ macro_rules! impl_thin_arc_traits {
         impl<T: ?Sized + Arcable + PartialEq> PartialEq<&T> for $arc_type<T> {
             fn eq(&self, other: &&T) -> bool {
                 self.deref() == *other
+            }
+        }
+
+        impl<T: ?Sized + Arcable + PartialEq> PartialEq for $arc_type<T> {
+            fn eq(&self, other: &Self) -> bool {
+                **self == **other
+            }
+        }
+
+        impl<T: ?Sized + Arcable + Eq> Eq for $arc_type<T> {}
+
+        impl<T: ?Sized + Arcable + PartialOrd> PartialOrd for $arc_type<T> {
+            fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+                (**self).partial_cmp(&**other)
+            }
+        }
+
+        impl<T: ?Sized + Arcable + Ord> Ord for $arc_type<T> {
+            fn cmp(&self, other: &Self) -> CmpOrdering {
+                (**self).cmp(&**other)
             }
         }
     };
@@ -541,11 +575,99 @@ impl<T: Send + 'static + ?Sized + Arcable> AtomicPointerArrayValue<T> for ThinAt
     }
 }
 
+// Serde implementations specifically for OwnedThinArc
+impl<'de, T> Deserialize<'de> for OwnedThinArc<T>
+where
+    T: Deserialize<'de> + Arcable + Sized,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(OwnedThinArc::new)
+    }
+}
+
+impl<T: Serialize + ?Sized + Arcable> Serialize for OwnedThinArc<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (**self).serialize(serializer)
+    }
+}
+
+struct ThinArrayDeserializer<T> {
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<'de, T> Visitor<'de> for ThinArrayDeserializer<T>
+where
+    T: Deserialize<'de> + Send + 'static,
+{
+    type Value = OwnedThinArc<[T]>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a sequence")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        if let Some(len) = seq.size_hint() {
+            let mut uninit = OwnedThinArc::new_uninitialized(len);
+            for i in 0..len {
+                if let Some(value) = seq.next_element()? {
+                    uninit[i].write(value);
+                } else {
+                    return Err(serde::de::Error::invalid_length(
+                        i,
+                        &format!("expected {} elements", len).as_str(),
+                    ));
+                }
+            }
+            Ok(unsafe { uninit.assume_init() })
+        } else {
+            let mut vec = Vec::new();
+            while let Some(value) = seq.next_element()? {
+                vec.push(value);
+            }
+            Ok(OwnedThinArc::new_from_slice(&vec))
+        }
+    }
+}
+
+// Add array implementations
+impl<'de, T> Deserialize<'de> for OwnedThinArc<[T]>
+where
+    T: Deserialize<'de> + Send + 'static,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ThinArrayDeserializer {
+            _phantom: std::marker::PhantomData,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use serde_json;
+    use std::collections::hash_map::DefaultHasher;
     use std::sync::Arc as StdArc;
+
+    // Add const assertion that OwnedThinArc<T> is Send when T is Send
+    const _: () = {
+        fn assert_send<T: Send>() {}
+        fn assert_owned_thin_arc_send<T: Send + Arcable + 'static>() {
+            assert_send::<OwnedThinArc<T>>();
+        }
+    };
 
     #[test]
     fn test_owned_arc_basic() {
@@ -719,6 +841,64 @@ mod tests {
             unsafe { OwnedThinArc::drop_immediately(thin_slice) };
             unsafe { OwnedThinArc::drop_immediately(thin_usize) };
             unsafe { OwnedThinArc::drop_immediately(thin_slice_init) };
+        }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_derived_traits() {
+        qsbr_reclaimer().register_thread();
+        {
+            let arc1 = OwnedThinArc::new(42);
+            let arc2 = OwnedThinArc::new(42);
+            let arc3 = OwnedThinArc::new(43);
+
+            // Test Eq
+            assert!(arc1 == arc2);
+            assert!(arc1 != arc3);
+
+            // Test Ord
+            assert!(arc1 < arc3);
+            assert!(arc3 > arc1);
+            assert_eq!(arc1.cmp(&arc2), CmpOrdering::Equal);
+
+            // Test Hash
+            let mut hasher1 = DefaultHasher::new();
+            let mut hasher2 = DefaultHasher::new();
+            arc1.hash(&mut hasher1);
+            arc2.hash(&mut hasher2);
+            assert_eq!(hasher1.finish(), hasher2.finish());
+
+            // Different values should hash differently
+            let mut hasher3 = DefaultHasher::new();
+            arc3.hash(&mut hasher3);
+            assert_ne!(hasher1.finish(), hasher3.finish());
+        }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_serde() {
+        qsbr_reclaimer().register_thread();
+        {
+            let arc = OwnedThinArc::new(42);
+            let serialized = serde_json::to_string(&arc).unwrap();
+            let deserialized: OwnedThinArc<i32> = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(&*arc, &*deserialized);
+        }
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_serde_array() {
+        qsbr_reclaimer().register_thread();
+        {
+            let array = OwnedThinArc::new_from_slice(&[1usize, 2, 3, 4, 5]);
+            let serialized = serde_json::to_string(&array).unwrap();
+            let deserialized: OwnedThinArc<[usize]> = serde_json::from_str(&serialized).unwrap();
+
+            assert_eq!(array.len(), deserialized.len());
+            assert_eq!(&*array, &*deserialized);
         }
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
