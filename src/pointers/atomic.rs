@@ -319,9 +319,9 @@ impl<T: Pointable> OwnedThinPtr<T> {
 
 impl<T: ?Sized + Pointable> Drop for OwnedThinPtr<T> {
     fn drop(&mut self) {
-        let send_ptr = SendPtr::new(self.as_ptr());
+        let send_ptr = SendPtr::new(self.ptr);
         qsbr_reclaimer().add_callback(Box::new(move || {
-            unsafe { T::drop(send_ptr.into_ptr()) };
+            unsafe { T::drop(send_ptr.into_ptr().as_ptr()) };
         }));
     }
 }

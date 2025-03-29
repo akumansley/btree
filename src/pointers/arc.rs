@@ -3,7 +3,8 @@ use std::{
     marker::PhantomData,
     mem::{self, MaybeUninit},
     ops::Deref,
-    ptr, slice,
+    ptr::{self, NonNull},
+    slice,
 };
 
 use crate::qsbr_reclaimer;
@@ -272,23 +273,24 @@ impl<T> Arcable for [T] {
 ///
 /// If the pointee should be dropped immediately, use `OwnedThinArc::drop_immediately`.
 pub struct OwnedThinArc<T: ?Sized + Arcable + 'static> {
-    ptr: *mut (),
+    ptr: NonNull<()>,
     _marker: PhantomData<*mut T>,
 }
 
 pub struct SharedThinArc<T: ?Sized + Arcable + 'static> {
-    ptr: *mut (),
+    ptr: NonNull<()>,
     _marker: PhantomData<*mut T>,
 }
 
 macro_rules! impl_thin_arc_traits {
     ($arc_type:ident) => {
-        unsafe impl<T: ?Sized + Arcable> Send for $arc_type<T> {}
+        unsafe impl<T: ?Sized + Arcable + Send> Send for $arc_type<T> {}
+        unsafe impl<T: ?Sized + Arcable + Sync> Sync for $arc_type<T> {}
 
         impl<T: ?Sized + Arcable> std::ops::Deref for $arc_type<T> {
             type Target = T;
             fn deref(&self) -> &T {
-                unsafe { T::deref_arc(self.ptr) }
+                unsafe { T::deref_arc(self.ptr.as_ptr()) }
             }
         }
 
@@ -307,14 +309,14 @@ macro_rules! impl_thin_arc_traits {
         impl<T: ?Sized + Arcable> $arc_type<T> {
             unsafe fn from_ptr(ptr: *mut ()) -> $arc_type<T> {
                 Self {
-                    ptr,
+                    ptr: NonNull::new(ptr).unwrap(),
                     _marker: PhantomData,
                 }
             }
 
             pub fn share(&self) -> SharedThinArc<T> {
                 let ptr = self.ptr;
-                unsafe { SharedThinArc::from_ptr(ptr) }
+                unsafe { SharedThinArc::from_ptr(ptr.as_ptr()) }
             }
         }
         impl<T: ?Sized + Arcable + PartialEq> PartialEq<T> for $arc_type<T> {
@@ -338,33 +340,33 @@ impl<T: ?Sized + Arcable> OwnedThinArc<T> {
     pub fn new_with<C: FnOnce() -> *mut ()>(init: C) -> Self {
         let ptr = init();
         Self {
-            ptr,
+            ptr: NonNull::new(ptr).unwrap(),
             _marker: PhantomData,
         }
     }
 
     pub fn ref_count(&self) -> usize {
-        T::ref_count(self.ptr)
+        T::ref_count(self.ptr.as_ptr())
     }
 
     pub unsafe fn drop_immediately(thin_arc: OwnedThinArc<T>) {
         let ptr = thin_arc.ptr;
         mem::forget(thin_arc);
-        if T::decrement_ref_count(ptr) {
-            T::drop_arc(ptr);
+        if T::decrement_ref_count(ptr.as_ptr()) {
+            T::drop_arc(ptr.as_ptr());
         }
     }
 
     pub fn into_ptr(self) -> *mut () {
         let ptr = self.ptr;
         mem::forget(self);
-        ptr
+        ptr.as_ptr()
     }
 }
 
 impl<T: ?Sized + Arcable> Clone for OwnedThinArc<T> {
     fn clone(&self) -> Self {
-        T::increment_ref_count(self.ptr);
+        T::increment_ref_count(self.ptr.as_ptr());
         Self {
             ptr: self.ptr,
             _marker: PhantomData,
@@ -413,10 +415,10 @@ impl<T> OwnedThinArc<[MaybeUninit<T>]> {
 
 impl<T: ?Sized + Arcable + 'static> Drop for OwnedThinArc<T> {
     fn drop(&mut self) {
-        if T::decrement_ref_count(self.ptr) {
+        if T::decrement_ref_count(self.ptr.as_ptr()) {
             let send_ptr = SendPtr::new(self.ptr);
             qsbr_reclaimer().add_callback(Box::new(move || {
-                unsafe { T::drop_arc(send_ptr.into_ptr()) };
+                unsafe { T::drop_arc(send_ptr.into_ptr().as_ptr()) };
             }));
         }
     }
@@ -424,7 +426,7 @@ impl<T: ?Sized + Arcable + 'static> Drop for OwnedThinArc<T> {
 
 impl<T: ?Sized + Arcable> std::ops::DerefMut for OwnedThinArc<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { T::deref_mut_arc(self.ptr) }
+        unsafe { T::deref_mut_arc(self.ptr.as_ptr()) }
     }
 }
 
@@ -465,11 +467,8 @@ impl<T: ?Sized + Arcable> ThinAtomicArc<T> {
 
     pub fn store(&self, arc: OwnedThinArc<T>, ordering: Ordering) {
         let ptr = arc.ptr;
-        if ptr.is_null() {
-            panic!("Attempted to store null pointer");
-        }
         mem::forget(arc);
-        self.inner.store(ptr, ordering);
+        self.inner.store(ptr.as_ptr(), ordering);
     }
 
     pub fn load(&self, ordering: Ordering) -> Option<SharedThinArc<T>> {
@@ -483,11 +482,8 @@ impl<T: ?Sized + Arcable> ThinAtomicArc<T> {
 
     pub fn swap(&self, arc: OwnedThinArc<T>, ordering: Ordering) -> Option<OwnedThinArc<T>> {
         let ptr = arc.ptr;
-        if ptr.is_null() {
-            panic!("Attempted to swap null pointer");
-        }
         mem::forget(arc);
-        let old_ptr = self.inner.swap(ptr, ordering);
+        let old_ptr = self.inner.swap(ptr.as_ptr(), ordering);
         if old_ptr.is_null() {
             None
         } else {
@@ -526,7 +522,7 @@ impl<T: Send + 'static + ?Sized + Arcable> AtomicPointerArrayValue<T> for ThinAt
     fn store(&self, matching_ptr: Self::OwnedPointer, ordering: Ordering) {
         let ptr = matching_ptr.ptr;
         mem::forget(matching_ptr);
-        self.inner.store(ptr, ordering);
+        self.inner.store(ptr.as_ptr(), ordering);
     }
 
     fn swap(
@@ -536,7 +532,7 @@ impl<T: Send + 'static + ?Sized + Arcable> AtomicPointerArrayValue<T> for ThinAt
     ) -> Option<Self::OwnedPointer> {
         let ptr = matching_ptr.ptr;
         mem::forget(matching_ptr);
-        let old_ptr = self.inner.swap(ptr, ordering);
+        let old_ptr = self.inner.swap(ptr.as_ptr(), ordering);
         if old_ptr.is_null() {
             None
         } else {

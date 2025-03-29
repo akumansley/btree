@@ -1,15 +1,15 @@
-use std::sync::atomic::Ordering;
+use std::{ptr::NonNull, sync::atomic::Ordering};
 
 pub struct SendPtr {
-    ptr: *mut (),
+    ptr: NonNull<()>,
 }
 
 unsafe impl Send for SendPtr {}
 impl SendPtr {
-    pub fn new(ptr: *mut ()) -> Self {
+    pub fn new(ptr: NonNull<()>) -> Self {
         Self { ptr }
     }
-    pub fn into_ptr(self) -> *mut () {
+    pub fn into_ptr(self) -> NonNull<()> {
         self.ptr
     }
 }
