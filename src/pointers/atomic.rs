@@ -90,7 +90,7 @@ impl<T> Array<T> {
     }
 }
 
-fn init_thin_slice<'a, T>(init: &'a [T]) -> *mut () {
+fn init_thin_slice<'a, T: Clone>(init: &'a [T]) -> *mut () {
     let layout = Array::<T>::layout(init.len());
     unsafe {
         let ptr = alloc::alloc(layout).cast::<Array<T>>();
@@ -98,8 +98,11 @@ fn init_thin_slice<'a, T>(init: &'a [T]) -> *mut () {
             alloc::handle_alloc_error(layout);
         }
         ptr::addr_of_mut!((*ptr).len).write(init.len());
-        let dst = ptr::addr_of_mut!((*ptr).elements) as *mut MaybeUninit<T>;
-        ptr::copy_nonoverlapping(init.as_ptr() as *const MaybeUninit<T>, dst, init.len());
+        let elements_ptr = ptr::addr_of_mut!((*ptr).elements) as *mut MaybeUninit<T>;
+        let slice = slice::from_raw_parts_mut(elements_ptr, init.len());
+        for (i, elem) in slice.iter_mut().enumerate() {
+            elem.write(init[i].clone());
+        }
         ptr as *mut ()
     }
 }
@@ -276,7 +279,7 @@ macro_rules! impl_thin_ptr_traits {
 impl_thin_ptr_traits!(OwnedThinPtr);
 impl_thin_ptr_traits!(SharedThinPtr);
 
-impl<T: Send + 'static> OwnedThinPtr<[T]> {
+impl<T: Send + 'static + Clone> OwnedThinPtr<[T]> {
     pub fn new_from_slice(init: &[T]) -> Self {
         OwnedThinPtr::new_with(|| init_thin_slice(init))
     }
@@ -620,7 +623,7 @@ struct ThinArrayDeserializer<T> {
 
 impl<'de, T> Visitor<'de> for ThinArrayDeserializer<T>
 where
-    T: Deserialize<'de> + Send + 'static,
+    T: Deserialize<'de> + Send + 'static + Clone,
 {
     type Value = OwnedThinPtr<[T]>;
 
@@ -657,7 +660,7 @@ where
 
 impl<'de, T> Deserialize<'de> for OwnedThinPtr<[T]>
 where
-    T: Deserialize<'de> + Send + 'static,
+    T: Deserialize<'de> + Send + 'static + Clone,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

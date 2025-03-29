@@ -208,7 +208,7 @@ impl Arcable for str {
 }
 
 /// Arcable impl for slices
-fn init_thin_slice<T>(init: &[T]) -> *mut () {
+fn init_thin_slice<T: Clone>(init: &[T]) -> *mut () {
     let layout = ArcArray::<T>::layout(init.len());
     unsafe {
         let ptr = alloc::alloc(layout).cast::<ArcArray<T>>();
@@ -218,11 +218,10 @@ fn init_thin_slice<T>(init: &[T]) -> *mut () {
         ptr::addr_of_mut!((*ptr).len).write(init.len());
         ptr::addr_of_mut!((*ptr).ref_count).write(RefCount::new());
         let elements_ptr = ptr::addr_of_mut!((*ptr).elements) as *mut MaybeUninit<T>;
-        ptr::copy_nonoverlapping(
-            init.as_ptr() as *const MaybeUninit<T>,
-            elements_ptr,
-            init.len(),
-        );
+        let slice = slice::from_raw_parts_mut(elements_ptr, init.len());
+        for (i, elem) in slice.iter_mut().enumerate() {
+            elem.write(init[i].clone());
+        }
         ptr as *mut ()
     }
 }
@@ -431,7 +430,7 @@ impl OwnedThinArc<str> {
     }
 }
 
-impl<T> OwnedThinArc<[T]> {
+impl<T: Clone> OwnedThinArc<[T]> {
     pub fn new_from_slice(init: &[T]) -> Self {
         Self::new_with(|| init_thin_slice(init))
     }
@@ -603,7 +602,7 @@ struct ThinArrayDeserializer<T> {
 
 impl<'de, T> Visitor<'de> for ThinArrayDeserializer<T>
 where
-    T: Deserialize<'de> + Send + 'static,
+    T: Deserialize<'de> + Send + 'static + Clone,
 {
     type Value = OwnedThinArc<[T]>;
 
@@ -641,7 +640,7 @@ where
 // Add array implementations
 impl<'de, T> Deserialize<'de> for OwnedThinArc<[T]>
 where
-    T: Deserialize<'de> + Send + 'static,
+    T: Deserialize<'de> + Send + 'static + Clone,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -746,6 +745,34 @@ mod tests {
 
             assert_eq!(array.len(), deserialized.len());
             assert_eq!(&*array, &*deserialized);
+        });
+    }
+
+    #[test]
+    fn test_new_from_slice_with_box_str() {
+        qsbr_reclaimer().with(|| {
+            let vec = vec![
+                String::from("hello").into_boxed_str(),
+                String::from("world").into_boxed_str(),
+                String::from("test").into_boxed_str(),
+            ];
+
+            let thin_slice = OwnedThinArc::new_from_slice(&vec);
+            assert_eq!(thin_slice.len(), 3);
+            assert_eq!(thin_slice[0].as_ref(), "hello");
+            assert_eq!(thin_slice[1].as_ref(), "world");
+            assert_eq!(thin_slice[2].as_ref(), "test");
+
+            // Test iteration
+            let mut iter = thin_slice.iter();
+            assert_eq!(iter.next().unwrap().as_ref(), "hello");
+            assert_eq!(iter.next().unwrap().as_ref(), "world");
+            assert_eq!(iter.next().unwrap().as_ref(), "test");
+            assert_eq!(iter.next(), None);
+
+            unsafe {
+                OwnedThinArc::drop_immediately(thin_slice);
+            }
         });
     }
 }
