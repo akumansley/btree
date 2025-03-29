@@ -82,136 +82,132 @@ mod tests {
     use std::ops::Deref;
 
     use super::*;
-    use crate::qsbr::qsbr_reclaimer;
+    use crate::qsbr_reclaimer;
 
     #[test]
     #[cfg(not(miri))]
     fn test_bulk_update() {
-        qsbr_reclaimer().register_thread();
+        qsbr_reclaimer().with(|| {
+            // Create a tree with initial values
+            let tree = BTree::<usize, String>::new();
+            let num_elements = ORDER * 4;
 
-        // Create a tree with initial values
-        let tree = BTree::<usize, String>::new();
-        let num_elements = ORDER * 4;
-
-        // Insert initial values
-        for i in 0..num_elements {
-            tree.insert(
-                OwnedThinArc::new(i),
-                OwnedThinPtr::new(format!("value{}", i)),
-            );
-        }
-
-        // Create updates with modified values
-        let updates_for_comparison: Vec<(usize, String)> = (0..num_elements)
-            .map(|i| (i, format!("updated_value{}", i)))
-            .collect();
-        let updates: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = updates_for_comparison
-            .iter()
-            .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
-            .collect();
-
-        // Perform bulk update
-        bulk_update_from_sorted_kv_pairs_parallel(updates, &tree);
-
-        // Verify all values were updated correctly
-        let mut cursor = tree.cursor();
-        cursor.seek_to_start();
-
-        for (i, (key, value)) in updates_for_comparison.iter().enumerate() {
-            let entry = cursor.current().unwrap();
-            assert_eq!(entry.key(), key);
-            assert_eq!(entry.value(), value);
-
-            if i < updates_for_comparison.len() - 1 {
-                cursor.move_next();
-            }
-        }
-
-        // Verify we can't move past the last element
-        cursor.move_next();
-        assert!(cursor.current().is_none());
-
-        // Verify tree invariants
-        tree.check_invariants();
-
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
-    }
-
-    #[test]
-    #[cfg(not(miri))]
-    fn test_bulk_insert_or_update() {
-        qsbr_reclaimer().register_thread();
-
-        // Create a tree with initial values (even numbers)
-        let tree = BTree::<usize, String>::new();
-        let num_elements = ORDER * 4;
-
-        // Insert initial values (even numbers)
-        for i in 0..num_elements {
-            if i % 2 == 0 {
+            // Insert initial values
+            for i in 0..num_elements {
                 tree.insert(
                     OwnedThinArc::new(i),
                     OwnedThinPtr::new(format!("value{}", i)),
                 );
             }
-        }
 
-        // Create a mix of updates and inserts
-        // - Even numbers: update existing values
-        // - Odd numbers: insert new values
-        let entries_for_comparison: Vec<(usize, String)> = (0..num_elements)
-            .map(|i| {
-                if i % 2 == 0 {
-                    (i, format!("value{}_updated", i))
-                } else {
-                    (i, format!("value{}_new", i))
+            // Create updates with modified values
+            let updates_for_comparison: Vec<(usize, String)> = (0..num_elements)
+                .map(|i| (i, format!("updated_value{}", i)))
+                .collect();
+            let updates: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = updates_for_comparison
+                .iter()
+                .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
+                .collect();
+
+            // Perform bulk update
+            bulk_update_from_sorted_kv_pairs_parallel(updates, &tree);
+
+            // Verify all values were updated correctly
+            let mut cursor = tree.cursor();
+            cursor.seek_to_start();
+
+            for (i, (key, value)) in updates_for_comparison.iter().enumerate() {
+                let entry = cursor.current().unwrap();
+                assert_eq!(entry.key(), key);
+                assert_eq!(entry.value(), value);
+
+                if i < updates_for_comparison.len() - 1 {
+                    cursor.move_next();
                 }
-            })
-            .collect();
-        let entries: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = entries_for_comparison
-            .iter()
-            .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
-            .collect();
+            }
 
-        // Define update function that appends "_updated" to existing values
-        let update_fn = |old_value: SharedThinPtr<String>| {
-            let old_string = old_value.deref();
-            OwnedThinPtr::new(format!("{}_updated", old_string))
-        };
+            // Verify we can't move past the last element
+            cursor.move_next();
+            assert!(cursor.current().is_none());
 
-        // Perform bulk insert/update
-        tree.bulk_insert_or_update_parallel(entries, &update_fn);
+            // Verify tree invariants
+            tree.check_invariants();
+        });
+    }
 
-        // Verify all values are correct
-        let mut cursor = tree.cursor();
-        cursor.seek_to_start();
+    #[test]
+    #[cfg(not(miri))]
+    fn test_bulk_insert_or_update() {
+        qsbr_reclaimer().with(|| {
+            // Create a tree with initial values (even numbers)
+            let tree = BTree::<usize, String>::new();
+            let num_elements = ORDER * 4;
 
-        for (i, (key, expected_value)) in entries_for_comparison.iter().enumerate() {
-            let entry = cursor.current().unwrap();
-            assert_eq!(entry.key(), key);
-            assert_eq!(entry.value(), expected_value);
+            // Insert initial values (even numbers)
+            for i in 0..num_elements {
+                if i % 2 == 0 {
+                    tree.insert(
+                        OwnedThinArc::new(i),
+                        OwnedThinPtr::new(format!("value{}", i)),
+                    );
+                }
+            }
 
-            if i < entries_for_comparison.len() - 1 {
+            // Create a mix of updates and inserts
+            // - Even numbers: update existing values
+            // - Odd numbers: insert new values
+            let entries_for_comparison: Vec<(usize, String)> = (0..num_elements)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        (i, format!("value{}_updated", i))
+                    } else {
+                        (i, format!("value{}_new", i))
+                    }
+                })
+                .collect();
+            let entries: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = entries_for_comparison
+                .iter()
+                .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
+                .collect();
+
+            // Define update function that appends "_updated" to existing values
+            let update_fn = |old_value: SharedThinPtr<String>| {
+                let old_string = old_value.deref();
+                OwnedThinPtr::new(format!("{}_updated", old_string))
+            };
+
+            // Perform bulk insert/update
+            tree.bulk_insert_or_update_parallel(entries, &update_fn);
+
+            // Verify all values are correct
+            let mut cursor = tree.cursor();
+            cursor.seek_to_start();
+
+            for (i, (key, expected_value)) in entries_for_comparison.iter().enumerate() {
+                let entry = cursor.current().unwrap();
+                assert_eq!(entry.key(), key);
+                assert_eq!(entry.value(), expected_value);
+
+                if i < entries_for_comparison.len() - 1 {
+                    cursor.move_next();
+                }
+            }
+
+            // Verify we can't move past the last element
+            cursor.move_next();
+            assert!(cursor.current().is_none());
+
+            // Verify the total number of elements
+            let mut count = 0;
+            cursor.seek_to_start();
+            while cursor.current().is_some() {
+                count += 1;
                 cursor.move_next();
             }
-        }
+            assert_eq!(count, num_elements);
 
-        // Verify we can't move past the last element
-        cursor.move_next();
-        assert!(cursor.current().is_none());
-
-        // Verify the total number of elements
-        let mut count = 0;
-        cursor.seek_to_start();
-        while cursor.current().is_some() {
-            count += 1;
-            cursor.move_next();
-        }
-        assert_eq!(count, num_elements);
-
-        // Verify tree invariants
-        tree.check_invariants();
-
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+            // Verify tree invariants
+            tree.check_invariants();
+        });
     }
 }

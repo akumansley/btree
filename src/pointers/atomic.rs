@@ -510,8 +510,7 @@ mod tests {
 
     #[test]
     fn test_thin_box() {
-        qsbr_reclaimer().register_thread();
-        {
+        qsbr_reclaimer().with(|| {
             let thin_str = OwnedThinPtr::new_from_str("hello");
             assert_eq!(thin_str.len(), 5);
             assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
@@ -537,14 +536,12 @@ mod tests {
             OwnedThinPtr::drop_immediately(thin_slice);
             OwnedThinPtr::drop_immediately(thin_usize);
             OwnedThinPtr::drop_immediately(thin_slice_init);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+        });
     }
 
     #[test]
     fn test_derived_traits() {
-        qsbr_reclaimer().register_thread();
-        {
+        qsbr_reclaimer().with(|| {
             let ptr1 = OwnedThinPtr::new(42);
             let ptr2 = OwnedThinPtr::new(42);
             let ptr3 = OwnedThinPtr::new(43);
@@ -569,34 +566,29 @@ mod tests {
             let mut hasher3 = DefaultHasher::new();
             ptr3.hash(&mut hasher3);
             assert_ne!(hasher1.finish(), hasher3.finish());
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+        });
     }
 
     #[test]
     fn test_serde() {
-        qsbr_reclaimer().register_thread();
-        {
+        qsbr_reclaimer().with(|| {
             let ptr = OwnedThinPtr::new(42);
             let serialized = serde_json::to_string(&ptr).unwrap();
             let deserialized: OwnedThinPtr<i32> = serde_json::from_str(&serialized).unwrap();
             assert_eq!(&*ptr, &*deserialized);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+        });
     }
 
     #[test]
     fn test_serde_array() {
-        qsbr_reclaimer().register_thread();
-        {
+        qsbr_reclaimer().with(|| {
             let array = OwnedThinPtr::new_from_slice(&[1usize, 2, 3, 4, 5]);
             let serialized = serde_json::to_string(&array).unwrap();
             let deserialized: OwnedThinPtr<[usize]> = serde_json::from_str(&serialized).unwrap();
 
             assert_eq!(array.len(), deserialized.len());
             assert_eq!(&*array, &*deserialized);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+        });
     }
 }
 

@@ -52,6 +52,7 @@ shuttle::thread_local! {
         is_registered: false,
     });
 }
+
 struct ThreadState {
     local_callbacks: VecDeque<Box<dyn FnOnce() + Send>>,
     is_registered: bool,
@@ -176,10 +177,27 @@ impl MemoryReclaimer {
             inner.quiesced_threads.clear();
         }
     }
+
+    /// Creates a new QSBR guard for this reclaimer.
+    /// The guard will automatically register the current thread and handle cleanup when dropped.
+    pub fn guard(&self) -> QsbrGuard {
+        self.register_thread();
+        QsbrGuard { reclaimer: self }
+    }
+
+    /// Runs a closure with QSBR registration, automatically handling cleanup.
+    pub fn with<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _guard = self.guard();
+        f()
+    }
 }
 
 static RECLAIMER: OnceLock<MemoryReclaimer> = OnceLock::new();
 static POOL: OnceLock<ThreadPool> = OnceLock::new();
+
 pub fn qsbr_reclaimer() -> &'static MemoryReclaimer {
     RECLAIMER.get_or_init(MemoryReclaimer::new)
 }
@@ -199,6 +217,21 @@ pub fn qsbr_pool() -> &'static ThreadPool {
             .build()
             .unwrap()
     })
+}
+
+/// A guard that automatically handles QSBR registration and deregistration.
+/// When dropped, it will automatically deregister the thread and mark it as quiescent.
+pub struct QsbrGuard<'a> {
+    reclaimer: &'a MemoryReclaimer,
+}
+
+impl<'a> Drop for QsbrGuard<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            self.reclaimer
+                .deregister_current_thread_and_mark_quiescent()
+        };
+    }
 }
 
 #[cfg(test)]
@@ -285,31 +318,38 @@ mod tests {
 
     /// A thread can deregister and mark quiescence.
     #[test]
-    fn test_deregister_current_thread_and_mark_quiescent() {
+    fn test_deregister_and_mark_quiescent() {
         let reclaimer = MemoryReclaimer::new();
         reclaimer.register_thread();
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone1 = Arc::clone(&counter);
-        let counter_clone2 = Arc::clone(&counter);
-        thread::scope(|s| {
-            s.spawn(|| {
-                reclaimer.register_thread();
-                reclaimer.add_callback(Box::new({
-                    move || {
-                        counter_clone1.fetch_add(1, Ordering::SeqCst);
-                    }
-                }));
-                unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
-            });
+        unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
+    }
 
-            reclaimer.add_callback(Box::new({
-                move || {
-                    counter_clone2.fetch_add(1, Ordering::SeqCst);
-                }
+    #[test]
+    fn test_qsbr_guard() {
+        let reclaimer = MemoryReclaimer::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // Test the guard with a closure
+        reclaimer.with(|| {
+            let counter_clone = Arc::clone(&counter);
+            reclaimer.add_callback(Box::new(move || {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
             }));
         });
 
-        unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
+        // The callback should have been executed since the guard was dropped
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        // Test manual guard creation and drop
+        {
+            let _guard = reclaimer.guard();
+            let counter_clone = Arc::clone(&counter);
+            reclaimer.add_callback(Box::new(move || {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+
+        // The callback should have been executed since the guard was dropped
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 }

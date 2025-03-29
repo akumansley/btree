@@ -589,8 +589,7 @@ mod tests {
 
     #[test]
     fn test_internal_node_storage_array() {
-        qsbr_reclaimer().register_thread();
-        {
+        qsbr_reclaimer().with(|| {
             let array = OwnedThinPtr::new(InternalNodeStorage::<3, 4, u32, String>::new());
 
             // Create some test data
@@ -658,41 +657,40 @@ mod tests {
                 marker::Unknown,
                 marker::Unknown,
             >::from_unknown_node_ptr(child));
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+        });
     }
 
     #[test]
     fn test_leaf_node_storage_array() {
-        qsbr_reclaimer().register_thread();
-        let array = LeafNodeStorage::<3, u32, String>::new();
+        qsbr_reclaimer().with(|| {
+            let array = LeafNodeStorage::<3, u32, String>::new();
 
-        // Create test data
-        let key = OwnedThinArc::new(1u32);
-        assert_eq!(*key, 1u32);
-        let key_shared = key.share();
-        assert_eq!(*key_shared, 1u32);
-        let value = OwnedThinPtr::new(String::from("test"));
+            // Create test data
+            let key = OwnedThinArc::new(1u32);
+            assert_eq!(*key, 1u32);
+            let key_shared = key.share();
+            assert_eq!(*key_shared, 1u32);
+            let value = OwnedThinPtr::new(String::from("test"));
 
-        // Test insert
-        array.insert(key, value, 0);
-        assert_eq!(array.num_keys(), 1);
+            // Test insert
+            array.insert(key, value, 0);
+            assert_eq!(array.num_keys(), 1);
 
-        // Test keys() and values() methods
-        let keys = array.keys();
-        let values = array.values();
-        assert_eq!(keys.len(), 1);
-        assert_eq!(values.len(), 1);
+            // Test keys() and values() methods
+            let keys = array.keys();
+            let values = array.values();
+            assert_eq!(keys.len(), 1);
+            assert_eq!(values.len(), 1);
 
-        assert_eq!(*keys[0].load_shared(Ordering::Relaxed).unwrap(), 1u32);
-        assert_eq!(*values[0].load_shared(Ordering::Relaxed).unwrap(), "test");
+            assert_eq!(*keys[0].load_shared(Ordering::Relaxed).unwrap(), 1u32);
+            assert_eq!(*values[0].load_shared(Ordering::Relaxed).unwrap(), "test");
 
-        // Test remove
-        let (key, value) = array.remove(0);
-        assert_eq!(array.num_keys(), 0);
+            // Test remove
+            let (key, value) = array.remove(0);
+            assert_eq!(array.num_keys(), 0);
 
-        drop(key);
-        drop(value);
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+            drop(key);
+            drop(value);
+        });
     }
 }

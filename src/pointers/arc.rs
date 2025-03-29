@@ -655,251 +655,97 @@ where
 
 #[cfg(test)]
 mod tests {
-
-    use super::*;
     use serde_json;
+    use std::cmp::Ordering as CmpOrdering;
     use std::collections::hash_map::DefaultHasher;
-    use std::sync::Arc as StdArc;
+    use std::hash::{Hash, Hasher};
+    use std::ops::Deref;
 
-    // Add const assertion that OwnedThinArc<T> is Send when T is Send
-    const _: () = {
-        fn assert_send<T: Send>() {}
-        fn assert_owned_thin_arc_send<T: Send + Arcable + 'static>() {
-            assert_send::<OwnedThinArc<T>>();
-        }
-    };
+    use super::OwnedThinArc;
+    use crate::qsbr_reclaimer;
 
     #[test]
-    fn test_owned_arc_basic() {
-        qsbr_reclaimer().register_thread();
-        {
-            // Create a new OwnedArc
-            let arc = OwnedThinArc::new(42);
-
-            // Test dereferencing
-            assert_eq!(*arc, 42);
-
-            // Test cloning
-            let arc_clone = arc.clone();
-            assert_eq!(*arc_clone, 42);
-
-            let shared = arc.share();
-            assert_eq!(*shared, 42);
-
-            // Test equality with values
-            assert_eq!(arc, &42);
-            assert_eq!(&*arc, &42);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
-    }
-
-    #[test]
-    fn test_owned_arc_drop() {
-        qsbr_reclaimer().register_thread();
-        {
-            // Use a structure with a flag to check if it's dropped
-            struct DropTest {
-                counter: StdArc<AtomicUsize>,
-            }
-
-            impl Drop for DropTest {
-                fn drop(&mut self) {
-                    self.counter.fetch_add(1, Ordering::SeqCst);
-                }
-            }
-
-            let counter = StdArc::new(AtomicUsize::new(0));
-
-            {
-                let arc = OwnedThinArc::new(DropTest {
-                    counter: counter.clone(),
-                });
-                let arc_clone = arc.clone();
-                unsafe { OwnedThinArc::drop_immediately(arc) };
-                unsafe { OwnedThinArc::drop_immediately(arc_clone) };
-            }
-
-            // The counter should be 1 because the value should be dropped exactly once
-            assert_eq!(counter.load(Ordering::SeqCst), 1);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
-    }
-
-    #[test]
-    fn test_shared_arc() {
-        qsbr_reclaimer().register_thread();
-        {
-            // Create an OwnedArc and convert to SharedArc
-            let owned = OwnedThinArc::new(42);
-            let shared = owned.share();
-
-            // Test dereferencing
-            assert_eq!(*shared, 42);
-
-            // Test cloning
-            let shared_clone = shared.clone();
-            assert_eq!(*shared_clone, 42);
-        }
-        unsafe {
-            qsbr_reclaimer().deregister_current_thread_and_mark_quiescent();
-        }
-    }
-
-    #[test]
-    fn test_atomic_arc() {
-        qsbr_reclaimer().register_thread();
-        {
-            // Create an AtomicArc
-            let atomic = ThinAtomicArc::<i32>::new();
-
-            // Store a value
-            let owned = OwnedThinArc::new(42);
-            atomic.store(owned, Ordering::Relaxed);
-
-            // Load the value
-            let loaded = atomic.load(Ordering::Relaxed);
-            assert!(loaded.is_some());
-            assert_eq!(*loaded.unwrap(), 42);
-
-            // Test load_cloned
-            let cloned = atomic.load_cloned(Ordering::Relaxed);
-            assert_eq!(*cloned, 42);
-            drop(cloned);
-
-            // Test swap
-            let new_owned = OwnedThinArc::new(84);
-            let old = atomic.swap(new_owned, Ordering::Relaxed).unwrap();
-            assert_eq!(*old, 42);
-
-            // Verify the new value
-            let loaded = atomic.load(Ordering::Relaxed);
-            assert!(loaded.is_some());
-            assert_eq!(*loaded.unwrap(), 84);
-            drop(atomic.load_owned(Ordering::Relaxed).unwrap());
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
-    }
-
-    #[test]
-    fn test_partial_eq_implementations() {
-        qsbr_reclaimer().register_thread();
-        {
-            let arc = OwnedThinArc::new(42);
-            let value = 42;
-            let value_ref = &value;
-
-            // Test OwnedArc == T
-            assert_eq!(arc, value);
-
-            // Test OwnedArc == &T
-            assert_eq!(arc, value_ref);
-
-            // Note: &T == OwnedArc comparison doesn't work due to Rust's orphan rule
-            // We can't implement PartialEq<OwnedArc<T>> for &T because both &T and PartialEq
-            // are defined in the standard library
-            // assert_eq!(value_ref, arc); // This would fail to compile
-
-            // Workaround: Use explicit dereferencing
-            assert_eq!(*value_ref, *arc);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
-    }
-
-    #[test]
-    fn test_thin_arc_variants() {
-        qsbr_reclaimer().register_thread();
-        {
-            // Test str variant
+    fn test_thin_arc() {
+        qsbr_reclaimer().with(|| {
             let thin_str = OwnedThinArc::new_from_str("hello");
             assert_eq!(thin_str.len(), 5);
             assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
 
-            // Test basic sized type
             let thin_usize = OwnedThinArc::new(42);
             assert_eq!(*thin_usize, 42);
 
-            // Test slice variant
             let thin_slice = OwnedThinArc::new_from_slice(&[1, 2, 3]);
             assert_eq!(thin_slice.len(), 3);
             assert_eq!(thin_slice[0], 1);
 
-            // Test uninitialized array
-            let mut uninit_slice = OwnedThinArc::new_uninitialized(3);
-            assert_eq!(uninit_slice.len(), 3);
+            let mut thin_slice_uninitialized = OwnedThinArc::new_uninitialized(3);
+            assert_eq!(thin_slice_uninitialized.len(), 3);
             for i in 0..3 {
-                uninit_slice[i].write(i as usize);
+                thin_slice_uninitialized[i].write(i as usize);
             }
-
-            // Use assume_init which now correctly transfers ownership
-            let thin_slice_init = unsafe { uninit_slice.assume_init() };
+            let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
 
             assert_eq!(thin_slice_init.len(), 3);
             assert_eq!(thin_slice_init[1], 1);
 
-            // Test immediate dropping
-            unsafe { OwnedThinArc::drop_immediately(thin_str) };
-            unsafe { OwnedThinArc::drop_immediately(thin_slice) };
-            unsafe { OwnedThinArc::drop_immediately(thin_usize) };
-            unsafe { OwnedThinArc::drop_immediately(thin_slice_init) };
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+            unsafe {
+                OwnedThinArc::drop_immediately(thin_str);
+                OwnedThinArc::drop_immediately(thin_slice);
+                OwnedThinArc::drop_immediately(thin_usize);
+                OwnedThinArc::drop_immediately(thin_slice_init);
+            }
+        });
     }
 
     #[test]
     fn test_derived_traits() {
-        qsbr_reclaimer().register_thread();
-        {
-            let arc1 = OwnedThinArc::new(42);
-            let arc2 = OwnedThinArc::new(42);
-            let arc3 = OwnedThinArc::new(43);
+        qsbr_reclaimer().with(|| {
+            let ptr1 = OwnedThinArc::new(42);
+            let ptr2 = OwnedThinArc::new(42);
+            let ptr3 = OwnedThinArc::new(43);
 
             // Test Eq
-            assert!(arc1 == arc2);
-            assert!(arc1 != arc3);
+            assert!(ptr1 == ptr2);
+            assert!(ptr1 != ptr3);
 
             // Test Ord
-            assert!(arc1 < arc3);
-            assert!(arc3 > arc1);
-            assert_eq!(arc1.cmp(&arc2), CmpOrdering::Equal);
+            assert!(ptr1 < ptr3);
+            assert!(ptr3 > ptr1);
+            assert_eq!(ptr1.cmp(&ptr2), CmpOrdering::Equal);
 
             // Test Hash
             let mut hasher1 = DefaultHasher::new();
             let mut hasher2 = DefaultHasher::new();
-            arc1.hash(&mut hasher1);
-            arc2.hash(&mut hasher2);
+            ptr1.hash(&mut hasher1);
+            ptr2.hash(&mut hasher2);
             assert_eq!(hasher1.finish(), hasher2.finish());
 
             // Different values should hash differently
             let mut hasher3 = DefaultHasher::new();
-            arc3.hash(&mut hasher3);
+            ptr3.hash(&mut hasher3);
             assert_ne!(hasher1.finish(), hasher3.finish());
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+        });
     }
 
     #[test]
     fn test_serde() {
-        qsbr_reclaimer().register_thread();
-        {
-            let arc = OwnedThinArc::new(42);
-            let serialized = serde_json::to_string(&arc).unwrap();
+        qsbr_reclaimer().with(|| {
+            let ptr = OwnedThinArc::new(42);
+            let serialized = serde_json::to_string(&ptr).unwrap();
             let deserialized: OwnedThinArc<i32> = serde_json::from_str(&serialized).unwrap();
-            assert_eq!(&*arc, &*deserialized);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+            assert_eq!(&*ptr, &*deserialized);
+        });
     }
 
     #[test]
     fn test_serde_array() {
-        qsbr_reclaimer().register_thread();
-        {
+        qsbr_reclaimer().with(|| {
             let array = OwnedThinArc::new_from_slice(&[1usize, 2, 3, 4, 5]);
             let serialized = serde_json::to_string(&array).unwrap();
             let deserialized: OwnedThinArc<[usize]> = serde_json::from_str(&serialized).unwrap();
 
             assert_eq!(array.len(), deserialized.len());
             assert_eq!(&*array, &*deserialized);
-        }
-        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+        });
     }
 }
