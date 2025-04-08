@@ -1,0 +1,12 @@
+[package]
+name = "qsbr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fxhash = "0.2"
+rayon = "1.10.0"
+shuttle = "0.8.0"
+
+[features]
+shuttle = []

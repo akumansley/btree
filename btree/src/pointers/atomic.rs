@@ -502,6 +502,7 @@ impl<T: Send + 'static + ?Sized + Pointable> AtomicPointerArrayValue<T> for Owne
 
 #[cfg(test)]
 mod tests {
+    use btree_macros::qsbr_test;
     use serde_json;
     use std::cmp::Ordering as CmpOrdering;
     use std::collections::hash_map::DefaultHasher;
@@ -509,89 +510,80 @@ mod tests {
     use std::ops::Deref;
 
     use super::OwnedThinPtr;
-    use crate::qsbr_reclaimer;
 
-    #[test]
+    #[qsbr_test]
     fn test_thin_box() {
-        qsbr_reclaimer().with(|| {
-            let thin_str = OwnedThinPtr::new_from_str("hello");
-            assert_eq!(thin_str.len(), 5);
-            assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
+        let thin_str = OwnedThinPtr::new_from_str("hello");
+        assert_eq!(thin_str.len(), 5);
+        assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
 
-            let thin_usize = OwnedThinPtr::new(42);
-            assert_eq!(*thin_usize, 42);
+        let thin_usize = OwnedThinPtr::new(42);
+        assert_eq!(*thin_usize, 42);
 
-            let thin_slice = OwnedThinPtr::new_from_slice(&[1, 2, 3]);
-            assert_eq!(thin_slice.len(), 3);
-            assert_eq!(thin_slice[0], 1);
+        let thin_slice = OwnedThinPtr::new_from_slice(&[1, 2, 3]);
+        assert_eq!(thin_slice.len(), 3);
+        assert_eq!(thin_slice[0], 1);
 
-            let mut thin_slice_uninitialized = OwnedThinPtr::new_uninitialized(3);
-            assert_eq!(thin_slice_uninitialized.len(), 3);
-            for i in 0..3 {
-                thin_slice_uninitialized[i].write(i as usize);
-            }
-            let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
+        let mut thin_slice_uninitialized = OwnedThinPtr::new_uninitialized(3);
+        assert_eq!(thin_slice_uninitialized.len(), 3);
+        for i in 0..3 {
+            thin_slice_uninitialized[i].write(i as usize);
+        }
+        let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
 
-            assert_eq!(thin_slice_init.len(), 3);
-            assert_eq!(thin_slice_init[1], 1);
+        assert_eq!(thin_slice_init.len(), 3);
+        assert_eq!(thin_slice_init[1], 1);
 
-            OwnedThinPtr::drop_immediately(thin_str);
-            OwnedThinPtr::drop_immediately(thin_slice);
-            OwnedThinPtr::drop_immediately(thin_usize);
-            OwnedThinPtr::drop_immediately(thin_slice_init);
-        });
+        OwnedThinPtr::drop_immediately(thin_str);
+        OwnedThinPtr::drop_immediately(thin_slice);
+        OwnedThinPtr::drop_immediately(thin_usize);
+        OwnedThinPtr::drop_immediately(thin_slice_init);
     }
 
-    #[test]
+    #[qsbr_test]
     fn test_derived_traits() {
-        qsbr_reclaimer().with(|| {
-            let ptr1 = OwnedThinPtr::new(42);
-            let ptr2 = OwnedThinPtr::new(42);
-            let ptr3 = OwnedThinPtr::new(43);
+        let ptr1 = OwnedThinPtr::new(42);
+        let ptr2 = OwnedThinPtr::new(42);
+        let ptr3 = OwnedThinPtr::new(43);
 
-            // Test Eq
-            assert!(ptr1 == ptr2);
-            assert!(ptr1 != ptr3);
+        // Test Eq
+        assert!(ptr1 == ptr2);
+        assert!(ptr1 != ptr3);
 
-            // Test Ord
-            assert!(ptr1 < ptr3);
-            assert!(ptr3 > ptr1);
-            assert_eq!(ptr1.cmp(&ptr2), CmpOrdering::Equal);
+        // Test Ord
+        assert!(ptr1 < ptr3);
+        assert!(ptr3 > ptr1);
+        assert_eq!(ptr1.cmp(&ptr2), CmpOrdering::Equal);
 
-            // Test Hash
-            let mut hasher1 = DefaultHasher::new();
-            let mut hasher2 = DefaultHasher::new();
-            ptr1.hash(&mut hasher1);
-            ptr2.hash(&mut hasher2);
-            assert_eq!(hasher1.finish(), hasher2.finish());
+        // Test Hash
+        let mut hasher1 = DefaultHasher::new();
+        let mut hasher2 = DefaultHasher::new();
+        ptr1.hash(&mut hasher1);
+        ptr2.hash(&mut hasher2);
+        assert_eq!(hasher1.finish(), hasher2.finish());
 
-            // Different values should hash differently
-            let mut hasher3 = DefaultHasher::new();
-            ptr3.hash(&mut hasher3);
-            assert_ne!(hasher1.finish(), hasher3.finish());
-        });
+        // Different values should hash differently
+        let mut hasher3 = DefaultHasher::new();
+        ptr3.hash(&mut hasher3);
+        assert_ne!(hasher1.finish(), hasher3.finish());
     }
 
-    #[test]
+    #[qsbr_test]
     fn test_serde() {
-        qsbr_reclaimer().with(|| {
-            let ptr = OwnedThinPtr::new(42);
-            let serialized = serde_json::to_string(&ptr).unwrap();
-            let deserialized: OwnedThinPtr<i32> = serde_json::from_str(&serialized).unwrap();
-            assert_eq!(&*ptr, &*deserialized);
-        });
+        let ptr = OwnedThinPtr::new(42);
+        let serialized = serde_json::to_string(&ptr).unwrap();
+        let deserialized: OwnedThinPtr<i32> = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(&*ptr, &*deserialized);
     }
 
-    #[test]
+    #[qsbr_test]
     fn test_serde_array() {
-        qsbr_reclaimer().with(|| {
-            let array = OwnedThinPtr::new_from_slice(&[1usize, 2, 3, 4, 5]);
-            let serialized = serde_json::to_string(&array).unwrap();
-            let deserialized: OwnedThinPtr<[usize]> = serde_json::from_str(&serialized).unwrap();
+        let array = OwnedThinPtr::new_from_slice(&[1usize, 2, 3, 4, 5]);
+        let serialized = serde_json::to_string(&array).unwrap();
+        let deserialized: OwnedThinPtr<[usize]> = serde_json::from_str(&serialized).unwrap();
 
-            assert_eq!(array.len(), deserialized.len());
-            assert_eq!(&*array, &*deserialized);
-        });
+        assert_eq!(array.len(), deserialized.len());
+        assert_eq!(&*array, &*deserialized);
     }
 }
 

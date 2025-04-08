@@ -583,114 +583,109 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 
 #[cfg(test)]
 mod tests {
-    use crate::{leaf_node::LeafNode, pointers::OwnedThinPtr, qsbr_reclaimer};
+    use crate::{leaf_node::LeafNode, pointers::OwnedThinPtr};
+    use btree_macros::qsbr_test;
 
     use super::*;
 
-    #[test]
+    #[qsbr_test]
     fn test_internal_node_storage_array() {
-        qsbr_reclaimer().with(|| {
-            let array = OwnedThinPtr::new(InternalNodeStorage::<3, 4, u32, String>::new());
+        let array = OwnedThinPtr::new(InternalNodeStorage::<3, 4, u32, String>::new());
 
-            // Create some test data
-            let key1 = OwnedThinArc::new(1u32);
-            let key2 = OwnedThinArc::new(2u32);
+        // Create some test data
+        let key1 = OwnedThinArc::new(1u32);
+        let key2 = OwnedThinArc::new(2u32);
 
-            let node1 =
-                unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
-            let node1_shared = node1.share();
-            let node2 =
-                unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
-            let node2_shared = node2.share();
-            let node3 =
-                unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
-            let node3_shared = node3.share();
+        let node1 =
+            unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+        let node1_shared = node1.share();
+        let node2 =
+            unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+        let node2_shared = node2.share();
+        let node3 =
+            unsafe { OwnedThinPtr::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+        let node3_shared = node3.share();
 
-            // Test insert
-            array.push_extra_child(node1);
-            array.insert_child_with_split_key(key1, node2, 0);
-            array.insert_child_with_split_key(key2, node3, 1);
-            assert_eq!(array.num_keys(), 2);
+        // Test insert
+        array.push_extra_child(node1);
+        array.insert_child_with_split_key(key1, node2, 0);
+        array.insert_child_with_split_key(key2, node3, 1);
+        assert_eq!(array.num_keys(), 2);
 
-            assert_eq!(*array.keys()[0].load(Ordering::Relaxed).unwrap(), 1u32);
-            assert_eq!(*array.keys()[1].load(Ordering::Relaxed).unwrap(), 2u32);
-            assert_eq!(
-                array.children()[0].load_shared(Ordering::Relaxed).unwrap(),
-                node1_shared
-            );
-            assert_eq!(
-                array.children()[1].load_shared(Ordering::Relaxed).unwrap(),
-                node2_shared
-            );
-            assert_eq!(
-                array.children()[2].load_shared(Ordering::Relaxed).unwrap(),
-                node3_shared
-            );
+        assert_eq!(*array.keys()[0].load(Ordering::Relaxed).unwrap(), 1u32);
+        assert_eq!(*array.keys()[1].load(Ordering::Relaxed).unwrap(), 2u32);
+        assert_eq!(
+            array.children()[0].load_shared(Ordering::Relaxed).unwrap(),
+            node1_shared
+        );
+        assert_eq!(
+            array.children()[1].load_shared(Ordering::Relaxed).unwrap(),
+            node2_shared
+        );
+        assert_eq!(
+            array.children()[2].load_shared(Ordering::Relaxed).unwrap(),
+            node3_shared
+        );
 
-            // Test remove
-            let (_, child) = array.remove(0);
-            OwnedNodeRef::drop_immediately(OwnedNodeRef::<
-                u32,
-                String,
-                marker::Unknown,
-                marker::Unknown,
-            >::from_unknown_node_ptr(child));
-            // removes node1 and 1u32
-            assert_eq!(array.num_keys(), 1);
+        // Test remove
+        let (_, child) = array.remove(0);
+        OwnedNodeRef::drop_immediately(
+            OwnedNodeRef::<u32, String, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                child,
+            ),
+        );
+        // removes node1 and 1u32
+        assert_eq!(array.num_keys(), 1);
 
-            let (key, child) = array.remove_child_at_index(1);
-            drop(key);
-            drop(unsafe { child.cast::<LeafNode<u32, String>>() });
-            // removes node3 and 2u32
+        let (key, child) = array.remove_child_at_index(1);
+        drop(key);
+        drop(unsafe { child.cast::<LeafNode<u32, String>>() });
+        // removes node3 and 2u32
 
-            assert_eq!(array.num_keys(), 0);
-            assert_eq!(array.keys().len(), 0);
-            assert_eq!(array.children().len(), 1);
-            assert_eq!(
-                array.children()[0].load_shared(Ordering::Relaxed).unwrap(),
-                node2_shared
-            );
-            let child = array.remove_only_child();
-            OwnedNodeRef::drop_immediately(OwnedNodeRef::<
-                u32,
-                String,
-                marker::Unknown,
-                marker::Unknown,
-            >::from_unknown_node_ptr(child));
-        });
+        assert_eq!(array.num_keys(), 0);
+        assert_eq!(array.keys().len(), 0);
+        assert_eq!(array.children().len(), 1);
+        assert_eq!(
+            array.children()[0].load_shared(Ordering::Relaxed).unwrap(),
+            node2_shared
+        );
+        let child = array.remove_only_child();
+        OwnedNodeRef::drop_immediately(
+            OwnedNodeRef::<u32, String, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                child,
+            ),
+        );
     }
 
-    #[test]
+    #[qsbr_test]
     fn test_leaf_node_storage_array() {
-        qsbr_reclaimer().with(|| {
-            let array = LeafNodeStorage::<3, u32, String>::new();
+        let array = LeafNodeStorage::<3, u32, String>::new();
 
-            // Create test data
-            let key = OwnedThinArc::new(1u32);
-            assert_eq!(*key, 1u32);
-            let key_shared = key.share();
-            assert_eq!(*key_shared, 1u32);
-            let value = OwnedThinPtr::new(String::from("test"));
+        // Create test data
+        let key = OwnedThinArc::new(1u32);
+        assert_eq!(*key, 1u32);
+        let key_shared = key.share();
+        assert_eq!(*key_shared, 1u32);
+        let value = OwnedThinPtr::new(String::from("test"));
 
-            // Test insert
-            array.insert(key, value, 0);
-            assert_eq!(array.num_keys(), 1);
+        // Test insert
+        array.insert(key, value, 0);
+        assert_eq!(array.num_keys(), 1);
 
-            // Test keys() and values() methods
-            let keys = array.keys();
-            let values = array.values();
-            assert_eq!(keys.len(), 1);
-            assert_eq!(values.len(), 1);
+        // Test keys() and values() methods
+        let keys = array.keys();
+        let values = array.values();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(values.len(), 1);
 
-            assert_eq!(*keys[0].load_shared(Ordering::Relaxed).unwrap(), 1u32);
-            assert_eq!(*values[0].load_shared(Ordering::Relaxed).unwrap(), "test");
+        assert_eq!(*keys[0].load_shared(Ordering::Relaxed).unwrap(), 1u32);
+        assert_eq!(*values[0].load_shared(Ordering::Relaxed).unwrap(), "test");
 
-            // Test remove
-            let (key, value) = array.remove(0);
-            assert_eq!(array.num_keys(), 0);
+        // Test remove
+        let (key, value) = array.remove(0);
+        assert_eq!(array.num_keys(), 0);
 
-            drop(key);
-            drop(value);
-        });
+        drop(key);
+        drop(value);
     }
 }

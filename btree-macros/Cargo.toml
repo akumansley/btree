@@ -1,0 +1,11 @@
+[package]
+name = "btree-macros"
+version = "0.1.0"
+edition = "2021" # Or your current edition
+
+[lib]
+proc-macro = true # <--- This is essential!
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"

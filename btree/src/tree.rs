@@ -365,7 +365,7 @@ pub enum ModificationType {
 #[cfg(test)]
 mod tests {
     use crate::array_types::ORDER;
-    use crate::qsbr::qsbr_reclaimer;
+    use qsbr::qsbr_reclaimer;
 
     use super::*;
     use std::ops::Deref;

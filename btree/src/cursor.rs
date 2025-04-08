@@ -396,311 +396,305 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for CursorMut<'a, K,
 
 #[cfg(test)]
 mod tests {
+    use btree_macros::qsbr_test;
+
     use crate::array_types::ORDER;
     use crate::qsbr_reclaimer;
     use std::sync::Barrier;
 
     use super::*;
 
-    #[test]
+    #[qsbr_test]
     fn test_cursor() {
-        qsbr_reclaimer().with(|| {
-            let tree = BTree::<usize, String>::new();
+        let tree = BTree::<usize, String>::new();
 
-            // Insert some test data
-            for i in 0..10 {
-                tree.insert(
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                );
-            }
+        // Insert some test data
+        for i in 0..10 {
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
+        }
 
-            // Test forward traversal
-            let mut cursor = tree.cursor();
-            cursor.seek_to_start();
-            for i in 0..10 {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_next();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test backward traversal
-            cursor.seek_to_end();
-            for i in (0..10).rev() {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_prev();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test mixed traversal
-            cursor.seek_to_start();
-            assert_eq!(*cursor.current().unwrap().value(), "value0");
+        // Test forward traversal
+        let mut cursor = tree.cursor();
+        cursor.seek_to_start();
+        for i in 0..10 {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
             cursor.move_next();
-            assert_eq!(*cursor.current().unwrap().value(), "value1");
-            cursor.move_next();
-            assert_eq!(*cursor.current().unwrap().value(), "value2");
+        }
+        assert_eq!(cursor.current().is_none(), true);
+
+        // Test backward traversal
+        cursor.seek_to_end();
+        for i in (0..10).rev() {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
             cursor.move_prev();
-            assert_eq!(*cursor.current().unwrap().value(), "value1");
-            cursor.move_prev();
-            assert_eq!(*cursor.current().unwrap().value(), "value0");
-            cursor.move_next();
-            assert_eq!(*cursor.current().unwrap().value(), "value1");
+        }
+        assert_eq!(cursor.current().is_none(), true);
 
-            // Test seeking
-            cursor.seek(&5);
-            assert_eq!(*cursor.current().unwrap().value(), "value5");
-            cursor.seek(&7);
-            assert_eq!(*cursor.current().unwrap().value(), "value7");
-        });
+        // Test mixed traversal
+        cursor.seek_to_start();
+        assert_eq!(*cursor.current().unwrap().value(), "value0");
+        cursor.move_next();
+        assert_eq!(*cursor.current().unwrap().value(), "value1");
+        cursor.move_next();
+        assert_eq!(*cursor.current().unwrap().value(), "value2");
+        cursor.move_prev();
+        assert_eq!(*cursor.current().unwrap().value(), "value1");
+        cursor.move_prev();
+        assert_eq!(*cursor.current().unwrap().value(), "value0");
+        cursor.move_next();
+        assert_eq!(*cursor.current().unwrap().value(), "value1");
+
+        // Test seeking
+        cursor.seek(&5);
+        assert_eq!(*cursor.current().unwrap().value(), "value5");
+        cursor.seek(&7);
+        assert_eq!(*cursor.current().unwrap().value(), "value7");
     }
 
-    #[test]
+    #[qsbr_test]
     fn test_cursor_leaf_boundaries() {
-        qsbr_reclaimer().with(|| {
-            let tree = BTree::<usize, String>::new();
+        let tree = BTree::<usize, String>::new();
 
-            // Insert enough elements to force leaf splits
-            // Using ORDER * 2 ensures we have at least 2 leaves
-            let n = ORDER * 2;
-            for i in 0..n {
-                tree.insert(
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                );
-                tree.check_invariants();
-            }
-
-            // Test forward traversal across leaves
-            let mut cursor = tree.cursor();
-            cursor.seek_to_start();
-            for i in 0..n {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_next();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test backward traversal across leaves
-            cursor.seek_to_end();
-            for i in (0..n).rev() {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_prev();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test seeking across leaves
-            cursor.seek(&(ORDER - 1)); // Should be near end of first leaf
-            assert_eq!(
-                *cursor.current().unwrap().value(),
-                format!("value{}", ORDER - 1)
+        // Insert enough elements to force leaf splits
+        // Using ORDER * 2 ensures we have at least 2 leaves
+        let n = ORDER * 2;
+        for i in 0..n {
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
             );
-            cursor.move_next();
-            assert_eq!(
-                *cursor.current().unwrap().value(),
-                format!("value{}", ORDER)
-            ); // Should cross to next leaf
+            tree.check_invariants();
+        }
 
-            cursor.seek(&ORDER); // Should be at start of second leaf
+        // Test forward traversal across leaves
+        let mut cursor = tree.cursor();
+        cursor.seek_to_start();
+        for i in 0..n {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
+            cursor.move_next();
+        }
+        assert_eq!(cursor.current().is_none(), true);
+
+        // Test backward traversal across leaves
+        cursor.seek_to_end();
+        for i in (0..n).rev() {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
             cursor.move_prev();
-            assert_eq!(
-                *cursor.current().unwrap().value(),
-                format!("value{}", ORDER - 1)
-            ); // Should cross back to first leaf
-        });
+        }
+        assert_eq!(cursor.current().is_none(), true);
+
+        // Test seeking across leaves
+        cursor.seek(&(ORDER - 1)); // Should be near end of first leaf
+        assert_eq!(
+            *cursor.current().unwrap().value(),
+            format!("value{}", ORDER - 1)
+        );
+        cursor.move_next();
+        assert_eq!(
+            *cursor.current().unwrap().value(),
+            format!("value{}", ORDER)
+        ); // Should cross to next leaf
+
+        cursor.seek(&ORDER); // Should be at start of second leaf
+        cursor.move_prev();
+        assert_eq!(
+            *cursor.current().unwrap().value(),
+            format!("value{}", ORDER - 1)
+        ); // Should cross back to first leaf
     }
 
-    #[test]
+    #[qsbr_test]
     fn test_cursor_mut() {
-        qsbr_reclaimer().with(|| {
-            let tree = BTree::<usize, String>::new();
+        let tree = BTree::<usize, String>::new();
 
-            // Insert some test data
-            for i in 0..10 {
-                tree.insert(
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                );
-            }
-
-            // Test forward traversal
-            let mut cursor = tree.cursor_mut();
-            cursor.seek_to_start();
-            for i in 0..10 {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_next();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test backward traversal
-            cursor.seek_to_end();
-            for i in (0..10).rev() {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_prev();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test mixed traversal
-            cursor.seek_to_start();
-            assert_eq!(*cursor.current().unwrap().value(), "value0");
-            cursor.move_next();
-            assert_eq!(*cursor.current().unwrap().value(), "value1");
-            cursor.move_next();
-            assert_eq!(*cursor.current().unwrap().value(), "value2");
-            cursor.move_prev();
-            assert_eq!(*cursor.current().unwrap().value(), "value1");
-            cursor.move_prev();
-            assert_eq!(*cursor.current().unwrap().value(), "value0");
-            cursor.move_next();
-            assert_eq!(*cursor.current().unwrap().value(), "value1");
-
-            // Test seeking
-            cursor.seek(&5);
-            assert_eq!(*cursor.current().unwrap().value(), "value5");
-            cursor.seek(&7);
-            assert_eq!(*cursor.current().unwrap().value(), "value7");
-
-            drop(cursor);
-            drop(tree);
-        });
-    }
-
-    #[test]
-    fn test_cursor_mut_leaf_boundaries() {
-        qsbr_reclaimer().with(|| {
-            let tree = BTree::<usize, String>::new();
-
-            // Insert enough elements to force leaf splits
-            // Using ORDER * 2 ensures we have at least 2 leaves
-            let n = ORDER * 2;
-            for i in 0..n {
-                tree.insert(
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                );
-                tree.check_invariants();
-            }
-
-            // Test forward traversal across leaves
-            let mut cursor = tree.cursor_mut();
-            cursor.seek_to_start();
-            for i in 0..n {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_next();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test backward traversal across leaves
-            cursor.seek_to_end();
-            for i in (0..n).rev() {
-                let entry = cursor.current().unwrap();
-                assert_eq!(*entry.value(), format!("value{}", i));
-                cursor.move_prev();
-            }
-            assert_eq!(cursor.current().is_none(), true);
-
-            // Test seeking across leaves
-            cursor.seek(&(ORDER - 1)); // Should be near end of first leaf
-            assert_eq!(
-                *cursor.current().unwrap().value(),
-                format!("value{}", ORDER - 1)
+        // Insert some test data
+        for i in 0..10 {
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
             );
+        }
+
+        // Test forward traversal
+        let mut cursor = tree.cursor_mut();
+        cursor.seek_to_start();
+        for i in 0..10 {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
             cursor.move_next();
-            assert_eq!(
-                *cursor.current().unwrap().value(),
-                format!("value{}", ORDER)
-            ); // Should cross to next leaf
+        }
+        assert_eq!(cursor.current().is_none(), true);
 
-            cursor.seek(&ORDER); // Should be at start of second leaf
+        // Test backward traversal
+        cursor.seek_to_end();
+        for i in (0..10).rev() {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
             cursor.move_prev();
-            assert_eq!(
-                *cursor.current().unwrap().value(),
-                format!("value{}", ORDER - 1)
-            ); // Should cross back to first leaf
+        }
+        assert_eq!(cursor.current().is_none(), true);
 
-            drop(cursor);
-            drop(tree);
-        });
+        // Test mixed traversal
+        cursor.seek_to_start();
+        assert_eq!(*cursor.current().unwrap().value(), "value0");
+        cursor.move_next();
+        assert_eq!(*cursor.current().unwrap().value(), "value1");
+        cursor.move_next();
+        assert_eq!(*cursor.current().unwrap().value(), "value2");
+        cursor.move_prev();
+        assert_eq!(*cursor.current().unwrap().value(), "value1");
+        cursor.move_prev();
+        assert_eq!(*cursor.current().unwrap().value(), "value0");
+        cursor.move_next();
+        assert_eq!(*cursor.current().unwrap().value(), "value1");
+
+        // Test seeking
+        cursor.seek(&5);
+        assert_eq!(*cursor.current().unwrap().value(), "value5");
+        cursor.seek(&7);
+        assert_eq!(*cursor.current().unwrap().value(), "value7");
+
+        drop(cursor);
+        drop(tree);
     }
 
-    #[test]
+    #[qsbr_test]
+    fn test_cursor_mut_leaf_boundaries() {
+        let tree = BTree::<usize, String>::new();
+
+        // Insert enough elements to force leaf splits
+        // Using ORDER * 2 ensures we have at least 2 leaves
+        let n = ORDER * 2;
+        for i in 0..n {
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
+            tree.check_invariants();
+        }
+
+        // Test forward traversal across leaves
+        let mut cursor = tree.cursor_mut();
+        cursor.seek_to_start();
+        for i in 0..n {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
+            cursor.move_next();
+        }
+        assert_eq!(cursor.current().is_none(), true);
+
+        // Test backward traversal across leaves
+        cursor.seek_to_end();
+        for i in (0..n).rev() {
+            let entry = cursor.current().unwrap();
+            assert_eq!(*entry.value(), format!("value{}", i));
+            cursor.move_prev();
+        }
+        assert_eq!(cursor.current().is_none(), true);
+
+        // Test seeking across leaves
+        cursor.seek(&(ORDER - 1)); // Should be near end of first leaf
+        assert_eq!(
+            *cursor.current().unwrap().value(),
+            format!("value{}", ORDER - 1)
+        );
+        cursor.move_next();
+        assert_eq!(
+            *cursor.current().unwrap().value(),
+            format!("value{}", ORDER)
+        ); // Should cross to next leaf
+
+        cursor.seek(&ORDER); // Should be at start of second leaf
+        cursor.move_prev();
+        assert_eq!(
+            *cursor.current().unwrap().value(),
+            format!("value{}", ORDER - 1)
+        ); // Should cross back to first leaf
+
+        drop(cursor);
+        drop(tree);
+    }
+
+    #[qsbr_test]
     fn test_interaction_between_mut_cursor_and_shared_cursor() {
-        qsbr_reclaimer().with(|| {
-            let tree = BTree::<usize, String>::new();
+        let tree = BTree::<usize, String>::new();
 
-            // Insert enough elements to ensure multiple leaves
-            let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
-            for i in 0..n {
-                tree.insert(
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                );
-                tree.check_invariants();
-            }
+        // Insert enough elements to ensure multiple leaves
+        let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
+        for i in 0..n {
+            tree.insert(
+                OwnedThinArc::new(i),
+                OwnedThinPtr::new(format!("value{}", i)),
+            );
+            tree.check_invariants();
+        }
 
-            let barrier = Barrier::new(2);
+        let barrier = Barrier::new(2);
 
-            std::thread::scope(|s| {
-                // First thread starts at end with mut cursor and moves backwards
-                let tree_ref = &tree;
-                let barrier_ref = &barrier;
-                s.spawn(move || {
-                    qsbr_reclaimer().with(|| {
-                        let mut cursor_mut = tree_ref.cursor_mut();
-                        cursor_mut.seek_to_end();
+        std::thread::scope(|s| {
+            // First thread starts at end with mut cursor and moves backwards
+            let tree_ref = &tree;
+            let barrier_ref = &barrier;
+            s.spawn(move || {
+                let _guard = qsbr_reclaimer().guard();
+                {
+                    let mut cursor_mut = tree_ref.cursor_mut();
+                    cursor_mut.seek_to_end();
 
-                        // Wait for both cursors to be ready
-                        barrier_ref.wait();
+                    // Wait for both cursors to be ready
+                    barrier_ref.wait();
 
-                        // Move backwards and verify values
-                        let mut expected = n - 1;
-                        loop {
-                            assert_eq!(
-                                *cursor_mut.current().unwrap().value(),
-                                format!("value{}", expected)
-                            );
-                            if !cursor_mut.move_prev() {
-                                break;
-                            }
-                            expected -= 1;
-                            std::thread::yield_now();
+                    // Move backwards and verify values
+                    let mut expected = n - 1;
+                    loop {
+                        assert_eq!(
+                            *cursor_mut.current().unwrap().value(),
+                            format!("value{}", expected)
+                        );
+                        if !cursor_mut.move_prev() {
+                            break;
                         }
-                        assert_eq!(expected, 0);
-                    });
-                });
+                        expected -= 1;
+                        std::thread::yield_now();
+                    }
+                    assert_eq!(expected, 0);
+                }
+            });
 
-                // Second thread starts at beginning with shared cursor and moves forwards
-                let tree_ref = &tree;
-                let barrier_ref = &barrier;
-                s.spawn(move || {
-                    qsbr_reclaimer().with(|| {
-                        let mut cursor_shared = tree_ref.cursor();
-                        cursor_shared.seek_to_start();
+            // Second thread starts at beginning with shared cursor and moves forwards
+            let tree_ref = &tree;
+            let barrier_ref = &barrier;
+            s.spawn(move || {
+                let _guard = qsbr_reclaimer().guard();
+                {
+                    let mut cursor_shared = tree_ref.cursor();
+                    cursor_shared.seek_to_start();
 
-                        // Wait for both cursors to be ready
-                        barrier_ref.wait();
+                    // Wait for both cursors to be ready
+                    barrier_ref.wait();
 
-                        // Move forward and verify values
-                        let mut expected = 0;
-                        loop {
-                            assert_eq!(
-                                *cursor_shared.current().unwrap().value(),
-                                format!("value{}", expected)
-                            );
-                            if !cursor_shared.move_next() {
-                                break;
-                            }
-                            expected += 1;
-                            std::thread::yield_now();
+                    // Move forward and verify values
+                    let mut expected = 0;
+                    loop {
+                        assert_eq!(
+                            *cursor_shared.current().unwrap().value(),
+                            format!("value{}", expected)
+                        );
+                        if !cursor_shared.move_next() {
+                            break;
                         }
-                        assert_eq!(expected, n - 1);
-                    });
-                });
+                        expected += 1;
+                        std::thread::yield_now();
+                    }
+                    assert_eq!(expected, n - 1);
+                }
             });
         });
     }

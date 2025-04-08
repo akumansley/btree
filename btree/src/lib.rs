@@ -32,7 +32,6 @@ mod iter;
 mod leaf_node;
 mod node;
 mod pointers;
-mod qsbr;
 mod reference;
 mod root_node;
 mod search;

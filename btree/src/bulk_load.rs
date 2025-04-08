@@ -3,9 +3,9 @@ use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::node::NodeHeader;
 use crate::pointers::{marker, OwnedNodeRef, OwnedThinArc, OwnedThinPtr};
-use crate::qsbr::qsbr_pool;
 use crate::sync::Ordering;
 use crate::tree::{BTree, BTreeKey, BTreeValue};
+use qsbr::qsbr_pool;
 use rand::Rng;
 use rayon::prelude::*;
 
@@ -254,7 +254,7 @@ mod tests {
     use std::ops::Deref;
 
     use super::*;
-    use crate::qsbr::qsbr_reclaimer;
+    use qsbr::qsbr_reclaimer;
 
     #[test]
     #[cfg(not(miri))]

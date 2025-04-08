@@ -365,7 +365,7 @@ mod tests {
     use super::*;
     use crate::array_types::ORDER;
     use crate::pointers::{OwnedThinArc, OwnedThinPtr};
-    use crate::qsbr::qsbr_reclaimer;
+    use qsbr::qsbr_reclaimer;
 
     fn create_full_leaf() -> OwnedNodeRef<usize, str, marker::LockedExclusive, marker::Leaf> {
         let leaf = OwnedNodeRef::from_leaf_ptr(OwnedThinPtr::new(LeafNode::<usize, str>::new()))

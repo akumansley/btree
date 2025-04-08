@@ -184,15 +184,6 @@ impl MemoryReclaimer {
         self.register_thread();
         QsbrGuard { reclaimer: self }
     }
-
-    /// Runs a closure with QSBR registration, automatically handling cleanup.
-    pub fn with<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let _guard = self.guard();
-        f()
-    }
 }
 
 static RECLAIMER: OnceLock<MemoryReclaimer> = OnceLock::new();
@@ -237,9 +228,11 @@ impl<'a> Drop for QsbrGuard<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::{AtomicUsize, Ordering};
     use std::{
-        sync::{Arc, Barrier},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Barrier,
+        },
         thread,
     };
 
@@ -329,17 +322,6 @@ mod tests {
         let reclaimer = MemoryReclaimer::new();
         let counter = Arc::new(AtomicUsize::new(0));
 
-        // Test the guard with a closure
-        reclaimer.with(|| {
-            let counter_clone = Arc::clone(&counter);
-            reclaimer.add_callback(Box::new(move || {
-                counter_clone.fetch_add(1, Ordering::SeqCst);
-            }));
-        });
-
-        // The callback should have been executed since the guard was dropped
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-
         // Test manual guard creation and drop
         {
             let _guard = reclaimer.guard();
@@ -350,6 +332,6 @@ mod tests {
         }
 
         // The callback should have been executed since the guard was dropped
-        assert_eq!(counter.load(Ordering::SeqCst), 2);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
