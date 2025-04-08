@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop};
 use std::ops::{Deref, DerefMut};
 
-use crate::hybrid_latch::LockInfo;
+use crate::hybrid_latch::{LockError, LockInfo};
 use crate::internal_node::{InternalNode, InternalNodeInner};
 use crate::leaf_node::{LeafNode, LeafNodeInner};
 use crate::node::{Height, NodeHeader};
@@ -149,7 +149,6 @@ macro_rules! impl_node_ref_traits {
         }
 
         // Unknown type, any lock state
-
         impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
             $struct_name<K, V, L, marker::Unknown>
         {
@@ -185,6 +184,19 @@ macro_rules! impl_node_ref_traits {
                     phantom: PhantomData,
                 }
             }
+
+            #[allow(unused)]
+            pub fn lock_exclusive_if_not_retired(
+                self,
+            ) -> Result<$struct_name<K, V, marker::LockedExclusive, N>, LockError> {
+                self.header().lock_exclusive_if_not_retired()?;
+                Ok($struct_name {
+                    node: ManuallyDrop::new(self.into_ptr()),
+                    lock_info: LockInfo::exclusive(),
+                    phantom: PhantomData,
+                })
+            }
+
             #[allow(unused)]
             pub fn lock_optimistic(self) -> Result<$struct_name<K, V, marker::Optimistic, N>, ()> {
                 debug_println!("locking {:?} {:?} optimistic", self, self.header().height());
@@ -208,6 +220,19 @@ macro_rules! impl_node_ref_traits {
                     phantom: PhantomData,
                 }
             }
+
+            #[allow(unused)]
+            pub fn lock_shared_if_not_retired(
+                self,
+            ) -> Result<$struct_name<K, V, marker::LockedShared, N>, LockError> {
+                self.header().lock_shared_if_not_retired()?;
+                Ok($struct_name {
+                    node: ManuallyDrop::new(self.into_ptr()),
+                    lock_info: LockInfo::shared(),
+                    phantom: PhantomData,
+                })
+            }
+
             #[allow(unused)]
             pub fn try_lock_shared(
                 mut self,
@@ -223,6 +248,7 @@ macro_rules! impl_node_ref_traits {
                     Err(_) => Err(self),
                 }
             }
+
             #[allow(unused)]
             pub fn try_lock_exclusive(
                 mut self,
@@ -277,7 +303,6 @@ macro_rules! impl_node_ref_traits {
         }
 
         // Any node, optimistic
-
         impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType>
             $struct_name<K, V, marker::Optimistic, N>
         {

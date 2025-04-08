@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::hybrid_latch::{HybridLatch, LockInfo};
+use crate::hybrid_latch::{HybridLatch, LockError, LockInfo};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Height {
@@ -54,6 +54,9 @@ impl NodeHeader {
     pub fn lock_exclusive(&self) {
         self.lock.lock_exclusive();
     }
+    pub fn lock_exclusive_if_not_retired(&self) -> Result<(), LockError> {
+        self.lock.lock_exclusive_if_not_retired()
+    }
     pub fn is_locked_exclusive(&self) -> bool {
         self.lock.is_locked_exclusive()
     }
@@ -63,6 +66,9 @@ impl NodeHeader {
     }
     pub fn lock_shared(&self) {
         self.lock.lock_shared();
+    }
+    pub fn lock_shared_if_not_retired(&self) -> Result<(), LockError> {
+        self.lock.lock_shared_if_not_retired()
     }
     pub fn is_locked_shared(&self) -> bool {
         self.lock.is_locked_shared()

@@ -1,3 +1,4 @@
+use crate::hybrid_latch::LockError;
 use crate::pointers::node_ref::marker::LockState;
 use crate::pointers::node_ref::{marker, SharedDiscriminatedNode, SharedNodeRef};
 use crate::search_dequeue::SearchDequeue;
@@ -13,7 +14,7 @@ pub fn get_last_leaf_shared_using_optimistic_search<
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
-        |node| node.lock_shared(),
+        |node| node.lock_shared_if_not_retired(),
         |node| node.unlock_shared(),
     )
 }
@@ -36,7 +37,7 @@ pub fn get_first_leaf_shared_using_optimistic_search<
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
-        |node| node.lock_shared(),
+        |node| node.lock_shared_if_not_retired(),
         |node| node.unlock_shared(),
     )
 }
@@ -58,7 +59,7 @@ fn get_leaf_shared_using_optimistic_search<K: BTreeKey + ?Sized, V: BTreeValue +
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
-        |node| node.lock_shared(),
+        |node| node.lock_shared_if_not_retired(),
         |node| node.unlock_shared(),
     )
 }
@@ -87,7 +88,7 @@ pub fn do_optimistic_search<
     ) -> SharedNodeRef<K, V, marker::Unlocked, marker::Unknown>,
     lock_leaf: impl Fn(
         SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>,
-    ) -> SharedNodeRef<K, V, LeafLockState, marker::Leaf>,
+    ) -> Result<SharedNodeRef<K, V, LeafLockState, marker::Leaf>, LockError>,
     unlock_leaf: impl Fn(
         SharedNodeRef<K, V, LeafLockState, marker::Leaf>,
     ) -> SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>,
@@ -105,7 +106,7 @@ pub fn do_optimistic_search<
             current_node = descend(locked_current_node);
             prev_node = locked_current_node.erase_node_type();
         }
-        let leaf = lock_leaf(current_node.assert_leaf());
+        let leaf = lock_leaf(current_node.assert_leaf()).map_err(|_| ())?;
         match prev_node.unlock_optimistic() {
             Ok(_) => Ok(leaf),
             Err(_) => {
@@ -159,7 +160,7 @@ fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey + ?Sized, V: BTreeVa
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
-        |node| node.lock_exclusive(),
+        |node| node.lock_exclusive_if_not_retired(),
         |node| node.unlock_exclusive(),
     )
 }
@@ -262,7 +263,7 @@ pub fn get_first_leaf_exclusively_using_optimistic_search<
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
-        |node| node.lock_exclusive(),
+        |node| node.lock_exclusive_if_not_retired(),
         |node| node.unlock_exclusive(),
     )
 }
@@ -289,7 +290,7 @@ pub fn get_last_leaf_exclusively_using_optimistic_search<
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
-        |node| node.lock_exclusive(),
+        |node| node.lock_exclusive_if_not_retired(),
         |node| node.unlock_exclusive(),
     )
 }

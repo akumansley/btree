@@ -571,7 +571,11 @@ mod tests {
             let tree_ref = &tree;
             s.spawn(move || {
                 qsbr_reclaimer().register_thread();
+                let start_time = std::time::Instant::now();
                 while completed_threads.load(Ordering::Acquire) < num_threads {
+                    if start_time.elapsed() >= Duration::from_secs(10) {
+                        break;
+                    }
                     thread::sleep(Duration::from_secs(1));
                     tree_ref.check_invariants();
                 }

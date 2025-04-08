@@ -68,6 +68,14 @@ impl Debug for HybridLatch {
     }
 }
 
+pub enum LockError {
+    Retired,
+}
+pub enum TryLockError {
+    Locked,
+    Retired,
+}
+
 impl HybridLatch {
     pub fn new() -> Self {
         Self {
@@ -81,6 +89,16 @@ impl HybridLatch {
         self.rw_lock.lock_shared();
     }
 
+    pub fn lock_shared_if_not_retired(&self) -> Result<(), LockError> {
+        self.rw_lock.lock_shared();
+        if self.is_retired() {
+            self.rw_lock.unlock_shared();
+            Err(LockError::Retired)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn try_lock_shared(&self) -> Result<(), ()> {
         if self.rw_lock.try_lock_shared() {
             Ok(())
@@ -88,7 +106,15 @@ impl HybridLatch {
             Err(())
         }
     }
-
+    pub fn lock_exclusive_if_not_retired(&self) -> Result<(), LockError> {
+        self.rw_lock.lock_exclusive();
+        if self.is_retired() {
+            self.rw_lock.unlock_exclusive();
+            Err(LockError::Retired)
+        } else {
+            Ok(())
+        }
+    }
     pub fn lock_exclusive(&self) {
         debug_assert!(!self.is_retired());
         self.rw_lock.lock_exclusive();
@@ -106,11 +132,14 @@ impl HybridLatch {
         !self.rw_lock.is_locked()
     }
 
-    pub fn try_lock_exclusive(&self) -> Result<(), ()> {
-        if self.rw_lock.try_lock_exclusive() {
-            Ok(())
+    pub fn try_lock_exclusive(&self) -> Result<(), TryLockError> {
+        if !self.rw_lock.try_lock_exclusive() {
+            return Err(TryLockError::Locked);
+        }
+        if self.is_retired() {
+            Err(TryLockError::Retired)
         } else {
-            Err(())
+            Ok(())
         }
     }
 
