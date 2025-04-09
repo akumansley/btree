@@ -122,11 +122,14 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
 
     fn get(&self, index: usize, num_elements: usize) -> P::SharedPointer {
         debug_assert!(index < num_elements);
+        unsafe { self.get_unchecked(index) }
+    }
+
+    unsafe fn get_unchecked(&self, index: usize) -> P::SharedPointer {
         unsafe {
             self.array
                 .get_unchecked(index)
                 .assume_init_ref()
-                // ORDERING: this may be an optimistic read, so we need to Acquire any associated values
                 .load_shared(Ordering::Acquire)
                 .unwrap()
         }
@@ -289,6 +292,10 @@ impl<
 
     pub fn get_child(&self, index: usize) -> SharedThinPtr<NodeHeader> {
         self.children.get(index, self.num_children())
+    }
+
+    pub unsafe fn get_child_unchecked(&self, index: usize) -> SharedThinPtr<NodeHeader> {
+        unsafe { self.children.get_unchecked(index) }
     }
 
     pub fn remove_only_child(&self) -> OwnedThinPtr<NodeHeader> {

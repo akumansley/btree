@@ -102,7 +102,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
             Ok(index) => index + 1,
             Err(index) => index,
         };
-        self.storage.get_child(index)
+        // SAFETY: This may be an optimistic read, so we might be reading an index that exceeds the current number of children
+        // but because node drops are protected by qsbr, that's okay -- we'll find a retired node.
+        unsafe { self.storage.get_child_unchecked(index) }
     }
 
     pub fn get_key_for_non_leftmost_child(

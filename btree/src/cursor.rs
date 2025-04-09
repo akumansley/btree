@@ -113,7 +113,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
                     // to the current key
                     let key = leaf.storage.get_key(self.current_index);
                     self.seek_from_top(&key);
-                    return self.move_next();
+                    continue;
                 }
             };
             self.current_leaf.take().unwrap().unlock_shared();
@@ -149,7 +149,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
                     let key = leaf.storage.get_key(self.current_index);
                     self.current_leaf.take().unwrap().unlock_shared();
                     self.seek(&key);
-                    return self.move_prev();
+                    continue;
                 }
             };
             self.current_leaf.take().unwrap().unlock_shared();
@@ -342,7 +342,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                     // to the current key
                     let key = leaf.storage.get_key(self.current_index);
                     self.seek_from_top(&key);
-                    return self.move_next();
+                    continue;
                 }
             };
             self.current_leaf.take().unwrap().unlock_exclusive();
@@ -374,7 +374,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                         // to the current key
                         let key = leaf.storage.get_key(self.current_index);
                         self.seek_from_top(&key);
-                        return self.move_prev();
+                        continue;
                     }
                 };
                 self.current_leaf.take().unwrap().unlock_exclusive();
