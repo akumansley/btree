@@ -1,7 +1,7 @@
 use crate::array_types::MIN_KEYS_PER_NODE;
-use crate::bulk_load::{bulk_load_from_sorted_kv_pairs, bulk_load_from_sorted_kv_pairs_parallel};
-use crate::bulk_update::{
-    bulk_insert_or_update_from_sorted_kv_pairs_parallel, bulk_update_from_sorted_kv_pairs_parallel,
+use crate::bulk_operations::{
+    bulk_insert_or_update_from_sorted_kv_pairs_parallel, bulk_load_from_sorted_kv_pairs,
+    bulk_load_from_sorted_kv_pairs_parallel, bulk_update_from_sorted_kv_pairs_parallel,
 };
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;

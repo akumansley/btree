@@ -22,8 +22,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 mod debug;
 
 mod array_types;
-mod bulk_load;
-mod bulk_update;
+mod bulk_operations;
 mod coalescing;
 mod cursor;
 mod hybrid_latch;
