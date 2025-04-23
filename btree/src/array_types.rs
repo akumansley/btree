@@ -506,6 +506,9 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
         self.values.as_slice(self.num_keys())
     }
 
+    pub fn iter_values<'a>(&'a self) -> impl Iterator<Item = SharedThinPtr<V>> + 'a {
+        self.values.iter(self.num_keys())
+    }
     pub fn push(&self, key: OwnedThinArc<K>, value: OwnedThinPtr<V>) {
         let num_keys = self.num_keys();
         self.keys.push(key, num_keys);

@@ -97,11 +97,15 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         self.storage.get_child(self.num_keys())
     }
 
-    pub fn find_child(&self, search_key: &K) -> SharedThinPtr<NodeHeader> {
-        let index = match self.storage.binary_search_keys(search_key) {
+    pub fn index_of_child_containing_key(&self, key: &K) -> usize {
+        match self.storage.binary_search_keys(key) {
             Ok(index) => index + 1,
             Err(index) => index,
-        };
+        }
+    }
+
+    pub fn find_child(&self, search_key: &K) -> SharedThinPtr<NodeHeader> {
+        let index = self.index_of_child_containing_key(search_key);
         // SAFETY: This may be an optimistic read, so we might be reading an index that exceeds the current number of children
         // but because node drops are protected by qsbr, that's okay -- we'll find a retired node.
         unsafe { self.storage.get_child_unchecked(index) }

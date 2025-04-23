@@ -2,13 +2,16 @@ use crate::array_types::MIN_KEYS_PER_NODE;
 use crate::bulk_operations::{
     bulk_insert_or_update_from_sorted_kv_pairs_parallel, bulk_load_from_sorted_kv_pairs,
     bulk_load_from_sorted_kv_pairs_parallel, bulk_update_from_sorted_kv_pairs_parallel,
+    scan_parallel,
 };
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
 use crate::pointers::node_ref::{marker, SharedDiscriminatedNode};
-use crate::pointers::{Arcable, OwnedThinArc, OwnedThinPtr, Pointable, SharedNodeRef};
+use crate::pointers::{
+    Arcable, OwnedThinArc, OwnedThinPtr, Pointable, SharedNodeRef, SharedThinArc,
+};
 use crate::reference::Ref;
 use crate::root_node::RootNode;
 use crate::search::{
@@ -87,6 +90,15 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         };
         leaf_node_shared.unlock_shared();
         result
+    }
+
+    pub fn scan_parallel(
+        &self,
+        start_key: SharedThinArc<K>,
+        end_key: SharedThinArc<K>,
+        predicate: impl Fn(&V) -> bool + Sync,
+    ) -> Vec<SharedThinPtr<V>> {
+        scan_parallel(start_key, end_key, predicate, self)
     }
 
     pub fn len(&self) -> usize {

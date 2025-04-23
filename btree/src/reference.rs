@@ -76,6 +76,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Entry<K, V> {
     pub fn into_value(self) -> ValueRef<V> {
         ValueRef::new(self.value)
     }
+    pub fn value_shared_ptr(&self) -> SharedThinPtr<V> {
+        self.value
+    }
 }
 
 pub struct ValueRef<V: BTreeValue + ?Sized> {
