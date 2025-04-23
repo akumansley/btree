@@ -11,7 +11,6 @@ usync = "0.2.1"
 lock_api = "0.4.12"
 rayon = "1.10.0"
 shuttle = "0.8.0"
-tikv-jemallocator = { version = "0.6.0" }
 serde = "1.0"
 serde_json = "1.0.87"
 qsbr = { path = "../qsbr" }

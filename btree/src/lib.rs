@@ -12,12 +12,6 @@
 //! they're used for split keys, not cloned. The tree uses "hybrid locks" for scalability when the tree is large, and the tree provides
 //! several parallel bulk operations that should be very fast with large amounts of data.
 
-use tikv_jemallocator::Jemalloc;
-
-#[global_allocator]
-#[cfg(not(miri))]
-static GLOBAL: Jemalloc = Jemalloc;
-
 #[macro_use]
 mod debug;
 
