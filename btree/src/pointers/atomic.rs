@@ -53,6 +53,17 @@ pub trait Pointable: Send + 'static {
     unsafe fn drop(ptr: *mut ());
 }
 
+pub trait ThinClone: Pointable {
+    unsafe fn clone(ptr: *mut ()) -> *mut ();
+}
+
+impl<T: Pointable + Sized + Clone> ThinClone for T {
+    unsafe fn clone(ptr: *mut ()) -> *mut () {
+        let value = T::deref(ptr).clone();
+        init_thin_sized(value)
+    }
+}
+
 fn init_thin_sized<T: Sized>(init: T) -> *mut () {
     Box::into_raw(Box::new(init)) as *mut ()
 }
@@ -137,6 +148,16 @@ impl<T: Send + 'static> Pointable for [T] {
     }
 }
 
+impl<T: Clone> ThinClone for [T]
+where
+    [T]: Pointable,
+{
+    unsafe fn clone(ptr: *mut ()) -> *mut () {
+        let slice = <[T] as Pointable>::deref(ptr);
+        init_thin_slice(slice)
+    }
+}
+
 fn init_thin_str<'a>(init: &'a str) -> *mut () {
     let layout = Array::<u8>::layout(init.len());
     unsafe {
@@ -180,6 +201,13 @@ impl Pointable for str {
         let len = (*(ptr as *mut Array<u8>)).len;
         let layout = Array::<u8>::layout(len);
         alloc::dealloc(ptr as *mut u8, layout);
+    }
+}
+
+impl ThinClone for str {
+    unsafe fn clone(ptr: *mut ()) -> *mut () {
+        let s = <str as Pointable>::deref(ptr);
+        init_thin_str(s)
     }
 }
 
@@ -319,6 +347,12 @@ impl<T: Pointable + ?Sized> OwnedThinPtr<T> {
         let ptr = thin_ptr.as_ptr();
         mem::forget(thin_ptr);
         unsafe { T::drop(ptr) };
+    }
+}
+
+impl<T: ThinClone + ?Sized> Clone for OwnedThinPtr<T> {
+    fn clone(&self) -> Self {
+        unsafe { OwnedThinPtr::new_with(|| T::clone(self.as_ptr())) }
     }
 }
 
