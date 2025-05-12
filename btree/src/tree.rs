@@ -1,3 +1,4 @@
+use crate::SharedThinPtr;
 use crate::array_types::MIN_KEYS_PER_NODE;
 use crate::bulk_operations::{
     bulk_insert_or_update_from_sorted_kv_pairs_parallel, bulk_load_from_sorted_kv_pairs,
@@ -8,7 +9,7 @@ use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
-use crate::pointers::node_ref::{marker, SharedDiscriminatedNode};
+use crate::pointers::node_ref::{SharedDiscriminatedNode, marker};
 use crate::pointers::{
     Arcable, OwnedThinArc, OwnedThinPtr, Pointable, SharedNodeRef, SharedThinArc,
 };
@@ -20,11 +21,10 @@ use crate::search::{
     get_leaf_shared_using_optimistic_search_with_fallback,
 };
 use crate::splitting::{
-    insert_into_leaf_after_splitting,
-    insert_into_leaf_after_splitting_returning_leaf_with_new_entry, EntryLocation,
+    EntryLocation, insert_into_leaf_after_splitting,
+    insert_into_leaf_after_splitting_returning_leaf_with_new_entry,
 };
 use crate::sync::Ordering;
-use crate::SharedThinPtr;
 use std::fmt::Debug;
 
 pub trait BTreeKey: PartialOrd + Ord + Debug + Send + Sync + Arcable + 'static {}
@@ -98,7 +98,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         end_key: SharedThinArc<K>,
         predicate: impl Fn(&V) -> bool + Sync,
     ) -> Vec<SharedThinPtr<V>> {
-        scan_parallel(start_key, end_key, predicate, self)
+        scan_parallel(Some(start_key), Some(end_key), predicate, self)
     }
 
     pub fn len(&self) -> usize {

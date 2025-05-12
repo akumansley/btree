@@ -1,21 +1,20 @@
 use crate::{
+    BTree, BTreeKey, BTreeValue, SharedThinPtr,
     node::Height,
     pointers::{
-        marker::{Internal, LockedShared, Root, Unknown, Unlocked},
         SharedNodeRef, SharedThinArc,
+        marker::{Internal, LockedShared, Root, Unknown, Unlocked},
     },
-    BTree, BTreeKey, BTreeValue, SharedThinPtr,
 };
 use qsbr::qsbr_pool;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-// TODO: handle no start or no end key
 // maybe avoid allocating into a vec
 // test the subranges to see if they're any good
 
 pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    start_key: SharedThinArc<K>,
-    end_key: SharedThinArc<K>,
+    start_key: Option<SharedThinArc<K>>,
+    end_key: Option<SharedThinArc<K>>,
     predicate: impl Fn(&V) -> bool + Sync,
     tree: &BTree<K, V>,
 ) -> Vec<SharedThinPtr<V>> {
@@ -52,15 +51,27 @@ pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
                 .into_par_iter()
                 .flat_map_iter(|(start, end)| {
                     let mut cursor = tree.cursor();
-                    cursor.seek(&start);
+
+                    match start {
+                        Some(start) => {
+                            cursor.seek(&start);
+                        }
+                        None => {
+                            cursor.seek_to_start();
+                        }
+                    }
+
                     let mut result = vec![];
                     loop {
                         let maybe_curr = cursor.current();
                         match maybe_curr {
                             Some(curr) => {
-                                if curr.key() >= &end {
-                                    break;
-                                } else if predicate(curr.value()) {
+                                if let Some(end_key) = end {
+                                    if curr.key() >= &end_key {
+                                        break;
+                                    }
+                                }
+                                if predicate(curr.value()) {
                                     result.push(curr.value_shared_ptr());
                                 }
                                 cursor.move_next();
@@ -79,12 +90,12 @@ pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 
 // returns N+1 keys, which can be used to split the range [start_key, end_key) into N subranges
 fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    start_key: SharedThinArc<K>,
-    end_key: SharedThinArc<K>,
+    start_key: Option<SharedThinArc<K>>,
+    end_key: Option<SharedThinArc<K>>,
     lca: SharedNodeRef<K, V, LockedShared, Internal>,
     mut start_child_index: usize,
     mut end_child_index: usize,
-) -> Vec<SharedThinArc<K>> {
+) -> Vec<Option<SharedThinArc<K>>> {
     let mut prev_split_key_candidates = Vec::new();
     let mut split_key_candidates = Vec::new();
     let mut nodes_under_consideration = Vec::new();
@@ -122,7 +133,7 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
         // if we're at the leaf level and we still don't have our split keys, we can return
         // what we've got, but we can't go any further
         if current_height == Height::Leaf {
-            return split_key_candidates;
+            break;
         }
 
         let mut new_nodes_under_consideration = Vec::new();
@@ -141,13 +152,15 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
                 new_nodes_under_consideration.push(child.assert_internal().lock_shared());
             }
         }
-        start_child_index =
-            new_nodes_under_consideration[0].index_of_child_containing_key(&start_key);
+        start_child_index = match start_key {
+            Some(key) => new_nodes_under_consideration[0].index_of_child_containing_key(&key),
+            None => 0,
+        };
         let end_child_node = new_nodes_under_consideration[new_nodes_under_consideration.len() - 1];
-        end_child_index = std::cmp::min(
-            end_child_node.index_of_child_containing_key(&end_key),
-            end_child_node.storage.num_children(),
-        );
+        end_child_index = match end_key {
+            Some(key) => end_child_node.index_of_child_containing_key(&key),
+            None => end_child_node.storage.num_children() - 1,
+        };
         for node in nodes_under_consideration {
             node.unlock_shared();
         }
@@ -164,10 +177,10 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
 
     let num_split_key_candidates = split_key_candidates.len();
     let stride = num_split_key_candidates / N;
-    let mut selected_split_keys: Vec<SharedThinArc<K>> = Vec::new();
+    let mut selected_split_keys: Vec<Option<SharedThinArc<K>>> = Vec::new();
     selected_split_keys.push(start_key);
     for i in 1..N {
-        selected_split_keys.push(split_key_candidates[i * stride]);
+        selected_split_keys.push(Some(split_key_candidates[i * stride]));
     }
     selected_split_keys.push(end_key);
 
@@ -175,8 +188,8 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
 }
 
 fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    start_key: SharedThinArc<K>,
-    end_key: SharedThinArc<K>,
+    start_key: Option<SharedThinArc<K>>,
+    end_key: Option<SharedThinArc<K>>,
     root: SharedNodeRef<K, V, LockedShared, Root>,
 ) -> (SharedNodeRef<K, V, LockedShared, Unknown>, usize, usize) {
     let top_of_tree: SharedNodeRef<K, V, LockedShared, Unknown> =
@@ -190,8 +203,15 @@ fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     let mut end_child_index = 0;
     while current_node.is_internal() {
         let internal = current_node.assert_internal();
-        start_child_index = internal.index_of_child_containing_key(&start_key);
-        end_child_index = internal.index_of_child_containing_key(&end_key);
+        start_child_index = match start_key {
+            Some(key) => internal.index_of_child_containing_key(&key),
+            None => 0,
+        };
+
+        end_child_index = match end_key {
+            Some(key) => internal.index_of_child_containing_key(&key),
+            None => internal.storage.num_children() - 1,
+        };
         if start_child_index == end_child_index {
             current_node =
                 SharedNodeRef::from_unknown_node_ptr(internal.storage.get_child(start_child_index))
@@ -208,10 +228,10 @@ fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 mod test {
     use btree_macros::qsbr_test;
 
+    use crate::BTree;
     use crate::array_types::ORDER;
     use crate::node::Height;
     use crate::pointers::{OwnedThinArc, OwnedThinPtr};
-    use crate::BTree;
 
     use super::*;
 
@@ -224,9 +244,9 @@ mod test {
     }
 
     fn assert_subranges<K: BTreeKey + Eq + std::fmt::Debug + ?Sized>(
-        result: &[SharedThinArc<K>],
-        expected_start: &SharedThinArc<K>,
-        expected_end: &SharedThinArc<K>,
+        result: &[Option<SharedThinArc<K>>],
+        expected_start: Option<SharedThinArc<K>>,
+        expected_end: Option<SharedThinArc<K>>,
         expected_min_len: usize,
         expected_max_len: usize,
     ) {
@@ -234,11 +254,11 @@ mod test {
         assert!(result.len() <= expected_max_len, "Result length too long");
 
         assert_eq!(
-            result.first().unwrap(),
+            *result.first().unwrap(),
             expected_start,
             "First key mismatch"
         );
-        assert_eq!(result.last().unwrap(), expected_end, "Last key mismatch");
+        assert_eq!(*result.last().unwrap(), expected_end, "Last key mismatch");
 
         if result.len() > 1 {
             for i in 0..result.len() - 1 {
@@ -258,8 +278,11 @@ mod test {
 
             let locked_root = tree.root.as_node_ref().lock_shared();
 
-            let (lca, _start_idx, _end_idx) =
-                find_least_common_ancestor(start_key1.share(), end_key1.share(), locked_root);
+            let (lca, _start_idx, _end_idx) = find_least_common_ancestor(
+                Some(start_key1.share()),
+                Some(end_key1.share()),
+                locked_root,
+            );
 
             assert_eq!(
                 lca.height(),
@@ -278,8 +301,11 @@ mod test {
 
             let locked_root = tree.root.as_node_ref().lock_shared();
 
-            let (lca, _start_idx, _end_idx) =
-                find_least_common_ancestor(start_key.share(), end_key.share(), locked_root);
+            let (lca, _start_idx, _end_idx) = find_least_common_ancestor(
+                Some(start_key.share()),
+                Some(end_key.share()),
+                locked_root,
+            );
 
             assert_eq!(
                 lca.height(),
@@ -301,21 +327,30 @@ mod test {
             let end_key = OwnedThinArc::new(ORDER * 4 + 11); // leaf 4
 
             let locked_root = tree.root.as_node_ref().lock_shared();
-            let (lca_locked_unknown, start_idx, end_idx) =
-                find_least_common_ancestor(start_key.share(), end_key.share(), locked_root);
+            let (lca_locked_unknown, start_idx, end_idx) = find_least_common_ancestor(
+                Some(start_key.share()),
+                Some(end_key.share()),
+                locked_root,
+            );
 
             let lca_internal = lca_locked_unknown.assert_internal();
 
             let result = try_to_find_n_subranges::<N, usize, usize>(
-                start_key.share(),
-                end_key.share(),
+                Some(start_key.share()),
+                Some(end_key.share()),
                 lca_internal,
                 start_idx,
                 end_idx,
             );
 
             println!("Scenario 1 Result: {:?}", result);
-            assert_subranges(&result, &start_key.share(), &end_key.share(), N + 1, N + 1);
+            assert_subranges(
+                &result,
+                Some(start_key.share()),
+                Some(end_key.share()),
+                N + 1,
+                N + 1,
+            );
         }
 
         {
@@ -324,21 +359,30 @@ mod test {
             let end_key = OwnedThinArc::new(ORDER * 64 - 1);
 
             let locked_root = tree.root.as_node_ref().lock_shared();
-            let (lca_locked_unknown, start_idx, end_idx) =
-                find_least_common_ancestor(start_key.share(), end_key.share(), locked_root);
+            let (lca_locked_unknown, start_idx, end_idx) = find_least_common_ancestor(
+                Some(start_key.share()),
+                Some(end_key.share()),
+                locked_root,
+            );
 
             let lca_internal = lca_locked_unknown.assert_internal();
 
             let result = try_to_find_n_subranges::<N, usize, usize>(
-                start_key.share(),
-                end_key.share(),
+                Some(start_key.share()),
+                Some(end_key.share()),
                 lca_internal,
                 start_idx,
                 end_idx,
             );
 
             println!("Scenario 2 Result: {:?}", result);
-            assert_subranges(&result, &start_key.share(), &end_key.share(), N + 1, N + 1);
+            assert_subranges(
+                &result,
+                Some(start_key.share()),
+                Some(end_key.share()),
+                N + 1,
+                N + 1,
+            );
         }
     }
 
@@ -347,8 +391,8 @@ mod test {
         let num_rows = 100_000;
         let tree = make_tree(num_rows);
         let results = scan_parallel(
-            OwnedThinArc::new(0).share(),
-            OwnedThinArc::new(100_000).share(),
+            Some(OwnedThinArc::new(0).share()),
+            Some(OwnedThinArc::new(100_000).share()),
             |v: &usize| v % 100 == 0,
             &tree,
         );
