@@ -95,10 +95,6 @@ impl NodeHeader {
     pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {
         self.lock.lock_optimistic()
     }
-    pub fn unlock_optimistic(&self) {
-        self.lock.unlock_exclusive();
-    }
-
     pub fn validate_optimistic(&self, version: LockInfo) -> Result<(), ()> {
         if self.lock.validate_optimistic_read(version) {
             Ok(())
