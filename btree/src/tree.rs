@@ -25,7 +25,16 @@ use crate::splitting::{
     insert_into_leaf_after_splitting_returning_leaf_with_new_entry,
 };
 use crate::sync::Ordering;
+use std::ops::{Bound, RangeBounds};
 use std::fmt::Debug;
+
+fn convert_bound<K: BTreeKey + ?Sized>(bound: Bound<&SharedThinArc<K>>) -> Bound<SharedThinArc<K>> {
+    match bound {
+        Bound::Included(k) => Bound::Included(k.clone()),
+        Bound::Excluded(k) => Bound::Excluded(k.clone()),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
 
 pub trait BTreeKey: PartialOrd + Ord + Debug + Send + Sync + Arcable + 'static {}
 pub trait BTreeValue: Debug + Send + 'static + Pointable + 'static {}
@@ -94,11 +103,12 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
     pub fn scan_parallel(
         &self,
-        start_key: SharedThinArc<K>,
-        end_key: SharedThinArc<K>,
+        range: impl RangeBounds<SharedThinArc<K>>,
         predicate: impl Fn(&V) -> bool + Sync,
     ) -> Vec<SharedThinPtr<V>> {
-        scan_parallel(Some(start_key), Some(end_key), predicate, self)
+        let start_bound = convert_bound(range.start_bound());
+        let end_bound = convert_bound(range.end_bound());
+        scan_parallel(start_bound, end_bound, predicate, self)
     }
 
     pub fn len(&self) -> usize {

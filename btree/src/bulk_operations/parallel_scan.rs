@@ -12,26 +12,29 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 // maybe avoid allocating into a vec
 // test the subranges to see if they're any good
 
+use std::ops::Bound;
+
 pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    start_key: Option<SharedThinArc<K>>,
-    end_key: Option<SharedThinArc<K>>,
+    start_bound: Bound<SharedThinArc<K>>,
+    end_bound: Bound<SharedThinArc<K>>,
     predicate: impl Fn(&V) -> bool + Sync,
     tree: &BTree<K, V>,
 ) -> Vec<SharedThinPtr<V>> {
     let root = tree.root.as_node_ref();
+    let start_key = match &start_bound {
+        Bound::Included(k) | Bound::Excluded(k) => Some(k.clone()),
+        Bound::Unbounded => None,
+    };
+    let end_key = match &end_bound {
+        Bound::Included(k) | Bound::Excluded(k) => Some(k.clone()),
+        Bound::Unbounded => None,
+    };
     let (lca, start_child_index, end_child_index) =
-        find_least_common_ancestor(start_key, end_key, root.lock_shared());
+        find_least_common_ancestor(start_key.clone(), end_key.clone(), root.lock_shared());
+
     if lca.is_leaf() {
-        // scan the leaf
-        let mut result = vec![];
-        let lca_leaf = lca.assert_leaf();
-        for v in lca_leaf.storage.iter_values() {
-            if predicate(&v) {
-                result.push(v);
-            }
-        }
-        lca_leaf.unlock_shared();
-        result
+        lca.unlock_shared();
+        scan_range(tree, start_bound, end_bound, &predicate)
     } else {
         let internal = lca.assert_internal();
         let separator_keys = try_to_find_n_subranges::<8, K, V>(
@@ -43,49 +46,81 @@ pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
         );
         let subranges = separator_keys
             .windows(2)
-            .map(|w| (w[0], w[1]))
+            .enumerate()
+            .map(|(i, w)| {
+                let start = if i == 0 {
+                    start_bound.clone()
+                } else {
+                    match w[0] {
+                        Some(key) => Bound::Included(key.clone()),
+                        None => Bound::Unbounded,
+                    }
+                };
+                let end = if i == separator_keys.len() - 2 {
+                    end_bound.clone()
+                } else {
+                    match w[1] {
+                        Some(key) => Bound::Excluded(key.clone()),
+                        None => Bound::Unbounded,
+                    }
+                };
+                (start, end)
+            })
             .collect::<Vec<_>>();
 
         qsbr_pool().install(|| {
             subranges
                 .into_par_iter()
                 .flat_map_iter(|(start, end)| {
-                    let mut cursor = tree.cursor();
-
-                    match start {
-                        Some(start) => {
-                            cursor.seek(&start);
-                        }
-                        None => {
-                            cursor.seek_to_start();
-                        }
-                    }
-
-                    let mut result = vec![];
-                    loop {
-                        let maybe_curr = cursor.current();
-                        match maybe_curr {
-                            Some(curr) => {
-                                if let Some(end_key) = end {
-                                    if curr.key() >= &end_key {
-                                        break;
-                                    }
-                                }
-                                if predicate(curr.value()) {
-                                    result.push(curr.value_shared_ptr());
-                                }
-                                cursor.move_next();
-                            }
-                            None => {
-                                break;
-                            }
-                        }
-                    }
-                    result.into_iter()
+                    scan_range(tree, start, end, &predicate).into_iter()
                 })
                 .collect()
         })
     }
+}
+
+fn scan_range<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+    tree: &BTree<K, V>,
+    start: Bound<SharedThinArc<K>>,
+    end: Bound<SharedThinArc<K>>,
+    predicate: &(impl Fn(&V) -> bool + Sync),
+) -> Vec<SharedThinPtr<V>> {
+    let mut cursor = tree.cursor();
+    match &start {
+        Bound::Included(k) => cursor.seek(k),
+        Bound::Excluded(k) => {
+            cursor.seek(k);
+            if let Some(curr) = cursor.current() {
+                if k == curr.key() {
+                    cursor.move_next();
+                }
+            }
+        }
+        Bound::Unbounded => cursor.seek_to_start(),
+    }
+
+    let mut result = Vec::new();
+    loop {
+        let maybe_curr = cursor.current();
+        match maybe_curr {
+            Some(curr) => {
+                let stop = match &end {
+                    Bound::Included(k) => curr.key() > k,
+                    Bound::Excluded(k) => curr.key() >= k,
+                    Bound::Unbounded => false,
+                };
+                if stop {
+                    break;
+                }
+                if predicate(curr.value()) {
+                    result.push(curr.value_shared_ptr());
+                }
+                cursor.move_next();
+            }
+            None => break,
+        }
+    }
+    result
 }
 
 // returns N+1 keys, which can be used to split the range [start_key, end_key) into N subranges
@@ -232,6 +267,7 @@ mod test {
     use crate::array_types::ORDER;
     use crate::node::Height;
     use crate::pointers::{OwnedThinArc, OwnedThinPtr};
+    use std::ops::Bound;
 
     use super::*;
 
@@ -391,8 +427,8 @@ mod test {
         let num_rows = 100_000;
         let tree = make_tree(num_rows);
         let results = scan_parallel(
-            Some(OwnedThinArc::new(0).share()),
-            Some(OwnedThinArc::new(100_000).share()),
+            Bound::Included(OwnedThinArc::new(0).share()),
+            Bound::Excluded(OwnedThinArc::new(100_000).share()),
             |v: &usize| v % 100 == 0,
             &tree,
         );
@@ -404,6 +440,38 @@ mod test {
                 actual, expected,
                 "The collected results do not match the expected values."
             );
+        }
+    }
+
+    #[qsbr_test]
+    fn it_parallel_scans_inclusive_end() {
+        let tree = make_tree(20);
+        let results = scan_parallel(
+            Bound::Included(OwnedThinArc::new(5).share()),
+            Bound::Included(OwnedThinArc::new(10).share()),
+            |_| true,
+            &tree,
+        );
+
+        let expected: Vec<usize> = (5..=10).collect();
+        for (actual, expected_val) in results.into_iter().zip(expected) {
+            assert_eq!(actual, expected_val);
+        }
+    }
+
+    #[qsbr_test]
+    fn it_parallel_scans_unbounded() {
+        let tree = make_tree(20);
+        let results = scan_parallel(
+            Bound::Unbounded,
+            Bound::Included(OwnedThinArc::new(4).share()),
+            |_| true,
+            &tree,
+        );
+
+        let expected: Vec<usize> = (0..=4).collect();
+        for (actual, expected_val) in results.into_iter().zip(expected) {
+            assert_eq!(actual, expected_val);
         }
     }
 }
