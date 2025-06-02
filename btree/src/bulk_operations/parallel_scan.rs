@@ -406,4 +406,46 @@ mod test {
             );
         }
     }
+
+    #[qsbr_test]
+    fn it_parallel_scans_single_leaf() {
+        let num_rows = ORDER - 1;
+        let tree = make_tree(num_rows);
+        let results = scan_parallel(
+            Some(OwnedThinArc::new(0).share()),
+            Some(OwnedThinArc::new(num_rows).share()),
+            |_v: &usize| true,
+            &tree,
+        );
+
+        let expected_values: Vec<usize> = (0..num_rows).collect();
+
+        for (actual, expected) in results.into_iter().zip(expected_values) {
+            assert_eq!(
+                actual, expected,
+                "The collected results do not match the expected values.",
+            );
+        }
+    }
+
+    #[qsbr_test]
+    fn it_parallel_scans_small_tree() {
+        let num_rows = ORDER * 2;
+        let tree = make_tree(num_rows);
+        let results = scan_parallel(
+            Some(OwnedThinArc::new(0).share()),
+            Some(OwnedThinArc::new(num_rows).share()),
+            |_v: &usize| true,
+            &tree,
+        );
+
+        let expected_values: Vec<usize> = (0..num_rows).collect();
+
+        for (actual, expected) in results.into_iter().zip(expected_values) {
+            assert_eq!(
+                actual, expected,
+                "The collected results do not match the expected values.",
+            );
+        }
+    }
 }
