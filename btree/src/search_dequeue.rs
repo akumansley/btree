@@ -161,4 +161,27 @@ mod tests {
         assert_eq!(dequeue.len(), 0);
         OwnedThinPtr::drop_immediately(node_ptr);
     }
+
+    #[test]
+    fn test_push_overflow() {
+        let mut dequeue: SearchDequeue<i32, i32> = SearchDequeue::new();
+
+        // Allocate one more node than the queue can hold.
+        let mut nodes: Vec<OwnedThinPtr<LeafNode<i32, i32>>> =
+            (0..=MAX_STACK_SIZE).map(|_| create_dummy_leaf_node_ptr()).collect();
+
+        // Catch the overflow panic so we can clean up the allocated nodes.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for node_ptr in &nodes {
+                let node_ref = SharedNodeRef::from_leaf_ptr(node_ptr.share());
+                dequeue.push_node_on_bottom(node_ref);
+            }
+        }));
+
+        assert!(result.is_err());
+
+        for node_ptr in nodes {
+            OwnedThinPtr::drop_immediately(node_ptr);
+        }
+    }
 }
