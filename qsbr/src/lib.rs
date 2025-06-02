@@ -1,13 +1,29 @@
 use fxhash::FxHashSet;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::{collections::VecDeque, sync::OnceLock};
 
-/// A memory reclaimer using intervals to defer resource reclamation until all threads are quiescent
-/// Threads must register before using the reclaimer
+/// A memory reclaimer using intervals to defer resource reclamation until all threads are quiescent.
+/// Threads must register before using the reclaimer.
+///
+/// ## Background garbage collection
+///
+/// When constructed with [`MemoryReclaimer::new_with_background`], a dedicated
+/// garbage collection thread is spawned. The background thread sleeps on a
+/// [`Condvar`] and is notified whenever callbacks are ready to run. Callbacks
+/// are queued in a shared list protected by a mutex so the background thread
+/// can drain them without blocking application threads.
+///
+/// If callbacks from a previous interval remain queued when a new interval
+/// completes, the producing thread drains the stalled callbacks and executes
+/// them itself before waking the background worker. This ensures threads help
+/// out when the collector falls behind without imposing a hard backlog
+/// threshold.
 pub struct MemoryReclaimer {
-    inner: Mutex<MemoryReclaimerInner>,
+    inner: Arc<Mutex<MemoryReclaimerInner>>,
+    condvar: Arc<Condvar>,
+    background_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 type ThreadId = u64;
@@ -29,11 +45,15 @@ struct MemoryReclaimerInner {
     /// Callbacks accumulated in the previous interval; these are executed
     /// when an interval completes
     previous_interval_callbacks: VecDeque<Box<dyn FnOnce() + Send>>,
+    /// Callbacks ready for execution by the background thread
+    ready_callbacks: VecDeque<Box<dyn FnOnce() + Send>>,
     /// Threads that have registered with the reclaimer
     registered_threads: FxHashSet<ThreadId>,
     /// Registered threads that have signaled quiescence in the current interval
     quiesced_threads: FxHashSet<ThreadId>,
 }
+
+
 
 #[cfg(not(feature = "shuttle"))]
 std::thread_local! {
@@ -61,13 +81,56 @@ struct ThreadState {
 impl MemoryReclaimer {
     fn new() -> Self {
         Self {
-            inner: Mutex::new(MemoryReclaimerInner {
+            inner: Arc::new(Mutex::new(MemoryReclaimerInner {
                 current_interval_callbacks: VecDeque::new(),
                 previous_interval_callbacks: VecDeque::new(),
+                ready_callbacks: VecDeque::new(),
                 registered_threads: FxHashSet::default(),
                 quiesced_threads: FxHashSet::default(),
-            }),
+            })),
+            condvar: Arc::new(Condvar::new()),
+            background_thread: None,
         }
+    }
+
+    /// Creates a reclaimer with a background garbage collection thread.
+    pub fn new_with_background() -> Self {
+        let mut r = Self {
+            inner: Arc::new(Mutex::new(MemoryReclaimerInner {
+                current_interval_callbacks: VecDeque::new(),
+                previous_interval_callbacks: VecDeque::new(),
+                ready_callbacks: VecDeque::new(),
+                registered_threads: FxHashSet::default(),
+                quiesced_threads: FxHashSet::default(),
+            })),
+            condvar: Arc::new(Condvar::new()),
+            background_thread: None,
+        };
+        r.start_background_thread();
+        r
+    }
+
+    /// Spawns the worker responsible for reclaiming memory in the background.
+    ///
+    /// The worker waits on a [`Condvar`] whenever the queue of ready callbacks
+    /// is empty.  Producers notify this condition variable when they enqueue
+    /// new callbacks.  The worker drains the queue outside the lock and then
+    /// goes back to sleep, minimizing contention with mutator threads.
+    fn start_background_thread(&mut self) {
+        let inner = Arc::clone(&self.inner);
+        let condvar = Arc::clone(&self.condvar);
+        self.background_thread = Some(std::thread::spawn(move || loop {
+            let callbacks = {
+                let mut inner = inner.lock().unwrap();
+                while inner.ready_callbacks.is_empty() {
+                    inner = condvar.wait(inner).unwrap();
+                }
+                std::mem::take(&mut inner.ready_callbacks)
+            };
+            for cb in callbacks {
+                cb();
+            }
+        }));
     }
 
     /// Registers the current thread
@@ -124,7 +187,7 @@ impl MemoryReclaimer {
         inner.quiesced_threads.insert(thread_id);
 
         // Attempt to complete the interval if all registered threads have quiesced.
-        Self::complete_interval_if_possible(&mut inner);
+        self.complete_interval_if_possible(&mut inner);
     }
 
 
@@ -160,7 +223,7 @@ impl MemoryReclaimer {
                 // Attempt to complete the interval if possible.
                 // (If there are no remaining registered threads, or if all remaining have quiesced,
                 // the interval is complete.)
-                Self::complete_interval_if_possible(&mut inner);
+                self.complete_interval_if_possible(&mut inner);
 
                 // Remove the thread from registration (it will no longer participate in future intervals).
                 inner.registered_threads.remove(&thread_id);
@@ -171,23 +234,47 @@ impl MemoryReclaimer {
     }
 
     /// Completes the interval if all threads are quiescent
-    fn complete_interval_if_possible(inner: &mut MemoryReclaimerInner) {
+    fn complete_interval_if_possible(&self, inner: &mut MemoryReclaimerInner) {
         if inner.quiesced_threads.len() == inner.registered_threads.len() {
-            // Always execute callbacks from the previous interval.
-            while let Some(callback) = inner.previous_interval_callbacks.pop_front() {
-                callback();
-            }
-            // If there's only a single thread (or none) in the interval, free the current interval's garbage
-            // immediately. Otherwise, promote the current interval's callbacks to be freed in the next interval.
+            let mut ready = std::mem::take(&mut inner.previous_interval_callbacks);
             if inner.registered_threads.len() <= 1 {
-                while let Some(callback) = inner.current_interval_callbacks.pop_front() {
-                    callback();
-                }
+                ready.append(&mut inner.current_interval_callbacks);
             } else {
                 inner.previous_interval_callbacks =
                     std::mem::take(&mut inner.current_interval_callbacks);
             }
             inner.quiesced_threads.clear();
+            self.notify_gc_thread_or_perform_gc_if_stalled(ready);
+        }
+    }
+
+    /// Adds callbacks to the background queue and wakes the worker.
+    ///
+    /// If callbacks from a previous interval remain in the queue when this
+    /// method is called, those callbacks are drained and executed on the caller
+    /// thread.  This cooperative approach prevents the background worker from
+    /// falling too far behind when many intervals complete quickly.
+    fn notify_gc_thread_or_perform_gc_if_stalled(
+        &self,
+        mut callbacks: VecDeque<Box<dyn FnOnce() + Send>>,
+    ) {
+        if let Some(_handle) = &self.background_thread {
+            let mut stalled_callbacks = VecDeque::new();
+            {
+                let mut inner = self.inner.lock().unwrap();
+                if !inner.ready_callbacks.is_empty() {
+                    stalled_callbacks = std::mem::take(&mut inner.ready_callbacks);
+                }
+                inner.ready_callbacks.append(&mut callbacks);
+            }
+            self.condvar.notify_one();
+            for cb in stalled_callbacks {
+                cb();
+            }
+        } else {
+            for cb in callbacks {
+                cb();
+            }
         }
     }
 
