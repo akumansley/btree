@@ -117,8 +117,10 @@ fn scan_parallel_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wa
                 for _ in 0..iters {
                     let start_instant = std::time::Instant::now();
                     // tree.scan_parallel is a method on BTree that calls the actual parallel scan logic
-                    let _result =
-                        tree.scan_parallel(start_key.share(), end_key.share(), &predicate);
+                    let _result = tree.scan_parallel(
+                        start_key.share()..end_key.share(),
+                        &predicate,
+                    );
                     sum += start_instant.elapsed();
                 }
 
