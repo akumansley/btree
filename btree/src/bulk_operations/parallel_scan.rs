@@ -176,12 +176,24 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
     // we probably have too many split keys, so we need to select N of them
 
     let num_split_key_candidates = split_key_candidates.len();
-    let stride = num_split_key_candidates / N;
+    let base_stride = num_split_key_candidates / N;
+    let mut remainder = num_split_key_candidates % N;
+    let mut index = 0;
+
     let mut selected_split_keys: Vec<Option<SharedThinArc<K>>> = Vec::new();
     selected_split_keys.push(start_key);
-    for i in 1..N {
-        selected_split_keys.push(Some(split_key_candidates[i * stride]));
+
+    for _ in 1..N {
+        index += base_stride;
+        if remainder > 0 {
+            index += 1;
+            remainder -= 1;
+        }
+        // since `index` represents how many candidates we've consumed, use the
+        // item just before `index` as the next separator
+        selected_split_keys.push(Some(split_key_candidates[index - 1]));
     }
+
     selected_split_keys.push(end_key);
 
     selected_split_keys
@@ -222,6 +234,47 @@ fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
         }
     }
     (current_node, start_child_index, end_child_index)
+}
+
+#[cfg(test)]
+fn leaves_between<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+    tree: &BTree<K, V>,
+    start_key: Option<SharedThinArc<K>>,
+    end_key: Option<SharedThinArc<K>>,
+) -> Vec<*mut ()> {
+    let mut cursor = tree.cursor();
+    match start_key.as_ref() {
+        Some(start) => cursor.seek(start),
+        None => cursor.seek_to_start(),
+    }
+
+    let mut leaves = Vec::new();
+    loop {
+        let leaf_ref = match &cursor.current_leaf {
+            Some(leaf) => *leaf,
+            None => break,
+        };
+        let ptr = leaf_ref.to_shared_leaf_ptr().into_ptr();
+        if leaves.last().copied() != Some(ptr) {
+            leaves.push(ptr);
+        }
+
+        let entry = match cursor.current() {
+            Some(e) => e,
+            None => break,
+        };
+        if let Some(end) = end_key.as_ref() {
+            if entry.key() >= &**end {
+                break;
+            }
+        }
+
+        if !cursor.move_next() {
+            break;
+        }
+    }
+
+    leaves
 }
 
 #[cfg(test)]
@@ -384,6 +437,41 @@ mod test {
                 N + 1,
             );
         }
+    }
+
+    #[qsbr_test]
+    fn test_subrange_leaf_distribution() {
+        const N: usize = 8;
+        let tree = make_tree(ORDER * 64);
+
+        let locked_root = tree.root.as_node_ref().lock_shared();
+        let (lca_locked_unknown, start_idx, end_idx) =
+            find_least_common_ancestor::<usize, usize>(None, None, locked_root);
+
+        let lca_internal = lca_locked_unknown.assert_internal();
+
+        let separators = try_to_find_n_subranges::<N, usize, usize>(
+            None,
+            None,
+            lca_internal,
+            start_idx,
+            end_idx,
+        );
+
+        let mut leaf_counts = Vec::new();
+        for range in separators.windows(2) {
+            let leaves = leaves_between(&tree, range[0], range[1]);
+            leaf_counts.push(leaves.len());
+        }
+
+        let min = *leaf_counts.iter().min().unwrap();
+        let max = *leaf_counts.iter().max().unwrap();
+        println!("leaf counts: {:?}", leaf_counts);
+        assert!(
+            max - min <= 1,
+            "Leaf counts not balanced: {:?}",
+            leaf_counts
+        );
     }
 
     #[qsbr_test]
