@@ -2,5 +2,6 @@
 members = [
     "btree",
     "btree-macros",
+    "qsbr",
 ]
 resolver = "3"
