@@ -12,8 +12,8 @@ use std::{
 };
 
 use serde::{
-    de::{SeqAccess, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
+    de::{SeqAccess, Visitor},
 };
 
 use crate::{
@@ -59,7 +59,7 @@ pub trait ThinClone: Pointable {
 
 impl<T: Pointable + Sized + Clone> ThinClone for T {
     unsafe fn clone(ptr: *mut ()) -> *mut () {
-        let value = T::deref(ptr).clone();
+        let value = unsafe { T::deref(ptr).clone() };
         init_thin_sized(value)
     }
 }
@@ -132,19 +132,25 @@ fn init_thin_slice_uninitialized<T>(len: usize) -> *mut () {
 
 impl<T: Send + 'static> Pointable for [T] {
     unsafe fn deref<'a>(ptr: *mut ()) -> &'a Self {
-        let array = &*(ptr as *const Array<T>);
-        slice::from_raw_parts(array.elements.as_ptr() as *const _, array.len)
+        unsafe {
+            let array = &*(ptr as *const Array<T>);
+            slice::from_raw_parts(array.elements.as_ptr() as *const _, array.len)
+        }
     }
 
     unsafe fn deref_mut<'a>(ptr: *mut ()) -> &'a mut Self {
-        let array = &mut *(ptr as *mut Array<T>);
-        slice::from_raw_parts_mut(array.elements.as_mut_ptr() as *mut _, array.len)
+        unsafe {
+            let array = &mut *(ptr as *mut Array<T>);
+            slice::from_raw_parts_mut(array.elements.as_mut_ptr() as *mut _, array.len)
+        }
     }
 
     unsafe fn drop(ptr: *mut ()) {
-        let len = (*(ptr as *mut Array<T>)).len;
-        let layout = Array::<T>::layout(len);
-        alloc::dealloc(ptr as *mut u8, layout);
+        unsafe {
+            let len = (*(ptr as *mut Array<T>)).len;
+            let layout = Array::<T>::layout(len);
+            alloc::dealloc(ptr as *mut u8, layout);
+        }
     }
 }
 
@@ -153,7 +159,7 @@ where
     [T]: Pointable,
 {
     unsafe fn clone(ptr: *mut ()) -> *mut () {
-        let slice = <[T] as Pointable>::deref(ptr);
+        let slice = unsafe { <[T] as Pointable>::deref(ptr) };
         init_thin_slice(slice)
     }
 }
@@ -178,7 +184,7 @@ fn init_thin_str<'a>(init: &'a str) -> *mut () {
 
 impl Pointable for str {
     unsafe fn deref<'a>(ptr: *mut ()) -> &'a Self {
-        let array = &*(ptr as *const Array<u8>);
+        let array = unsafe { &*(ptr as *const Array<u8>) };
         unsafe {
             std::str::from_utf8_unchecked(slice::from_raw_parts(
                 array.elements.as_ptr() as *const _,
@@ -188,7 +194,7 @@ impl Pointable for str {
     }
 
     unsafe fn deref_mut<'a>(ptr: *mut ()) -> &'a mut Self {
-        let array = &mut *(ptr as *mut Array<u8>);
+        let array = unsafe { &mut *(ptr as *mut Array<u8>) };
         unsafe {
             std::str::from_utf8_unchecked_mut(slice::from_raw_parts_mut(
                 array.elements.as_mut_ptr() as *mut _,
@@ -198,15 +204,17 @@ impl Pointable for str {
     }
 
     unsafe fn drop(ptr: *mut ()) {
-        let len = (*(ptr as *mut Array<u8>)).len;
-        let layout = Array::<u8>::layout(len);
-        alloc::dealloc(ptr as *mut u8, layout);
+        unsafe {
+            let len = (*(ptr as *mut Array<u8>)).len;
+            let layout = Array::<u8>::layout(len);
+            alloc::dealloc(ptr as *mut u8, layout);
+        }
     }
 }
 
 impl ThinClone for str {
     unsafe fn clone(ptr: *mut ()) -> *mut () {
-        let s = <str as Pointable>::deref(ptr);
+        let s = unsafe { <str as Pointable>::deref(ptr) };
         init_thin_str(s)
     }
 }
@@ -481,7 +489,7 @@ impl<T: Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
         if ptr.is_null() {
             panic!("Attempted to load null pointer into owned");
         } else {
-            Some(OwnedThinPtr::from_ptr(ptr))
+            unsafe { Some(OwnedThinPtr::from_ptr(ptr)) }
         }
     }
 }

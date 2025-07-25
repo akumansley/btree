@@ -10,14 +10,14 @@ use std::{
 };
 
 use serde::{
-    de::{SeqAccess, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
+    de::{SeqAccess, Visitor},
 };
 
 use crate::qsbr_reclaimer;
 use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
 
-use super::{traits::SendPtr, AtomicPointerArrayValue};
+use super::{AtomicPointerArrayValue, traits::SendPtr};
 
 struct RefCount {
     count: AtomicUsize,
@@ -181,7 +181,7 @@ impl Arcable for str {
     }
 
     unsafe fn deref_arc<'a>(ptr: *mut ()) -> &'a Self {
-        let array = &*(ptr as *const ArcArray<u8>);
+        let array = unsafe { &*(ptr as *const ArcArray<u8>) };
         unsafe {
             std::str::from_utf8_unchecked(slice::from_raw_parts(
                 array.elements.as_ptr() as *const _,
@@ -191,7 +191,7 @@ impl Arcable for str {
     }
 
     unsafe fn deref_mut_arc<'a>(ptr: *mut ()) -> &'a mut Self {
-        let array = &mut *(ptr as *mut ArcArray<u8>);
+        let array = unsafe { &mut *(ptr as *mut ArcArray<u8>) };
         unsafe {
             std::str::from_utf8_unchecked_mut(slice::from_raw_parts_mut(
                 array.elements.as_mut_ptr() as *mut _,
@@ -201,9 +201,11 @@ impl Arcable for str {
     }
 
     unsafe fn drop_arc(ptr: *mut ()) {
-        let len = (*(ptr as *mut ArcArray<u8>)).len;
-        let layout = ArcArray::<u8>::layout(len);
-        alloc::dealloc(ptr as *mut u8, layout);
+        unsafe {
+            let len = (*(ptr as *mut ArcArray<u8>)).len;
+            let layout = ArcArray::<u8>::layout(len);
+            alloc::dealloc(ptr as *mut u8, layout);
+        }
     }
 }
 
@@ -256,19 +258,25 @@ impl<T> Arcable for [T] {
     }
 
     unsafe fn deref_arc<'a>(ptr: *mut ()) -> &'a Self {
-        let array = &*(ptr as *const ArcArray<T>);
-        unsafe { slice::from_raw_parts(array.elements.as_ptr() as *const _, array.len) }
+        unsafe {
+            let array = &*(ptr as *const ArcArray<T>);
+            slice::from_raw_parts(array.elements.as_ptr() as *const _, array.len)
+        }
     }
 
     unsafe fn deref_mut_arc<'a>(ptr: *mut ()) -> &'a mut Self {
-        let array = &mut *(ptr as *mut ArcArray<T>);
-        unsafe { slice::from_raw_parts_mut(array.elements.as_mut_ptr() as *mut _, array.len) }
+        unsafe {
+            let array = &mut *(ptr as *mut ArcArray<T>);
+            slice::from_raw_parts_mut(array.elements.as_mut_ptr() as *mut _, array.len)
+        }
     }
 
     unsafe fn drop_arc(ptr: *mut ()) {
-        let len = (*(ptr as *mut ArcArray<T>)).len;
-        let layout = ArcArray::<T>::layout(len);
-        alloc::dealloc(ptr as *mut u8, layout);
+        unsafe {
+            let len = (*(ptr as *mut ArcArray<T>)).len;
+            let layout = ArcArray::<T>::layout(len);
+            alloc::dealloc(ptr as *mut u8, layout);
+        }
     }
 }
 
@@ -386,7 +394,9 @@ impl<T: ?Sized + Arcable> OwnedThinArc<T> {
         let ptr = thin_arc.ptr;
         mem::forget(thin_arc);
         if T::decrement_ref_count(ptr.as_ptr()) {
-            T::drop_arc(ptr.as_ptr());
+            unsafe {
+                T::drop_arc(ptr.as_ptr());
+            }
         }
     }
 
@@ -442,7 +452,7 @@ impl<T> OwnedThinArc<[MaybeUninit<T>]> {
     }
 
     pub unsafe fn assume_init(self) -> OwnedThinArc<[T]> {
-        OwnedThinArc::from_ptr(self.into_ptr())
+        unsafe { OwnedThinArc::from_ptr(self.into_ptr()) }
     }
 }
 
