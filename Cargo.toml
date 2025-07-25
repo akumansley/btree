@@ -3,4 +3,4 @@ members = [
     "btree",
     "btree-macros",
 ]
-resolver = "2"
+resolver = "3"
