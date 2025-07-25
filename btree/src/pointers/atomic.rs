@@ -12,8 +12,8 @@ use std::{
 };
 
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::{
@@ -321,6 +321,42 @@ impl<T: Send + 'static + Clone> OwnedThinPtr<[T]> {
     }
 }
 
+pub struct ThinSliceIntoIter<T: Send + 'static> {
+    ptr: OwnedThinPtr<[T]>,
+    position: usize,
+}
+
+impl<T: Pointable> Iterator for ThinSliceIntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let array_ptr = self.ptr.as_ptr() as *const Array<T>;
+        unsafe {
+            let len = (*array_ptr).len;
+            if self.position < len {
+                let elements_ptr = (*array_ptr).elements.as_ptr();
+                let item = elements_ptr.add(self.position).read().assume_init_read();
+                self.position += 1;
+                Some(item)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+impl<T: Send + 'static> IntoIterator for OwnedThinPtr<[T]> {
+    type Item = T;
+    type IntoIter = ThinSliceIntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ThinSliceIntoIter {
+            ptr: self,
+            position: 0,
+        }
+    }
+}
+
 impl<T: Send + 'static> OwnedThinPtr<[MaybeUninit<T>]> {
     pub fn new_uninitialized(len: usize) -> Self {
         OwnedThinPtr::new_with(|| init_thin_slice_uninitialized::<T>(len))
@@ -608,6 +644,17 @@ mod tests {
         let mut hasher3 = DefaultHasher::new();
         ptr3.hash(&mut hasher3);
         assert_ne!(hasher1.finish(), hasher3.finish());
+    }
+
+    #[qsbr_test]
+    fn test_into_iter() {
+        let ptr = OwnedThinPtr::new_from_slice(&[1, 2, 3, 4, 5]);
+        let vec: Vec<usize> = ptr.into_iter().collect();
+        assert_eq!(vec, vec![1, 2, 3, 4, 5]);
+
+        let ptr = OwnedThinPtr::new_from_slice(&[]);
+        let vec: Vec<usize> = ptr.into_iter().collect();
+        assert_eq!(vec, Vec::<usize>::default())
     }
 
     #[qsbr_test]
