@@ -68,6 +68,7 @@ dependencies = [
  "serde_json",
  "shuttle",
  "smallvec",
+ "thin",
  "usync",
 ]
 
@@ -699,6 +700,15 @@ name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+
+[[package]]
+name = "thin"
+version = "0.1.0"
+dependencies = [
+ "qsbr",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "tinytemplate"

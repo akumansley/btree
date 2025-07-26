@@ -1,4 +1,4 @@
-use btree::{qsbr_reclaimer, BTree, OwnedThinArc, OwnedThinPtr};
+use btree::{qsbr_reclaimer, BTree, OwnedThinArc};
 use criterion::measurement::WallTime;
 use criterion::{
     criterion_group, criterion_main, Bencher, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode,
@@ -8,6 +8,7 @@ use rand::{Rng, SeedableRng};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
+use thin::QsOwned;
 
 use std::time::Duration;
 
@@ -42,7 +43,7 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                                     let value = format!("value{}", key);
                                     tree.insert(
                                         OwnedThinArc::new(key),
-                                        OwnedThinPtr::new_from_str(&value),
+                                        QsOwned::new_from_str(&value),
                                     );
                                 }
                                 threads_done.fetch_add(1, Ordering::Relaxed);
@@ -83,7 +84,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                     for i in 0..NUM_OPERATIONS / 10 {
                         pairs.push((
                             OwnedThinArc::new(i),
-                            OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                            QsOwned::new_from_str(&format!("value{}", i)),
                         ));
                     }
                     let tree = BTree::bulk_load(pairs);
@@ -106,7 +107,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                             let value = format!("value{}", key);
                                             tree.insert(
                                                 OwnedThinArc::new(key),
-                                                OwnedThinPtr::new_from_str(&value),
+                                                QsOwned::new_from_str(&value),
                                             );
                                         }
                                         1 => {
@@ -160,7 +161,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                     for i in 0..NUM_OPERATIONS / 10 {
                         pairs.push((
                             OwnedThinArc::new(i),
-                            OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                            QsOwned::new_from_str(&format!("value{}", i)),
                         ));
                     }
                     let tree = BTree::bulk_load(pairs);
@@ -185,7 +186,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                             let value = format!("value{}", key);
                                             tree.insert(
                                                 OwnedThinArc::new(key),
-                                                OwnedThinPtr::new_from_str(&value),
+                                                QsOwned::new_from_str(&value),
                                             );
                                         }
                                         1 => {
@@ -197,7 +198,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                             let value = format!("newvalue{}", key);
                                             tree.insert(
                                                 OwnedThinArc::new(key),
-                                                OwnedThinPtr::new_from_str(&value),
+                                                QsOwned::new_from_str(&value),
                                             );
                                         }
                                         _ => {

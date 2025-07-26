@@ -1,18 +1,4 @@
-use std::{ptr::NonNull, sync::atomic::Ordering};
-
-pub struct SendPtr {
-    ptr: NonNull<()>,
-}
-
-unsafe impl Send for SendPtr {}
-impl SendPtr {
-    pub fn new(ptr: NonNull<()>) -> Self {
-        Self { ptr }
-    }
-    pub fn into_ptr(self) -> NonNull<()> {
-        self.ptr
-    }
-}
+use std::sync::atomic::Ordering;
 
 pub trait AtomicPointerArrayValue<T: Send + 'static + ?Sized> {
     type OwnedPointer: 'static;

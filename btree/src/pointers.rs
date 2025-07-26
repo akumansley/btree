@@ -5,7 +5,7 @@ pub mod traits;
 
 pub use self::{
     arc::{Arcable, OwnedAtomicThinArc, OwnedThinArc, SharedThinArc},
-    atomic::{OwnedThinAtomicPtr, OwnedThinPtr, Pointable, SharedThinPtr},
+    atomic::OwnedThinAtomicPtr,
     node_ref::{marker, OwnedNodeRef, SharedDiscriminatedNode, SharedNodeRef},
     traits::AtomicPointerArrayValue,
 };

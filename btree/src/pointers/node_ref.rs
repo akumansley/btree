@@ -11,7 +11,7 @@ use crate::root_node::{RootNode, RootNodeInner};
 use crate::tree::{BTreeKey, BTreeValue};
 use marker::{LockState, NodeType};
 
-use super::atomic::{OwnedThinPtr, SharedThinPtr};
+use thin::{QsOwned, QsShared};
 
 pub enum DescriminatedNode {
     Leaf,
@@ -355,12 +355,12 @@ pub mod marker {
 }
 
 pub struct OwnedNodeRef<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> {
-    node: ManuallyDrop<OwnedThinPtr<NodeHeader>>,
+    node: ManuallyDrop<QsOwned<NodeHeader>>,
     lock_info: LockInfo,
     phantom: PhantomData<(*const K, *const V, L, N)>,
 }
 pub struct SharedNodeRef<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> {
-    node: ManuallyDrop<SharedThinPtr<NodeHeader>>,
+    node: ManuallyDrop<QsShared<NodeHeader>>,
     lock_info: LockInfo,
     phantom: PhantomData<(*const K, *const V, L, N)>,
 }
@@ -368,7 +368,7 @@ pub struct SharedNodeRef<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockSt
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
     OwnedNodeRef<K, V, L, N>
 {
-    pub fn into_ptr(mut self) -> OwnedThinPtr<NodeHeader> {
+    pub fn into_ptr(mut self) -> QsOwned<NodeHeader> {
         let ptr = unsafe { ManuallyDrop::take(&mut self.node) };
         mem::forget(self);
         ptr
@@ -378,13 +378,13 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
     SharedNodeRef<K, V, L, N>
 {
-    pub fn into_ptr(mut self) -> SharedThinPtr<NodeHeader> {
+    pub fn into_ptr(mut self) -> QsShared<NodeHeader> {
         unsafe { ManuallyDrop::take(&mut self.node) }
     }
 }
 
-impl_node_ref_traits!(OwnedNodeRef, OwnedDiscriminatedNode, OwnedThinPtr);
-impl_node_ref_traits!(SharedNodeRef, SharedDiscriminatedNode, SharedThinPtr);
+impl_node_ref_traits!(OwnedNodeRef, OwnedDiscriminatedNode, QsOwned);
+impl_node_ref_traits!(SharedNodeRef, SharedDiscriminatedNode, QsShared);
 
 macro_rules! impl_deref_for_node_ref {
     ($node_type:ident, $inner_type:ident, $to_shared_fn:ident, $node_ref_type:ident, $lock_state:path) => {
@@ -518,17 +518,17 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
     pub fn drop_immediately(mut self) {
         match self.node_type() {
             DescriminatedNode::Leaf => unsafe {
-                OwnedThinPtr::drop_immediately(
+                QsOwned::drop_immediately(
                     ManuallyDrop::take(&mut self.node).cast::<LeafNode<K, V>>(),
                 );
             },
             DescriminatedNode::Root => unsafe {
-                OwnedThinPtr::drop_immediately(
+                QsOwned::drop_immediately(
                     ManuallyDrop::take(&mut self.node).cast::<RootNode<K, V>>(),
                 );
             },
             DescriminatedNode::Internal => unsafe {
-                OwnedThinPtr::drop_immediately(
+                QsOwned::drop_immediately(
                     ManuallyDrop::take(&mut self.node).cast::<InternalNode<K, V>>(),
                 );
             },
@@ -541,7 +541,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Dr
     for OwnedNodeRef<K, V, L, N>
 {
     fn drop(&mut self) {
-        // these are OwnedThinPtrs, so they'll drop using QSBR
+        // these are QsOwned, so they'll drop using QSBR
         match self.node_type() {
             DescriminatedNode::Leaf => unsafe {
                 drop(ManuallyDrop::take(&mut self.node).cast::<LeafNode<K, V>>())
@@ -562,13 +562,13 @@ macro_rules! impl_node_ptr_conversions {
         impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
             OwnedNodeRef<K, V, L, $node_marker>
         {
-            pub fn $shared_fn_name(&self) -> SharedThinPtr<$node_type<K, V>> {
+            pub fn $shared_fn_name(&self) -> QsShared<$node_type<K, V>> {
                 let shared = self.node.share();
                 unsafe { shared.cast::<$node_type<K, V>>() }
             }
 
             #[allow(unused)]
-            pub fn $into_fn_name(mut self) -> OwnedThinPtr<$node_type<K, V>> {
+            pub fn $into_fn_name(mut self) -> QsOwned<$node_type<K, V>> {
                 let ptr = unsafe { ManuallyDrop::take(&mut self.node).cast::<$node_type<K, V>>() };
                 mem::forget(self);
                 ptr
@@ -578,7 +578,7 @@ macro_rules! impl_node_ptr_conversions {
         impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
             SharedNodeRef<K, V, L, $node_marker>
         {
-            pub fn $shared_fn_name(&self) -> SharedThinPtr<$node_type<K, V>> {
+            pub fn $shared_fn_name(&self) -> QsShared<$node_type<K, V>> {
                 let shared = self.node.share();
                 unsafe { shared.cast::<$node_type<K, V>>() }
             }
@@ -617,44 +617,44 @@ impl_from_unknown_node_ptr!(
     OwnedNodeRef,
     from_unknown_node_ptr,
     marker::Unknown,
-    OwnedThinPtr<NodeHeader>
+    QsOwned<NodeHeader>
 );
 
 impl_from_unknown_node_ptr!(
     SharedNodeRef,
     from_unknown_node_ptr,
     marker::Unknown,
-    SharedThinPtr<NodeHeader>
+    QsShared<NodeHeader>
 );
 
 impl_from_unknown_node_ptr!(
     OwnedNodeRef,
     from_internal_ptr,
     marker::Internal,
-    OwnedThinPtr<InternalNode<K, V>>
+    QsOwned<InternalNode<K, V>>
 );
 impl_from_unknown_node_ptr!(
     OwnedNodeRef,
     from_leaf_ptr,
     marker::Leaf,
-    OwnedThinPtr<LeafNode<K, V>>
+    QsOwned<LeafNode<K, V>>
 );
 
 impl_from_unknown_node_ptr!(
     SharedNodeRef,
     from_internal_ptr,
     marker::Internal,
-    SharedThinPtr<InternalNode<K, V>>
+    QsShared<InternalNode<K, V>>
 );
 impl_from_unknown_node_ptr!(
     SharedNodeRef,
     from_leaf_ptr,
     marker::Leaf,
-    SharedThinPtr<LeafNode<K, V>>
+    QsShared<LeafNode<K, V>>
 );
 impl_from_unknown_node_ptr!(
     SharedNodeRef,
     from_root_ptr,
     marker::Root,
-    SharedThinPtr<RootNode<K, V>>
+    QsShared<RootNode<K, V>>
 );

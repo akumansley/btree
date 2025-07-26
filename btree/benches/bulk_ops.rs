@@ -1,6 +1,7 @@
-use btree::{qsbr_reclaimer, BTree, OwnedThinArc, OwnedThinPtr};
+use btree::{qsbr_reclaimer, BTree, OwnedThinArc};
 use criterion::{criterion_group, criterion_main, Bencher, BenchmarkGroup, BenchmarkId, Criterion};
 use std::time::Duration;
+use thin::QsOwned;
 
 const NUM_ELEMENTS: usize = 10_000_000;
 
@@ -17,7 +18,7 @@ fn bulk_load_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::WallTi
                     for i in 0..num_elements {
                         pairs.push((
                             OwnedThinArc::new(i),
-                            OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                            QsOwned::new_from_str(&format!("value{}", i)),
                         ));
                     }
 
@@ -51,7 +52,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                 for i in 0..num_elements {
                     pairs.push((
                         OwnedThinArc::new(i),
-                        OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                        QsOwned::new_from_str(&format!("value{}", i)),
                     ));
                 }
                 let tree: BTree<usize, str> = BTree::bulk_load_parallel(pairs);
@@ -63,7 +64,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                     for i in 0..num_elements {
                         updates.push((
                             OwnedThinArc::new(i),
-                            OwnedThinPtr::new_from_str(&format!("updated_value - {}, {}", iter, i)),
+                            QsOwned::new_from_str(&format!("updated_value - {}, {}", iter, i)),
                         ));
                     }
 
@@ -94,8 +95,8 @@ fn scan_parallel_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wa
                 let mut pairs = Vec::with_capacity(num_elements);
                 for i in 0..num_elements {
                     pairs.push((
-                        OwnedThinArc::new(i),                               // K: usize
-                        OwnedThinPtr::new_from_str(&format!("value{}", i)), // V: str
+                        OwnedThinArc::new(i),                          // K: usize
+                        QsOwned::new_from_str(&format!("value{}", i)), // V: str
                     ));
                 }
                 let tree: BTree<usize, str> = BTree::bulk_load_parallel(pairs);

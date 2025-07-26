@@ -10,14 +10,15 @@ use std::{
 };
 
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::qsbr_reclaimer;
 use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
 
-use super::{AtomicPointerArrayValue, traits::SendPtr};
+use super::AtomicPointerArrayValue;
+use thin::SendPtr;
 
 struct RefCount {
     count: AtomicUsize,

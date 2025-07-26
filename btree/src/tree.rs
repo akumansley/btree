@@ -1,4 +1,5 @@
-use crate::SharedThinPtr;
+use thin::Pointable;
+
 use crate::array_types::MIN_KEYS_PER_NODE;
 use crate::bulk_operations::{
     bulk_insert_or_update_from_sorted_kv_pairs_parallel, bulk_load_from_sorted_kv_pairs,
@@ -9,10 +10,8 @@ use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
-use crate::pointers::node_ref::{SharedDiscriminatedNode, marker};
-use crate::pointers::{
-    Arcable, OwnedThinArc, OwnedThinPtr, Pointable, SharedNodeRef, SharedThinArc,
-};
+use crate::pointers::node_ref::{marker, SharedDiscriminatedNode};
+use crate::pointers::{Arcable, OwnedThinArc, SharedNodeRef, SharedThinArc};
 use crate::reference::Ref;
 use crate::root_node::RootNode;
 use crate::search::{
@@ -21,11 +20,12 @@ use crate::search::{
     get_leaf_shared_using_optimistic_search_with_fallback,
 };
 use crate::splitting::{
-    EntryLocation, insert_into_leaf_after_splitting,
-    insert_into_leaf_after_splitting_returning_leaf_with_new_entry,
+    insert_into_leaf_after_splitting,
+    insert_into_leaf_after_splitting_returning_leaf_with_new_entry, EntryLocation,
 };
 use crate::sync::Ordering;
 use std::fmt::Debug;
+use thin::{QsOwned, QsShared};
 
 pub trait BTreeKey: PartialOrd + Ord + Debug + Send + Sync + Arcable + 'static {}
 pub trait BTreeValue: Debug + Send + 'static + Pointable + 'static {}
@@ -59,21 +59,21 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         }
     }
 
-    pub fn bulk_load(sorted_kv_pairs: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>) -> Self {
+    pub fn bulk_load(sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>) -> Self {
         bulk_load_from_sorted_kv_pairs(sorted_kv_pairs)
     }
-    pub fn bulk_load_parallel(sorted_kv_pairs: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>) -> Self {
+    pub fn bulk_load_parallel(sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>) -> Self {
         bulk_load_from_sorted_kv_pairs_parallel(sorted_kv_pairs)
     }
-    pub fn bulk_update_parallel(&self, updates: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>) {
+    pub fn bulk_update_parallel(&self, updates: Vec<(OwnedThinArc<K>, QsOwned<V>)>) {
         bulk_update_from_sorted_kv_pairs_parallel(updates, self)
     }
     pub fn bulk_insert_or_update_parallel<F>(
         &self,
-        entries: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>,
+        entries: Vec<(OwnedThinArc<K>, QsOwned<V>)>,
         update_fn: &F,
     ) where
-        F: Fn(SharedThinPtr<V>) -> OwnedThinPtr<V> + Send + Sync,
+        F: Fn(QsShared<V>) -> QsOwned<V> + Send + Sync,
     {
         bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
@@ -97,7 +97,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         start_key: SharedThinArc<K>,
         end_key: SharedThinArc<K>,
         predicate: impl Fn(&V) -> bool + Sync,
-    ) -> Vec<SharedThinPtr<V>> {
+    ) -> Vec<QsShared<V>> {
         scan_parallel(Some(start_key), Some(end_key), predicate, self)
     }
 
@@ -105,7 +105,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         self.root.len.load(Ordering::Relaxed)
     }
 
-    pub fn insert(&self, key: OwnedThinArc<K>, value: OwnedThinPtr<V>) {
+    pub fn insert(&self, key: OwnedThinArc<K>, value: QsOwned<V>) {
         debug_println!("top-level insert {:?}", key);
 
         // first try fully optimistic search
@@ -160,7 +160,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         debug_println!("top-level insert done");
     }
 
-    pub fn get_or_insert(&self, key: OwnedThinArc<K>, value: OwnedThinPtr<V>) -> CursorMut<K, V> {
+    pub fn get_or_insert(&self, key: OwnedThinArc<K>, value: QsOwned<V>) -> CursorMut<K, V> {
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
             &key,
@@ -197,7 +197,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     pub(crate) fn get_or_insert_pessimistic(
         &self,
         key: OwnedThinArc<K>,
-        value: OwnedThinPtr<V>,
+        value: QsOwned<V>,
     ) -> (EntryLocation<K, V>, bool) {
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
             self.root.as_node_ref().lock_exclusive(),
@@ -395,7 +395,7 @@ mod tests {
         let n = NUM_OPERATIONS;
         for i in 1..=n {
             let value = format!("value{}", i);
-            tree.insert(OwnedThinArc::new(i), OwnedThinPtr::new(value.clone()));
+            tree.insert(OwnedThinArc::new(i), QsOwned::new(value.clone()));
             tree.check_invariants();
             let result = tree.get(&i);
             assert_eq!(result.as_deref(), Some(&value));
@@ -472,7 +472,7 @@ mod tests {
                         // Random insert
                         let key = rng.random_range(0..1000);
                         let value = format!("value{}", key);
-                        tree.insert(OwnedThinArc::new(key), OwnedThinPtr::new(value.clone()));
+                        tree.insert(OwnedThinArc::new(key), QsOwned::new(value.clone()));
                         reference_map.insert(key, value);
                         tree.check_invariants();
                     }
@@ -559,7 +559,7 @@ mod tests {
                             0 => {
                                 let key = rng.random_range(0..1000);
                                 let value = format!("value{}", key);
-                                tree_ref.insert(OwnedThinArc::new(key), OwnedThinPtr::new(value));
+                                tree_ref.insert(OwnedThinArc::new(key), QsOwned::new(value));
                             }
                             1 => {
                                 let key = rng.random_range(0..1000);
@@ -607,7 +607,7 @@ mod tests {
             println!("Case 1: Insert into empty tree");
             // Case 1: Insert into empty tree
             let mut cursor =
-                tree.get_or_insert(OwnedThinArc::new(5), OwnedThinPtr::new_from_str("value5"));
+                tree.get_or_insert(OwnedThinArc::new(5), QsOwned::new_from_str("value5"));
             assert_eq!(cursor.current().unwrap().key(), &5);
             assert_eq!(cursor.current().unwrap().value(), &"value5".to_string());
 
@@ -619,10 +619,8 @@ mod tests {
         {
             println!("Case 2: Get existing entry");
             // Case 2: Get existing entry
-            let cursor = tree.get_or_insert(
-                OwnedThinArc::new(5),
-                OwnedThinPtr::new_from_str("new_value5"),
-            );
+            let cursor =
+                tree.get_or_insert(OwnedThinArc::new(5), QsOwned::new_from_str("new_value5"));
             assert_eq!(cursor.current().unwrap().key(), &5);
             assert_eq!(cursor.current().unwrap().value(), &"value5".to_string());
             // Should keep old value
@@ -631,7 +629,7 @@ mod tests {
             println!("Case 3: Insert when there's capacity (no split needed)");
             // Case 3: Insert when there's capacity (no split needed)
             let mut cursor =
-                tree.get_or_insert(OwnedThinArc::new(3), OwnedThinPtr::new_from_str("value3"));
+                tree.get_or_insert(OwnedThinArc::new(3), QsOwned::new_from_str("value3"));
             assert_eq!(cursor.current().unwrap().key(), &3);
             assert_eq!(cursor.current().unwrap().value(), &"value3".to_string());
 
@@ -647,7 +645,7 @@ mod tests {
             for i in 0..ORDER {
                 let cursor = tree.get_or_insert(
                     OwnedThinArc::new(i * 2),
-                    OwnedThinPtr::new_from_str(&format!("value{}", i * 2)),
+                    QsOwned::new_from_str(&format!("value{}", i * 2)),
                 );
                 assert_eq!(cursor.current().unwrap().key(), &(i * 2));
                 assert_eq!(
@@ -660,7 +658,7 @@ mod tests {
             let split_key = ORDER * 2;
             let mut cursor = tree.get_or_insert(
                 OwnedThinArc::new(split_key),
-                OwnedThinPtr::new_from_str(&format!("value{}", split_key)),
+                QsOwned::new_from_str(&format!("value{}", split_key)),
             );
 
             // Verify cursor points to the correct entry after split
@@ -691,7 +689,7 @@ mod tests {
         // Insert enough elements to ensure multiple leaves
         let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), OwnedThinPtr::new(format!("{}", i)));
+            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("{}", i)));
         }
 
         // Test 1: Remove only even numbers
@@ -754,7 +752,7 @@ mod tests {
                 for i in 0..50 {
                     tree.insert(
                         OwnedThinArc::new(i),
-                        OwnedThinPtr::new_from_str(&format!("initial-value-{}", i)),
+                        QsOwned::new_from_str(&format!("initial-value-{}", i)),
                     );
                 }
 
@@ -777,7 +775,7 @@ mod tests {
 
                             // Insert the key-value pair
                             tree_clone
-                                .insert(OwnedThinArc::new(key), OwnedThinPtr::new_from_str(&value));
+                                .insert(OwnedThinArc::new(key), QsOwned::new_from_str(&value));
 
                             // Verify the insertion worked
                             let result = tree_clone.get(&key);
@@ -884,10 +882,7 @@ mod tests {
 
             // Insert 10 elements
             for i in 0..10 {
-                tree.insert(
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                );
+                tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
                 assert_eq!(
                     tree.len(),
                     i + 1,
@@ -914,10 +909,7 @@ mod tests {
         {
             let mut pairs = Vec::new();
             for i in 0..100 {
-                pairs.push((
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                ));
+                pairs.push((OwnedThinArc::new(i), QsOwned::new(format!("value{}", i))));
             }
             let tree = BTree::bulk_load(pairs);
             assert_eq!(tree.len(), 100, "Tree length should be 100 after bulk_load");
@@ -929,10 +921,7 @@ mod tests {
         {
             let mut pairs = Vec::new();
             for i in 0..100 {
-                pairs.push((
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                ));
+                pairs.push((OwnedThinArc::new(i), QsOwned::new(format!("value{}", i))));
             }
             let tree = BTree::bulk_load_parallel(pairs);
             assert_eq!(
@@ -951,7 +940,7 @@ mod tests {
             for i in 0..10 {
                 let cursor = tree.get_or_insert(
                     OwnedThinArc::new(i),
-                    OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                    QsOwned::new_from_str(&format!("value{}", i)),
                 );
                 assert_eq!(
                     tree.len(),
@@ -967,7 +956,7 @@ mod tests {
             for i in 0..10 {
                 let cursor = tree.get_or_insert(
                     OwnedThinArc::new(i),
-                    OwnedThinPtr::new_from_str(&format!("new_value{}", i)),
+                    QsOwned::new_from_str(&format!("new_value{}", i)),
                 );
                 assert_eq!(
                     tree.len(),
@@ -989,17 +978,17 @@ mod tests {
             for i in 0..20 {
                 tree.insert(
                     OwnedThinArc::new(i),
-                    OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                    QsOwned::new_from_str(&format!("value{}", i)),
                 );
             }
             assert_eq!(tree.len(), 20, "Tree length should be 20 after inserts");
 
             // Update existing elements
-            let updates: Vec<(OwnedThinArc<usize>, OwnedThinPtr<str>)> = (0..20)
+            let updates: Vec<(OwnedThinArc<usize>, QsOwned<str>)> = (0..20)
                 .map(|i| {
                     (
                         OwnedThinArc::new(i),
-                        OwnedThinPtr::new_from_str(&format!("updated_value{}", i)),
+                        QsOwned::new_from_str(&format!("updated_value{}", i)),
                     )
                 })
                 .collect();
@@ -1022,7 +1011,7 @@ mod tests {
                 if i % 2 == 0 {
                     tree.insert(
                         OwnedThinArc::new(i),
-                        OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                        QsOwned::new_from_str(&format!("value{}", i)),
                     );
                 }
             }
@@ -1033,25 +1022,25 @@ mod tests {
             );
 
             // Mix of updates (even numbers) and inserts (odd numbers)
-            let entries: Vec<(OwnedThinArc<usize>, OwnedThinPtr<str>)> = (0..20)
+            let entries: Vec<(OwnedThinArc<usize>, QsOwned<str>)> = (0..20)
                 .map(|i| {
                     if i % 2 == 0 {
                         (
                             OwnedThinArc::new(i),
-                            OwnedThinPtr::new_from_str(&format!("updated_value{}", i)),
+                            QsOwned::new_from_str(&format!("updated_value{}", i)),
                         )
                     } else {
                         (
                             OwnedThinArc::new(i),
-                            OwnedThinPtr::new_from_str(&format!("value{}", i)),
+                            QsOwned::new_from_str(&format!("value{}", i)),
                         )
                     }
                 })
                 .collect();
 
             // Define update function
-            let update_fn = |old_value: SharedThinPtr<str>| {
-                OwnedThinPtr::new_from_str(&format!("updated_{}", old_value.deref()))
+            let update_fn = |old_value: QsShared<str>| {
+                QsOwned::new_from_str(&format!("updated_{}", old_value.deref()))
             };
 
             tree.bulk_insert_or_update_parallel(entries, &update_fn);

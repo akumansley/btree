@@ -1,13 +1,16 @@
 use std::marker::PhantomData;
 
+use thin::QsOwned;
+
 use crate::leaf_node::LeafNode;
 use crate::node::{Height, NodeHeader};
 use crate::pointers::node_ref::{marker, OwnedNodeRef, SharedDiscriminatedNode, SharedNodeRef};
 use crate::pointers::OwnedThinAtomicPtr;
 use crate::sync::{AtomicUsize, Ordering};
 use crate::tree::BTreeValue;
-use crate::{BTreeKey, SharedThinPtr};
+use crate::BTreeKey;
 use std::cell::UnsafeCell;
+use thin::QsShared;
 
 #[repr(C)]
 pub struct RootNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
@@ -40,8 +43,8 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
         RootNode {
             header: NodeHeader::new(Height::Root),
             inner: UnsafeCell::new(RootNodeInner {
-                top_of_tree: OwnedThinAtomicPtr::new_with(|| {
-                    Box::into_raw(Box::new(LeafNode::<K, V>::new())) as *mut ()
+                top_of_tree: OwnedThinAtomicPtr::new(unsafe {
+                    QsOwned::new(LeafNode::<K, V>::new()).cast::<NodeHeader>()
                 }),
                 phantom: PhantomData,
             }),
@@ -50,7 +53,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
     }
 
     pub fn as_node_ref(&self) -> SharedNodeRef<K, V, marker::Unlocked, marker::Root> {
-        let root_ptr = unsafe { SharedThinPtr::from_ptr(self as *const _ as *mut ()) };
+        let root_ptr = unsafe { QsShared::from_ptr(self as *const _ as *mut ()) };
         SharedNodeRef::from_root_ptr(root_ptr).assume_unlocked()
     }
 
@@ -106,7 +109,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
     }
 }
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNodeInner<K, V> {
-    pub fn top_of_tree(&self) -> SharedThinPtr<NodeHeader> {
+    pub fn top_of_tree(&self) -> QsShared<NodeHeader> {
         self.top_of_tree.load_shared(Ordering::Relaxed).unwrap()
     }
 }

@@ -101,13 +101,14 @@ mod tests {
     use super::*;
     use crate::{
         leaf_node::LeafNode,
-        pointers::{node_ref::SharedNodeRef, OwnedThinPtr},
+        pointers::node_ref::SharedNodeRef,
         tree::{BTreeKey, BTreeValue},
     };
+    use thin::QsOwned;
 
     fn create_dummy_leaf_node_ptr<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    ) -> OwnedThinPtr<LeafNode<K, V>> {
-        OwnedThinPtr::new(LeafNode::<K, V>::new())
+    ) -> QsOwned<LeafNode<K, V>> {
+        QsOwned::new(LeafNode::<K, V>::new())
     }
 
     #[test]
@@ -123,7 +124,7 @@ mod tests {
         let popped_node = dequeue.pop_lowest();
         assert_eq!(dequeue.len(), 0);
         assert!(popped_node.is_leaf());
-        OwnedThinPtr::drop_immediately(node_ptr);
+        QsOwned::drop_immediately(node_ptr);
     }
 
     #[test]
@@ -138,7 +139,7 @@ mod tests {
 
         dequeue.pop_lowest();
         assert!(dequeue.is_empty());
-        OwnedThinPtr::drop_immediately(node_ptr);
+        QsOwned::drop_immediately(node_ptr);
     }
 
     #[test]
@@ -159,6 +160,6 @@ mod tests {
 
         dequeue.pop_lowest();
         assert_eq!(dequeue.len(), 0);
-        OwnedThinPtr::drop_immediately(node_ptr);
+        QsOwned::drop_immediately(node_ptr);
     }
 }

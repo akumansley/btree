@@ -1,16 +1,17 @@
 use std::fmt::{Debug, Display};
 use std::ops::Deref;
 
-use crate::pointers::{SharedThinArc, SharedThinPtr};
+use crate::pointers::SharedThinArc;
 use crate::tree::{BTreeKey, BTreeValue};
+use thin::QsShared;
 
 pub struct Ref<V: BTreeValue + ?Sized> {
-    value: SharedThinPtr<V>,
+    value: QsShared<V>,
     _phantom: std::marker::PhantomData<V>,
 }
 
 impl<V: BTreeValue + ?Sized> Ref<V> {
-    pub fn new(value: SharedThinPtr<V>) -> Self {
+    pub fn new(value: QsShared<V>) -> Self {
         Ref {
             value,
             _phantom: std::marker::PhantomData,
@@ -57,11 +58,11 @@ where
 }
 pub struct Entry<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     key: SharedThinArc<K>,
-    value: SharedThinPtr<V>,
+    value: QsShared<V>,
 }
 
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Entry<K, V> {
-    pub fn new(key: SharedThinArc<K>, value: SharedThinPtr<V>) -> Self {
+    pub fn new(key: SharedThinArc<K>, value: QsShared<V>) -> Self {
         Entry { key, value }
     }
 }
@@ -76,17 +77,17 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Entry<K, V> {
     pub fn into_value(self) -> ValueRef<V> {
         ValueRef::new(self.value)
     }
-    pub fn value_shared_ptr(&self) -> SharedThinPtr<V> {
+    pub fn value_shared_ptr(&self) -> QsShared<V> {
         self.value
     }
 }
 
 pub struct ValueRef<V: BTreeValue + ?Sized> {
-    value: SharedThinPtr<V>,
+    value: QsShared<V>,
 }
 
 impl<V: BTreeValue + ?Sized> ValueRef<V> {
-    pub fn new(value: SharedThinPtr<V>) -> Self {
+    pub fn new(value: QsShared<V>) -> Self {
         ValueRef { value }
     }
 }

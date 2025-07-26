@@ -1,6 +1,7 @@
 use crate::coalescing::UnderfullNodePosition;
 use crate::pointers::{OwnedNodeRef, SharedThinArc};
 use crate::pointers::{SharedDiscriminatedNode, SharedNodeRef};
+use crate::OwnedThinArc;
 use crate::{
     array_types::{
         InternalNodeStorage, MAX_CHILDREN_PER_NODE, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE,
@@ -10,10 +11,10 @@ use crate::{
     tree::{BTreeKey, BTreeValue, ModificationType},
     util::UnwrapEither,
 };
-use crate::{OwnedThinArc, OwnedThinPtr, SharedThinPtr};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
+use thin::{QsOwned, QsShared};
 
 // this is the shared node data
 pub struct InternalNodeInner<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
@@ -81,18 +82,18 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         }
     }
 
-    pub fn insert(&mut self, key: OwnedThinArc<K>, new_child: OwnedThinPtr<NodeHeader>) {
+    pub fn insert(&mut self, key: OwnedThinArc<K>, new_child: QsOwned<NodeHeader>) {
         let insertion_point = self.storage.binary_search_keys(key.deref()).unwrap_either();
 
         self.storage
             .insert_child_with_split_key(key, new_child, insertion_point);
     }
 
-    pub fn get_first_child(&self) -> SharedThinPtr<NodeHeader> {
+    pub fn get_first_child(&self) -> QsShared<NodeHeader> {
         self.storage.get_child(0)
     }
 
-    pub fn get_last_child(&self) -> SharedThinPtr<NodeHeader> {
+    pub fn get_last_child(&self) -> QsShared<NodeHeader> {
         // there's always (keys + 1) children
         self.storage.get_child(self.num_keys())
     }
@@ -104,17 +105,14 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         }
     }
 
-    pub fn find_child(&self, search_key: &K) -> SharedThinPtr<NodeHeader> {
+    pub fn find_child(&self, search_key: &K) -> QsShared<NodeHeader> {
         let index = self.index_of_child_containing_key(search_key);
         // SAFETY: This may be an optimistic read, so we might be reading an index that exceeds the current number of children
         // but because node drops are protected by qsbr, that's okay -- we'll find a retired node.
         unsafe { self.storage.get_child_unchecked(index) }
     }
 
-    pub fn get_key_for_non_leftmost_child(
-        &self,
-        child: SharedThinPtr<NodeHeader>,
-    ) -> SharedThinArc<K> {
+    pub fn get_key_for_non_leftmost_child(&self, child: QsShared<NodeHeader>) -> SharedThinArc<K> {
         let index = self
             .storage
             .iter_children()
@@ -168,8 +166,8 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
 
     fn get_neighbor(
         &self,
-        child: SharedThinPtr<NodeHeader>,
-    ) -> (SharedThinPtr<NodeHeader>, UnderfullNodePosition) {
+        child: QsShared<NodeHeader>,
+    ) -> (QsShared<NodeHeader>, UnderfullNodePosition) {
         if child == self.storage.get_child(0) {
             return (self.storage.get_child(1), UnderfullNodePosition::Leftmost);
         }
@@ -220,8 +218,8 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
 
     pub(crate) fn remove_child(
         &mut self,
-        child: SharedThinPtr<NodeHeader>,
-    ) -> (OwnedThinArc<K>, OwnedThinPtr<NodeHeader>) {
+        child: QsShared<NodeHeader>,
+    ) -> (OwnedThinArc<K>, QsOwned<NodeHeader>) {
         debug_println!(
             "removing child {:?} from internal node {:?}",
             child,
@@ -279,7 +277,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     // we also assume the caller has accounted for any reference count changes on the key
     pub(crate) fn update_split_key(
         &mut self,
-        node: SharedThinPtr<NodeHeader>,
+        node: QsShared<NodeHeader>,
         new_split_key: OwnedThinArc<K>,
     ) -> OwnedThinArc<K> {
         debug_println!(

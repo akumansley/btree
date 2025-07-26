@@ -1,15 +1,13 @@
-use crate::{
-    pointers::{OwnedThinArc, OwnedThinPtr, SharedThinPtr},
-    sync::AtomicUsize,
-};
+use crate::{pointers::OwnedThinArc, sync::AtomicUsize};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use std::sync::Arc;
+use thin::{QsOwned, QsShared};
 
 use crate::{array_types::ORDER, BTree, BTreeKey, BTreeValue};
 use qsbr::{qsbr_pool, qsbr_reclaimer};
 
 pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    sorted_kv_pairs: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>,
+    sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>,
     tree: &BTree<K, V>,
 ) {
     let pool = qsbr_pool();
@@ -33,9 +31,9 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeV
 pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
-    F: Fn(SharedThinPtr<V>) -> OwnedThinPtr<V> + Send + Sync,
+    F: Fn(QsShared<V>) -> QsOwned<V> + Send + Sync,
 >(
-    sorted_kv_pairs: Vec<(OwnedThinArc<K>, OwnedThinPtr<V>)>,
+    sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>,
     update_fn: &F,
     tree: &BTree<K, V>,
 ) {
@@ -89,19 +87,16 @@ mod tests {
 
         // Insert initial values
         for i in 0..num_elements {
-            tree.insert(
-                OwnedThinArc::new(i),
-                OwnedThinPtr::new(format!("value{}", i)),
-            );
+            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Create updates with modified values
         let updates_for_comparison: Vec<(usize, String)> = (0..num_elements)
             .map(|i| (i, format!("updated_value{}", i)))
             .collect();
-        let updates: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = updates_for_comparison
+        let updates: Vec<(OwnedThinArc<usize>, QsOwned<String>)> = updates_for_comparison
             .iter()
-            .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
+            .map(|(key, value)| (OwnedThinArc::new(*key), QsOwned::new(value.clone())))
             .collect();
 
         // Perform bulk update
@@ -139,10 +134,7 @@ mod tests {
         // Insert initial values (even numbers)
         for i in 0..num_elements {
             if i % 2 == 0 {
-                tree.insert(
-                    OwnedThinArc::new(i),
-                    OwnedThinPtr::new(format!("value{}", i)),
-                );
+                tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
             }
         }
 
@@ -158,15 +150,15 @@ mod tests {
                 }
             })
             .collect();
-        let entries: Vec<(OwnedThinArc<usize>, OwnedThinPtr<String>)> = entries_for_comparison
+        let entries: Vec<(OwnedThinArc<usize>, QsOwned<String>)> = entries_for_comparison
             .iter()
-            .map(|(key, value)| (OwnedThinArc::new(*key), OwnedThinPtr::new(value.clone())))
+            .map(|(key, value)| (OwnedThinArc::new(*key), QsOwned::new(value.clone())))
             .collect();
 
         // Define update function that appends "_updated" to existing values
-        let update_fn = |old_value: SharedThinPtr<String>| {
+        let update_fn = |old_value: QsShared<String>| {
             let old_string = old_value.deref();
-            OwnedThinPtr::new(format!("{}_updated", old_string))
+            QsOwned::new(format!("{}_updated", old_string))
         };
 
         // Perform bulk insert/update

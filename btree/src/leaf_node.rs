@@ -2,16 +2,17 @@ use crate::pointers::atomic::SharedThinAtomicPtr;
 use crate::pointers::node_ref::SharedNodeRef;
 use crate::pointers::{OwnedNodeRef, SharedThinArc};
 use crate::sync::Ordering;
+use crate::OwnedThinArc;
 use crate::{
     array_types::{LeafNodeStorageArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
     node::{Height, NodeHeader},
     pointers::node_ref::marker,
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
-use crate::{OwnedThinArc, OwnedThinPtr, SharedThinPtr};
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::{fmt, ptr};
+use thin::{QsOwned, QsShared};
 
 #[repr(C)]
 pub struct LeafNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
@@ -77,7 +78,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         self.storage.binary_search_keys(search_key)
     }
 
-    pub fn get(&self, search_key: &K) -> Option<(SharedThinArc<K>, SharedThinPtr<V>)> {
+    pub fn get(&self, search_key: &K) -> Option<(SharedThinArc<K>, QsShared<V>)> {
         debug_println!("LeafNode get {:?}", search_key);
         match self.binary_search_key(search_key) {
             Ok(index) => Some((
@@ -92,7 +93,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
             }
         }
     }
-    pub fn insert(&mut self, key_to_insert: OwnedThinArc<K>, value: OwnedThinPtr<V>) -> bool {
+    pub fn insert(&mut self, key_to_insert: OwnedThinArc<K>, value: QsOwned<V>) -> bool {
         match self.binary_search_key(key_to_insert.deref()) {
             Ok(index) => {
                 let old_value = self.storage.set(index, value);
@@ -114,13 +115,13 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     pub fn insert_new_value_at_index(
         &mut self,
         key_to_insert: OwnedThinArc<K>,
-        value: OwnedThinPtr<V>,
+        value: QsOwned<V>,
         index: usize,
     ) {
         self.storage.insert(key_to_insert, value, index);
     }
 
-    pub fn update(&mut self, index: usize, value: OwnedThinPtr<V>) {
+    pub fn update(&mut self, index: usize, value: QsOwned<V>) {
         let old_value = self.storage.set(index, value);
         let owned_value = old_value.unwrap();
         drop(owned_value);

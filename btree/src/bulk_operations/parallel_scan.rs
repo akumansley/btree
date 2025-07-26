@@ -1,13 +1,14 @@
 use crate::{
-    BTree, BTreeKey, BTreeValue, SharedThinPtr,
     node::Height,
     pointers::{
-        SharedNodeRef, SharedThinArc,
         marker::{Internal, LockedShared, Root, Unknown, Unlocked},
+        SharedNodeRef, SharedThinArc,
     },
+    BTree, BTreeKey, BTreeValue,
 };
 use qsbr::qsbr_pool;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use thin::QsShared;
 
 // maybe avoid allocating into a vec
 // test the subranges to see if they're any good
@@ -17,7 +18,7 @@ pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     end_key: Option<SharedThinArc<K>>,
     predicate: impl Fn(&V) -> bool + Sync,
     tree: &BTree<K, V>,
-) -> Vec<SharedThinPtr<V>> {
+) -> Vec<QsShared<V>> {
     let root = tree.root.as_node_ref();
     let (lca, start_child_index, end_child_index) =
         find_least_common_ancestor(start_key, end_key, root.lock_shared());
@@ -281,17 +282,18 @@ fn leaves_between<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 mod test {
     use btree_macros::qsbr_test;
 
-    use crate::BTree;
     use crate::array_types::ORDER;
     use crate::node::Height;
-    use crate::pointers::{OwnedThinArc, OwnedThinPtr};
+    use crate::pointers::OwnedThinArc;
+    use crate::BTree;
+    use thin::QsOwned;
 
     use super::*;
 
     fn make_tree(count: usize) -> BTree<usize, usize> {
         let tree: BTree<usize, usize> = BTree::new();
         for i in 0..count {
-            tree.insert(OwnedThinArc::new(i), OwnedThinPtr::new(i));
+            tree.insert(OwnedThinArc::new(i), QsOwned::new(i));
         }
         tree
     }
