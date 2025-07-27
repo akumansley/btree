@@ -1,4 +1,6 @@
 use super::common::impl_thin_ptr_traits;
+use super::Owned;
+
 use serde::{
     de::{SeqAccess, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -216,5 +218,11 @@ where
         deserializer.deserialize_seq(ThinArrayDeserializer {
             _phantom: std::marker::PhantomData,
         })
+    }
+}
+
+impl<T: ?Sized + Pointable> From<Owned<T>> for QsOwned<T> {
+    fn from(owned: Owned<T>) -> Self {
+        unsafe { QsOwned::from_ptr(owned.into_ptr()) }
     }
 }

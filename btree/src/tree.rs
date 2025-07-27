@@ -105,10 +105,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         self.root.len.load(Ordering::Relaxed)
     }
 
-    pub fn insert(&self, key: OwnedThinArc<K>, value: QsOwned<V>) {
+    pub fn insert(&self, key: OwnedThinArc<K>, value: impl Into<QsOwned<V>>) {
         debug_println!("top-level insert {:?}", key);
 
-        // first try fully optimistic search
+        let value = value.into();
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
             &key,
@@ -160,7 +160,13 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         debug_println!("top-level insert done");
     }
 
-    pub fn get_or_insert(&self, key: OwnedThinArc<K>, value: QsOwned<V>) -> CursorMut<K, V> {
+    pub fn get_or_insert(
+        &self,
+        key: OwnedThinArc<K>,
+        value: impl Into<QsOwned<V>>,
+    ) -> CursorMut<K, V> {
+        let value: QsOwned<V> = value.into();
+
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
             &key,
@@ -378,6 +384,7 @@ pub enum ModificationType {
 mod tests {
     use crate::array_types::ORDER;
     use qsbr::qsbr_reclaimer;
+    use thin::Owned;
 
     use super::*;
     use std::ops::Deref;
@@ -596,6 +603,14 @@ mod tests {
         });
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn insert_owned() {
+        let tree = BTree::<usize, str>::new();
+        let key = OwnedThinArc::new(5);
+        let value = Owned::new_from_str("value5");
+        tree.insert(key, value);
     }
 
     #[test]
