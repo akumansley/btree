@@ -607,6 +607,7 @@ mod tests {
 
     #[test]
     fn insert_owned() {
+        let _guard = qsbr_reclaimer().guard();
         let tree = BTree::<usize, str>::new();
         let key = OwnedThinArc::new(5);
         let value = Owned::new_from_str("value5");

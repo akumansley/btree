@@ -18,6 +18,9 @@ impl<T: Send + 'static> Pointable for [T] {
     }
 
     unsafe fn drop(ptr: *mut ()) {
+        for elem in unsafe { <[T] as Pointable>::deref_mut(ptr) } {
+            ptr::drop_in_place(elem);
+        }
         unsafe {
             let len = (*(ptr as *mut Array<T>)).len;
             let layout = Array::<T>::layout(len);

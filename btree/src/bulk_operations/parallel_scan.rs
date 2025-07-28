@@ -373,6 +373,7 @@ mod test {
     }
 
     #[qsbr_test]
+    #[cfg(not(miri))]
     fn test_try_to_find_n_subranges() {
         const N: usize = 4;
 
@@ -442,6 +443,7 @@ mod test {
     }
 
     #[qsbr_test]
+    #[cfg(not(miri))]
     fn test_subrange_leaf_distribution() {
         const N: usize = 8;
         let tree = make_tree(ORDER * 64);
@@ -478,7 +480,7 @@ mod test {
 
     #[qsbr_test]
     fn it_parallel_scans() {
-        let num_rows = 100_000;
+        let num_rows = if cfg!(miri) { 10 } else { 100_000 };
         let tree = make_tree(num_rows);
         let results = scan_parallel(
             Some(OwnedThinArc::new(0).share()),
@@ -519,6 +521,7 @@ mod test {
     }
 
     #[qsbr_test]
+    #[cfg(not(miri))]
     fn it_parallel_scans_small_tree() {
         let num_rows = ORDER * 2;
         let tree = make_tree(num_rows);

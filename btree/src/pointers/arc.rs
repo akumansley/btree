@@ -273,6 +273,9 @@ impl<T> Arcable for [T] {
     }
 
     unsafe fn drop_arc(ptr: *mut ()) {
+        for elem in unsafe { <[T] as Arcable>::deref_mut_arc(ptr) } {
+            ptr::drop_in_place(elem);
+        }
         unsafe {
             let len = (*(ptr as *mut ArcArray<T>)).len;
             let layout = ArcArray::<T>::layout(len);
