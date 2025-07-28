@@ -1,3 +1,3 @@
 [workspace]
 members = ["btree", "btree-macros", "qsbr", "thin"]
-resolver = "3"
+resolver = "2"

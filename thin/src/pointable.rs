@@ -3,9 +3,9 @@ use std::{alloc::Layout, mem::MaybeUninit};
 mod sized;
 mod slice;
 mod str;
-pub use sized::init_thin_sized;
-pub use slice::{init_thin_slice, init_thin_slice_uninitialized};
-pub use str::init_thin_str;
+pub use self::sized::init_thin_sized;
+pub use self::slice::{init_thin_slice, init_thin_slice_uninitialized};
+pub use self::str::init_thin_str;
 
 /// See crossbeam-epoch::Pointable.
 pub trait Pointable: Send + 'static {
