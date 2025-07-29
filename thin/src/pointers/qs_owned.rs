@@ -143,7 +143,7 @@ impl<T: ?Sized + Pointable> DerefMut for QsOwned<T> {
     }
 }
 
-/** SERDE **/
+/** Serde **/
 
 impl<'de, T> Deserialize<'de> for QsOwned<T>
 where
