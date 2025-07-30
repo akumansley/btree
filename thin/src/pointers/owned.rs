@@ -17,7 +17,7 @@ use std::{
     fmt::{self},
     hash::{Hash, Hasher},
     marker::PhantomData,
-    mem::MaybeUninit,
+    mem::{forget, MaybeUninit},
     ops::{Deref, DerefMut},
     ptr::NonNull,
 };
@@ -34,7 +34,9 @@ impl_thin_ptr_traits!(Owned);
 
 impl<T: Pointable + ?Sized> Owned<T> {
     pub fn into_ptr(self) -> *mut () {
-        self.as_ptr()
+        let ptr = self.as_ptr();
+        forget(self);
+        ptr
     }
 
     pub fn new_with<C: FnOnce() -> *mut ()>(init: C) -> Self {
