@@ -13,6 +13,7 @@ use crate::{
 };
 
 use std::{
+    alloc,
     cmp::Ordering as CmpOrdering,
     fmt::{self},
     hash::{Hash, Hasher},
@@ -99,20 +100,24 @@ impl<T: ?Sized + Pointable> Drop for Owned<T> {
 /* IntoIter */
 
 pub struct ThinSliceIntoIter<T: Send + 'static> {
-    ptr: Owned<[T]>,
+    ptr: *const Array<T>,
+    size: usize,
     position: usize,
+    phantom: PhantomData<*mut T>,
 }
 
 impl<T: Pointable> Iterator for ThinSliceIntoIter<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let array_ptr = self.ptr.as_ptr() as *const Array<T>;
+        let array_ptr = self.ptr as *const Array<T>;
         unsafe {
             let len = (*array_ptr).len;
             if self.position < len {
                 let elements_ptr = (*array_ptr).elements.as_ptr();
                 let item = elements_ptr.add(self.position).read().assume_init_read();
+                // i don't want to clone, but i do want to move out of here
+                // so we don't drop i guess
                 self.position += 1;
                 Some(item)
             } else {
@@ -122,14 +127,32 @@ impl<T: Pointable> Iterator for ThinSliceIntoIter<T> {
     }
 }
 
+impl<T: Send + 'static> Drop for ThinSliceIntoIter<T> {
+    fn drop(&mut self) {
+        let ptr = self.ptr;
+        let size = self.size;
+        // drain the rest
+        for item in self {
+            drop(item);
+        }
+
+        // and then free the array
+        let layout = Array::<T>::layout(size);
+        unsafe { alloc::dealloc(ptr as *mut u8, layout) };
+    }
+}
+
 impl<T: Send + 'static> IntoIterator for Owned<[T]> {
     type Item = T;
     type IntoIter = ThinSliceIntoIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
+        let size = self.len();
         ThinSliceIntoIter {
-            ptr: self,
+            ptr: self.into_ptr() as *const Array<T>,
             position: 0,
+            size,
+            phantom: PhantomData::default(),
         }
     }
 }
@@ -215,5 +238,45 @@ where
         deserializer.deserialize_seq(ThinArrayDeserializer {
             _phantom: std::marker::PhantomData,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Deref;
+
+    use super::Owned;
+
+    #[test]
+    fn test_slice_with_drop() {
+        let value = vec!["foo".to_owned(), "bar".to_owned()];
+        let ptr = Owned::new_from_slice(&value);
+        let vec: Vec<String> = ptr.into_iter().collect();
+        assert_eq!(vec, value);
+    }
+
+    #[test]
+    fn test_into_iter() {
+        let ptr = Owned::new_from_slice(&[1, 2, 3, 4, 5]);
+        let vec: Vec<usize> = ptr.into_iter().collect();
+        assert_eq!(vec, vec![1, 2, 3, 4, 5]);
+
+        let ptr = Owned::new_from_slice(&[]);
+        let vec: Vec<usize> = ptr.into_iter().collect();
+        assert_eq!(vec, Vec::<usize>::default())
+    }
+
+    #[test]
+    fn test_empty() {
+        let ptr = Owned::new_from_slice(&[]);
+        let vec: Vec<usize> = ptr.into_iter().collect();
+        assert_eq!(vec, vec![]);
+    }
+
+    #[test]
+    fn test_empty_str() {
+        let ptr = Owned::new_from_str("");
+        let string = ptr.to_string();
+        assert_eq!(string.as_str(), ptr.deref());
     }
 }

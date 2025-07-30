@@ -153,6 +153,7 @@ mod tests {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::ops::Deref;
+    use thin::Owned;
 
     use super::QsOwned;
 
@@ -169,12 +170,13 @@ mod tests {
         assert_eq!(thin_slice.len(), 3);
         assert_eq!(thin_slice[0], 1);
 
-        let mut thin_slice_uninitialized = QsOwned::new_uninitialized(3);
+        let mut thin_slice_uninitialized = Owned::new_uninitialized(3);
         assert_eq!(thin_slice_uninitialized.len(), 3);
         for i in 0..3 {
             thin_slice_uninitialized[i].write(i as usize);
         }
-        let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
+        let thin_slice_init: QsOwned<[usize]> =
+            unsafe { thin_slice_uninitialized.assume_init().into() };
 
         assert_eq!(thin_slice_init.len(), 3);
         assert_eq!(thin_slice_init[1], 1);
@@ -211,17 +213,6 @@ mod tests {
         let mut hasher3 = DefaultHasher::new();
         ptr3.hash(&mut hasher3);
         assert_ne!(hasher1.finish(), hasher3.finish());
-    }
-
-    #[qsbr_test]
-    fn test_into_iter() {
-        let ptr = QsOwned::new_from_slice(&[1, 2, 3, 4, 5]);
-        let vec: Vec<usize> = ptr.into_iter().collect();
-        assert_eq!(vec, vec![1, 2, 3, 4, 5]);
-
-        let ptr = QsOwned::new_from_slice(&[]);
-        let vec: Vec<usize> = ptr.into_iter().collect();
-        assert_eq!(vec, Vec::<usize>::default())
     }
 
     #[qsbr_test]

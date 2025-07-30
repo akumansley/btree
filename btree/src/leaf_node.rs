@@ -59,7 +59,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNode<K, V> {
         }
     }
 
-    pub unsafe fn get_inner(&mut self) -> &LeafNodeInner<K, V> {
+    pub unsafe fn get_inner(&self) -> &LeafNodeInner<K, V> {
         unsafe { &*self.inner.get() }
     }
 }

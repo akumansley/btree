@@ -49,7 +49,7 @@ pub struct Array<T> {
 }
 
 impl<T> Array<T> {
-    fn layout(len: usize) -> Layout {
+    pub fn layout(len: usize) -> Layout {
         Layout::new::<Self>()
             .extend(Layout::array::<MaybeUninit<T>>(len).unwrap())
             .unwrap()

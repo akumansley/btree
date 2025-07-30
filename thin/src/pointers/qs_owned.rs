@@ -11,13 +11,13 @@ use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
     mem::{forget, MaybeUninit},
-    ops::{Deref, DerefMut},
+    ops::Deref,
     ptr::NonNull,
 };
 
 use crate::{
     pointable::{
-        init_thin_sized, init_thin_slice, init_thin_slice_uninitialized, init_thin_str, Array,
+        init_thin_sized, init_thin_slice, init_thin_slice_uninitialized, init_thin_str,
         PointableClone,
     },
     pointers::{qs_shared::QsShared, SendPtr},
@@ -37,42 +37,6 @@ impl_thin_ptr_traits!(QsOwned);
 impl<T: Send + 'static + Clone> QsOwned<[T]> {
     pub fn new_from_slice(init: &[T]) -> Self {
         QsOwned::new_with(|| init_thin_slice(init))
-    }
-}
-
-pub struct ThinSliceIntoIter<T: Send + 'static> {
-    ptr: QsOwned<[T]>,
-    position: usize,
-}
-
-impl<T: Pointable> Iterator for ThinSliceIntoIter<T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let array_ptr = self.ptr.as_ptr() as *const Array<T>;
-        unsafe {
-            let len = (*array_ptr).len;
-            if self.position < len {
-                let elements_ptr = (*array_ptr).elements.as_ptr();
-                let item = elements_ptr.add(self.position).read().assume_init_read();
-                self.position += 1;
-                Some(item)
-            } else {
-                None
-            }
-        }
-    }
-}
-
-impl<T: Send + 'static> IntoIterator for QsOwned<[T]> {
-    type Item = T;
-    type IntoIter = ThinSliceIntoIter<T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ThinSliceIntoIter {
-            ptr: self,
-            position: 0,
-        }
     }
 }
 
@@ -137,12 +101,6 @@ impl<T: ?Sized + Pointable> Drop for QsOwned<T> {
     }
 }
 
-impl<T: ?Sized + Pointable> DerefMut for QsOwned<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { T::deref_mut(self.as_ptr()) }
-    }
-}
-
 /** Serde **/
 
 impl<'de, T> Deserialize<'de> for QsOwned<T>
@@ -185,7 +143,7 @@ where
         A: SeqAccess<'de>,
     {
         if let Some(len) = seq.size_hint() {
-            let mut uninit = QsOwned::new_uninitialized(len);
+            let mut uninit = Owned::new_uninitialized(len);
             for i in 0..len {
                 if let Some(value) = seq.next_element()? {
                     uninit[i].write(value);
@@ -196,7 +154,7 @@ where
                     ));
                 }
             }
-            Ok(unsafe { uninit.assume_init() })
+            Ok(unsafe { uninit.assume_init().into() })
         } else {
             let mut vec = Vec::new();
             while let Some(value) = seq.next_element()? {
