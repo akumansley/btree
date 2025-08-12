@@ -245,7 +245,9 @@ fn leaves_between<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 ) -> Vec<*mut ()> {
     let mut cursor = tree.cursor();
     match start_key.as_ref() {
-        Some(start) => cursor.seek(start),
+        Some(start) => {
+            cursor.seek(start);
+        }
         None => cursor.seek_to_start(),
     }
 

@@ -11,6 +11,7 @@ use crate::{
     tree::{BTreeKey, BTreeValue, ModificationType},
     util::UnwrapEither,
 };
+use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -98,14 +99,22 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         self.storage.get_child(self.num_keys())
     }
 
-    pub fn index_of_child_containing_key(&self, key: &K) -> usize {
+    pub fn index_of_child_containing_key<Q>(&self, key: &Q) -> usize
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Ord,
+    {
         match self.storage.binary_search_keys(key) {
             Ok(index) => index + 1,
             Err(index) => index,
         }
     }
 
-    pub fn find_child(&self, search_key: &K) -> QsShared<NodeHeader> {
+    pub fn find_child<Q>(&self, search_key: &Q) -> QsShared<NodeHeader>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Ord,
+    {
         let index = self.index_of_child_containing_key(search_key);
         // SAFETY: This may be an optimistic read, so we might be reading an index that exceeds the current number of children
         // but because node drops are protected by qsbr, that's okay -- we'll find a retired node.

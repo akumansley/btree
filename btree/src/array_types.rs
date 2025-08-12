@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, mem::MaybeUninit, ops::Deref};
+use std::{borrow::Borrow, marker::PhantomData, mem::MaybeUninit, ops::Deref};
 
 use crate::{
     pointers::{
@@ -283,11 +283,15 @@ impl<
         self.keys.iter_owned(self.num_keys())
     }
 
-    pub fn binary_search_keys(&self, key: &K) -> Result<usize, usize> {
+    pub fn binary_search_keys<Q>(&self, key: &Q) -> Result<usize, usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let num_keys = self.num_keys();
         self.keys
             .as_slice(num_keys)
-            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().cmp(key))
+            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().borrow().cmp(key))
     }
 
     pub fn get_child(&self, index: usize) -> QsShared<NodeHeader> {
@@ -535,11 +539,15 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
         }
     }
 
-    pub fn binary_search_keys(&self, key: &K) -> Result<usize, usize> {
+    pub fn binary_search_keys<Q>(&self, key: &Q) -> Result<usize, usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let num_keys = self.num_keys();
         self.keys
             .as_slice(num_keys)
-            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().cmp(key))
+            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().borrow().cmp(key))
     }
 
     pub fn drain<'a>(&'a self) -> impl Iterator<Item = (OwnedThinArc<K>, QsOwned<V>)> + 'a {

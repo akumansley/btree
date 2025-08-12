@@ -9,6 +9,7 @@ use crate::{
     pointers::node_ref::marker,
     tree::{BTreeKey, BTreeValue, ModificationType},
 };
+use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::{fmt, ptr};
@@ -74,11 +75,19 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         prev_leaf_ptr.map(|prev_leaf| SharedNodeRef::from_leaf_ptr(prev_leaf).assume_unlocked())
     }
 
-    pub fn binary_search_key(&self, search_key: &K) -> Result<usize, usize> {
+    pub fn binary_search_key<Q>(&self, search_key: &Q) -> Result<usize, usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         self.storage.binary_search_keys(search_key)
     }
 
-    pub fn get(&self, search_key: &K) -> Option<(SharedThinArc<K>, QsShared<V>)> {
+    pub fn get<Q>(&self, search_key: &Q) -> Option<(SharedThinArc<K>, QsShared<V>)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         debug_println!("LeafNode get {:?}", search_key);
         match self.binary_search_key(search_key) {
             Ok(index) => Some((

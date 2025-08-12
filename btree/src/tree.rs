@@ -24,6 +24,7 @@ use crate::splitting::{
     insert_into_leaf_after_splitting_returning_leaf_with_new_entry, EntryLocation,
 };
 use crate::sync::Ordering;
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use thin::{QsOwned, QsShared};
 
@@ -78,7 +79,11 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
 
-    pub fn get(&self, search_key: &K) -> Option<Ref<V>> {
+    pub fn get<Q>(&self, search_key: &Q) -> Option<Ref<V>>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Ord,
+    {
         debug_println!("top-level get {:?}", search_key);
         let leaf_node_shared = get_leaf_shared_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),

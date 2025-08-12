@@ -1,3 +1,6 @@
+use std::borrow::Borrow;
+use std::ops::Deref;
+
 use crate::pointers::node_ref::{marker, SharedNodeRef};
 use crate::pointers::OwnedThinArc;
 use crate::reference::Entry;
@@ -48,23 +51,31 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
         self.current_leaf = Some(leaf);
     }
 
-    pub fn seek(&mut self, key: &K) {
+    pub fn seek<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         // optimistically try the current leaf, but quickly give up and search from the top
         if let Some(leaf) = self.current_leaf.as_ref() {
             let index = leaf.binary_search_key(key).unwrap_either();
             if index < leaf.num_keys() {
                 let leaf_key = leaf.storage.get_key(index);
-                if *leaf_key == *key {
+                if leaf_key.deref().borrow() == key {
                     self.current_index = index;
-                    return;
+                    return true;
                 }
             }
             self.current_leaf.take().unwrap().unlock_shared();
         }
-        self.seek_from_top(key);
+        self.seek_from_top(key)
     }
 
-    fn seek_from_top(&mut self, key: &K) {
+    fn seek_from_top<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         if self.current_leaf.is_some() {
             self.current_leaf.take().unwrap().unlock_shared();
         }
@@ -72,9 +83,10 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             self.tree.root.as_node_ref(),
             key,
         );
-        let index = leaf.binary_search_key(key).unwrap_either();
+        let result = leaf.binary_search_key(key);
         self.current_leaf = Some(leaf);
-        self.current_index = index;
+        self.current_index = result.unwrap_either();
+        result.is_ok()
     }
 
     pub fn current(&self) -> Option<Entry<K, V>> {
@@ -228,13 +240,17 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         self.current_leaf = Some(leaf);
     }
 
-    pub fn seek(&mut self, key: &K) -> bool {
+    pub fn seek<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         // optimistically try the current leaf, but quickly give up and search from the top
         if let Some(leaf) = self.current_leaf.as_ref() {
             let index = leaf.binary_search_key(key).unwrap_either();
             if index < leaf.num_keys() {
                 let leaf_key = leaf.storage.get_key(index);
-                if *leaf_key == *key {
+                if leaf_key.deref().borrow() == key {
                     self.current_index = index;
                     return true;
                 }
@@ -293,7 +309,11 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         }
     }
 
-    fn seek_from_top(&mut self, key: &K) -> bool {
+    fn seek_from_top<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         if self.current_leaf.is_some() {
             self.current_leaf.take().unwrap().unlock_exclusive();
         }

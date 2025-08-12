@@ -123,7 +123,9 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
         let entry = if self.cursor.is_none() {
             let mut cursor = self.tree.cursor();
             match self.start {
-                Some(start) => cursor.seek(start),
+                Some(start) => {
+                    cursor.seek(start);
+                }
                 None => D::start(&mut cursor),
             }
             self.cursor = Some(cursor);

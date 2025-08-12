@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use crate::hybrid_latch::LockError;
 use crate::pointers::node_ref::marker::LockState;
 use crate::pointers::node_ref::{marker, SharedDiscriminatedNode, SharedNodeRef};
@@ -52,9 +54,13 @@ pub fn get_first_leaf_shared_using_shared_search<K: BTreeKey + ?Sized, V: BTreeV
     )
 }
 
-fn get_leaf_shared_using_optimistic_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+fn get_leaf_shared_using_optimistic_search<
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: Ord + ?Sized,
+    V: BTreeValue + ?Sized,
+>(
     root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-    search_key: &K,
+    search_key: &Q,
 ) -> Result<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
@@ -65,11 +71,12 @@ fn get_leaf_shared_using_optimistic_search<K: BTreeKey + ?Sized, V: BTreeValue +
 }
 
 pub fn get_leaf_shared_using_optimistic_search_with_fallback<
-    K: BTreeKey + ?Sized,
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: Ord + ?Sized,
     V: BTreeValue + ?Sized,
 >(
     root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-    search_key: &K,
+    search_key: &Q,
 ) -> SharedNodeRef<K, V, marker::LockedShared, marker::Leaf> {
     match get_leaf_shared_using_optimistic_search(root, search_key) {
         Ok(leaf) => leaf,
@@ -142,9 +149,13 @@ fn do_shared_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LeafLockState:
     leaf
 }
 
-pub fn get_leaf_shared_using_shared_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+pub fn get_leaf_shared_using_shared_search<
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: Ord + ?Sized,
+    V: BTreeValue + ?Sized,
+>(
     root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-    search_key: &K,
+    search_key: &Q,
 ) -> SharedNodeRef<K, V, marker::LockedShared, marker::Leaf> {
     do_shared_search(
         root,
@@ -153,9 +164,13 @@ pub fn get_leaf_shared_using_shared_search<K: BTreeKey + ?Sized, V: BTreeValue +
     )
 }
 
-fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+fn get_leaf_exclusively_using_optimistic_search<
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: Ord + ?Sized,
+    V: BTreeValue + ?Sized,
+>(
     root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-    search_key: &K,
+    search_key: &Q,
 ) -> Result<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
@@ -165,9 +180,13 @@ fn get_leaf_exclusively_using_optimistic_search<K: BTreeKey + ?Sized, V: BTreeVa
     )
 }
 
-fn get_leaf_exclusively_using_shared_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+fn get_leaf_exclusively_using_shared_search<
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: Ord + ?Sized,
+    V: BTreeValue + ?Sized,
+>(
     root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-    search_key: &K,
+    search_key: &Q,
 ) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
     do_shared_search(
         root,
@@ -177,11 +196,12 @@ fn get_leaf_exclusively_using_shared_search<K: BTreeKey + ?Sized, V: BTreeValue 
 }
 
 pub fn get_leaf_exclusively_using_optimistic_search_with_fallback<
-    K: BTreeKey + ?Sized,
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: Ord + ?Sized,
     V: BTreeValue + ?Sized,
 >(
     root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-    search_key: &K,
+    search_key: &Q,
 ) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
     match get_leaf_exclusively_using_optimistic_search(root, search_key) {
         Ok(leaf) => leaf,
