@@ -1,7 +1,6 @@
 use crate::coalescing::UnderfullNodePosition;
-use crate::pointers::{OwnedNodeRef, SharedThinArc};
+use crate::pointers::OwnedNodeRef;
 use crate::pointers::{SharedDiscriminatedNode, SharedNodeRef};
-use crate::OwnedThinArc;
 use crate::{
     array_types::{
         InternalNodeStorage, MAX_CHILDREN_PER_NODE, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE,
@@ -15,7 +14,7 @@ use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
-use thin::{QsOwned, QsShared};
+use thin::{QsArc, QsOwned, QsShared, QsWeak};
 
 // this is the shared node data
 pub struct InternalNodeInner<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
@@ -83,7 +82,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         }
     }
 
-    pub fn insert(&mut self, key: OwnedThinArc<K>, new_child: QsOwned<NodeHeader>) {
+    pub fn insert(&mut self, key: QsArc<K>, new_child: QsOwned<NodeHeader>) {
         let insertion_point = self.storage.binary_search_keys(key.deref()).unwrap_either();
 
         self.storage
@@ -121,7 +120,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         unsafe { self.storage.get_child_unchecked(index) }
     }
 
-    pub fn get_key_for_non_leftmost_child(&self, child: QsShared<NodeHeader>) -> SharedThinArc<K> {
+    pub fn get_key_for_non_leftmost_child(&self, child: QsShared<NodeHeader>) -> QsWeak<K> {
         let index = self
             .storage
             .iter_children()
@@ -228,7 +227,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     pub(crate) fn remove_child(
         &mut self,
         child: QsShared<NodeHeader>,
-    ) -> (OwnedThinArc<K>, QsOwned<NodeHeader>) {
+    ) -> (QsArc<K>, QsOwned<NodeHeader>) {
         debug_println!(
             "removing child {:?} from internal node {:?}",
             child,
@@ -287,8 +286,8 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     pub(crate) fn update_split_key(
         &mut self,
         node: QsShared<NodeHeader>,
-        new_split_key: OwnedThinArc<K>,
-    ) -> OwnedThinArc<K> {
+        new_split_key: QsArc<K>,
+    ) -> QsArc<K> {
         debug_println!(
             "InternalNode update_split_key on parent node {:?} for child {:?} num_keys: {:?}",
             self as *const _,

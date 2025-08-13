@@ -153,11 +153,10 @@ mod tests {
 
     use crate::array_types::ORDER;
     use crate::iter::{BackwardIterDirection, ForwardIterDirection, RangeBTreeIterator};
-    use crate::pointers::OwnedThinArc;
     use crate::qsbr_reclaimer;
     use crate::tree::BTree;
     use std::sync::Barrier;
-    use thin::QsOwned;
+    use thin::{QsArc, QsOwned};
 
     #[qsbr_test]
     fn test_forward_iterator() {
@@ -166,7 +165,7 @@ mod tests {
         // Insert test data
         let n = ORDER * 3; // Multiple leaves
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Test forward iteration
@@ -185,7 +184,7 @@ mod tests {
         // Insert test data
         let n = ORDER * 3; // Multiple leaves
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Test backward iteration
@@ -204,7 +203,7 @@ mod tests {
         // Insert test data
         let n = ORDER * 3;
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Test various range scenarios
@@ -249,7 +248,7 @@ mod tests {
         // Insert test data
         let n = ORDER * 3;
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Test various range scenarios
@@ -310,7 +309,7 @@ mod tests {
     #[qsbr_test]
     fn test_single_element_iterators() {
         let tree = BTree::<usize, String>::new();
-        tree.insert(OwnedThinArc::new(1), QsOwned::new("value1".to_string()));
+        tree.insert(QsArc::new(1), QsOwned::new("value1".to_string()));
 
         // Test forward iterator
         let mut iter = tree.iter();
@@ -339,7 +338,7 @@ mod tests {
         // Test with a single leaf
         let tree = BTree::<usize, String>::new();
         for i in 0..ORDER {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
         let mut iter = tree.iter();
         for i in 0..ORDER {
@@ -350,7 +349,7 @@ mod tests {
         // Test with multiple leaves
         let tree = BTree::<usize, String>::new();
         for i in 0..ORDER * 3 {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
         let mut iter = tree.iter();
         for i in 0..ORDER * 3 {
@@ -366,7 +365,7 @@ mod tests {
 
         // Insert test data
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         let barrier = Barrier::new(2);
@@ -411,7 +410,7 @@ mod tests {
 
         // Insert test data
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Test range with start > end

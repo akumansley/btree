@@ -1,9 +1,8 @@
 use std::fmt::{Debug, Display};
 use std::ops::Deref;
 
-use crate::pointers::SharedThinArc;
 use crate::tree::{BTreeKey, BTreeValue};
-use thin::QsShared;
+use thin::{QsShared, QsWeak};
 
 pub struct Ref<V: BTreeValue + ?Sized> {
     value: QsShared<V>,
@@ -57,12 +56,12 @@ where
     }
 }
 pub struct Entry<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    key: SharedThinArc<K>,
+    key: QsWeak<K>,
     value: QsShared<V>,
 }
 
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Entry<K, V> {
-    pub fn new(key: SharedThinArc<K>, value: QsShared<V>) -> Self {
+    pub fn new(key: QsWeak<K>, value: QsShared<V>) -> Self {
         Entry { key, value }
     }
 }

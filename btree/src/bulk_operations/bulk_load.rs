@@ -2,13 +2,13 @@ use crate::array_types::{MIN_KEYS_PER_NODE, ORDER};
 use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::node::NodeHeader;
-use crate::pointers::{marker, OwnedNodeRef, OwnedThinArc};
+use crate::pointers::{marker, OwnedNodeRef};
 use crate::sync::Ordering;
 use crate::tree::{BTree, BTreeKey, BTreeValue};
 use qsbr::qsbr_pool;
 use rand::Rng;
 use rayon::prelude::*;
-use thin::QsOwned;
+use thin::{QsArc, QsOwned};
 
 fn calculate_chunk_size(
     target_utilization: f64,
@@ -38,11 +38,11 @@ fn calculate_chunk_size(
 }
 
 fn construct_leaf_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    pairs_iter: impl ExactSizeIterator<Item = (OwnedThinArc<K>, QsOwned<V>)>,
+    pairs_iter: impl ExactSizeIterator<Item = (QsArc<K>, QsOwned<V>)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> Vec<(QsOwned<LeafNode<K, V>>, OwnedThinArc<K>)> {
-    let mut leaves: Vec<(QsOwned<LeafNode<K, V>>, OwnedThinArc<K>)> = Vec::new();
+) -> Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)> {
+    let mut leaves: Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)> = Vec::new();
     let mut pairs_iter = pairs_iter.peekable();
 
     while pairs_iter.peek().is_some() {
@@ -83,10 +83,10 @@ fn construct_leaf_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 }
 
 fn construct_internal_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    children_with_split_keys: Vec<(QsOwned<NodeHeader>, OwnedThinArc<K>)>,
+    children_with_split_keys: Vec<(QsOwned<NodeHeader>, QsArc<K>)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> Vec<(QsOwned<InternalNode<K, V>>, OwnedThinArc<K>)> {
+) -> Vec<(QsOwned<InternalNode<K, V>>, QsArc<K>)> {
     let mut internal_nodes = Vec::new();
     let mut children_iter = children_with_split_keys.into_iter().peekable();
 
@@ -129,7 +129,7 @@ fn construct_internal_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 }
 
 fn construct_tree_from_leaves<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    mut leaves: Vec<(QsOwned<LeafNode<K, V>>, OwnedThinArc<K>)>,
+    mut leaves: Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)>,
     target_utilization: f64,
     jitter_range: f64,
 ) -> QsOwned<NodeHeader> {
@@ -139,7 +139,7 @@ fn construct_tree_from_leaves<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     }
 
     // Convert leaves to NodeHeaders for the first level
-    let mut current_level: Vec<(QsOwned<NodeHeader>, OwnedThinArc<K>)> = leaves
+    let mut current_level: Vec<(QsOwned<NodeHeader>, QsArc<K>)> = leaves
         .into_iter()
         .map(|(node, split_key)| (unsafe { node.cast::<NodeHeader>() }, split_key))
         .collect();
@@ -161,7 +161,7 @@ fn construct_tree_from_leaves<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 }
 
 pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>,
+    sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
 ) -> BTree<K, V> {
     let target_utilization = 0.69;
     let jitter_range = 0.1;
@@ -200,7 +200,7 @@ pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey + ?Sized, V: BTreeValue + ?Siz
 }
 
 pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>,
+    sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
 ) -> BTree<K, V> {
     let target_utilization = 0.69;
     let jitter_range = 0.1;
@@ -209,7 +209,7 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeVal
     let num_pairs = sorted_kv_pairs.len();
 
     let pool = qsbr_pool();
-    let leaves: Vec<(QsOwned<LeafNode<K, V>>, OwnedThinArc<K>)> = pool.install(|| {
+    let leaves: Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)> = pool.install(|| {
         let chunks = sorted_kv_pairs.into_par_iter().chunks(ORDER * 8);
         chunks
             .map(|chunk| construct_leaf_level(chunk.into_iter(), target_utilization, jitter_range))
@@ -266,7 +266,9 @@ mod tests {
         let mut pairs = Vec::new();
         let mut pairs_for_comparison = Vec::new();
         for i in 0..10_000 {
-            pairs.push((OwnedThinArc::new(i), QsOwned::new(format!("value{}", i))));
+            use thin::QsArc;
+
+            pairs.push((QsArc::new(i), QsOwned::new(format!("value{}", i))));
             pairs_for_comparison.push((i, format!("value{}", i)));
         }
 

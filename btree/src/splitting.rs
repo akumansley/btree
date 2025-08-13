@@ -5,14 +5,14 @@ use crate::internal_node::InternalNode;
 use crate::leaf_node::LeafNode;
 use crate::node::NodeHeader;
 use crate::pointers::node_ref::{marker, OwnedNodeRef};
-use crate::pointers::{OwnedThinArc, SharedNodeRef};
+use crate::pointers::SharedNodeRef;
 use crate::search_dequeue::SearchDequeue;
 use crate::sync::Ordering;
 use crate::util::UnwrapEither;
 use crate::{BTreeKey, BTreeValue};
 use smallvec::SmallVec;
 use std::ops::Deref;
-use thin::QsOwned;
+use thin::{QsArc, QsOwned};
 
 pub struct EntryLocation<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
@@ -61,12 +61,12 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Unlocker<K, V> {
 
 fn split_leaf<K, V>(
     left_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-    key_to_insert: OwnedThinArc<K>,
+    key_to_insert: QsArc<K>,
     value_to_insert: QsOwned<V>,
 ) -> (
     SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
     OwnedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-    OwnedThinArc<K>,
+    QsArc<K>,
     EntryLocation<K, V>,
 )
 where
@@ -98,7 +98,7 @@ where
         .prev_leaf
         .store(left_leaf.to_shared_leaf_ptr(), Ordering::Release);
 
-    let mut temp_leaf_vec: SmallVec<LeafTempArray<(OwnedThinArc<K>, QsOwned<V>)>> = SmallVec::new();
+    let mut temp_leaf_vec: SmallVec<LeafTempArray<(QsArc<K>, QsOwned<V>)>> = SmallVec::new();
 
     let mut maybe_key_to_insert = Some(key_to_insert);
     let mut maybe_value_to_insert = Some(value_to_insert);
@@ -152,7 +152,7 @@ where
 
 pub fn insert_into_leaf_after_splitting<K, V>(
     mut search_stack: SearchDequeue<K, V>,
-    key_to_insert: OwnedThinArc<K>,
+    key_to_insert: QsArc<K>,
     value_to_insert: QsOwned<V>,
 ) where
     K: crate::tree::BTreeKey + ?Sized,
@@ -169,7 +169,7 @@ pub fn insert_into_leaf_after_splitting<K, V>(
 
 pub fn insert_into_leaf_after_splitting_returning_leaf_with_new_entry<K, V>(
     mut search_stack: SearchDequeue<K, V>,
-    key_to_insert: OwnedThinArc<K>,
+    key_to_insert: QsArc<K>,
     value_to_insert: QsOwned<V>,
 ) -> EntryLocation<K, V>
 where
@@ -192,7 +192,7 @@ where
 fn insert_into_parent<K, V, N: marker::NodeType>(
     mut search_stack: SearchDequeue<K, V>,
     left: SharedNodeRef<K, V, marker::LockedExclusive, N>,
-    split_key: OwnedThinArc<K>,
+    split_key: QsArc<K>,
     right: OwnedNodeRef<K, V, marker::LockedExclusive, N>,
     unlocker: Unlocker<K, V>,
 ) where
@@ -247,7 +247,7 @@ fn insert_into_parent<K, V, N: marker::NodeType>(
 fn insert_into_internal_node_after_splitting<K, V, ChildType: marker::NodeType>(
     parent_stack: SearchDequeue<K, V>,
     old_internal_node: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-    split_key: OwnedThinArc<K>,
+    split_key: QsArc<K>,
     new_child: OwnedNodeRef<K, V, marker::LockedExclusive, ChildType>,
     unlocker: Unlocker<K, V>,
 ) where
@@ -262,7 +262,7 @@ fn insert_into_internal_node_after_splitting<K, V, ChildType: marker::NodeType>(
     .assume_unlocked()
     .lock_exclusive();
 
-    let mut temp_keys_vec: SmallVec<InternalKeyTempArray<OwnedThinArc<K>>> = SmallVec::new();
+    let mut temp_keys_vec: SmallVec<InternalKeyTempArray<QsArc<K>>> = SmallVec::new();
     let mut temp_children_vec: SmallVec<InternalChildTempArray<QsOwned<NodeHeader>>> =
         SmallVec::new();
 
@@ -327,7 +327,7 @@ fn insert_into_internal_node_after_splitting<K, V, ChildType: marker::NodeType>(
 fn insert_into_new_top_of_tree<K, V, N: marker::NodeType>(
     root: SharedNodeRef<K, V, marker::LockedExclusive, marker::Root>,
     left: SharedNodeRef<K, V, marker::LockedExclusive, N>,
-    split_key: OwnedThinArc<K>,
+    split_key: QsArc<K>,
     right: OwnedNodeRef<K, V, marker::LockedExclusive, N>,
     unlocker: Unlocker<K, V>,
 ) where
@@ -364,7 +364,6 @@ fn insert_into_new_top_of_tree<K, V, N: marker::NodeType>(
 mod tests {
     use super::*;
     use crate::array_types::ORDER;
-    use crate::pointers::OwnedThinArc;
     use qsbr::qsbr_reclaimer;
     use thin::QsOwned;
 
@@ -374,7 +373,7 @@ mod tests {
             .lock_exclusive();
         for i in 1..ORDER {
             leaf.storage.push(
-                OwnedThinArc::new(i * 2),
+                QsArc::new(i * 2),
                 QsOwned::new_from_str(&format!("value{}", i * 2)),
             );
         }
@@ -391,7 +390,7 @@ mod tests {
         // Case 1: Insert at start of left node (key = 1)
         {
             let leaf = create_full_leaf();
-            let key_to_insert = OwnedThinArc::new(1);
+            let key_to_insert = QsArc::new(1);
             let value_to_insert = QsOwned::new_from_str("value1");
             let (left, right, split_key, entry_location) =
                 split_leaf(leaf.share(), key_to_insert, value_to_insert);
@@ -423,7 +422,7 @@ mod tests {
             let leaf = create_full_leaf();
             let mid_point = KV_IDX_CENTER;
             let mid_point_key = get_key_for_index(mid_point) - 1;
-            let key_to_insert = OwnedThinArc::new(mid_point_key);
+            let key_to_insert = QsArc::new(mid_point_key);
             let value_to_insert = QsOwned::new_from_str(&format!("value{}", mid_point_key));
             let (left, right, split_key, entry_location) =
                 split_leaf(leaf.share(), key_to_insert, value_to_insert);
@@ -448,7 +447,7 @@ mod tests {
             let leaf = create_full_leaf();
             let mid_point = KV_IDX_CENTER;
             let mid_point_key = get_key_for_index(mid_point) + 1;
-            let key_to_insert = OwnedThinArc::new(mid_point_key);
+            let key_to_insert = QsArc::new(mid_point_key);
             let value_to_insert = QsOwned::new_from_str(&format!("value{}", mid_point_key));
             let (left, right, split_key, entry_location) =
                 split_leaf(leaf.share(), key_to_insert, value_to_insert);
@@ -471,7 +470,7 @@ mod tests {
         // Case 4: Insert at end of right node
         {
             let leaf = create_full_leaf();
-            let key_to_insert = OwnedThinArc::new(ORDER * 2);
+            let key_to_insert = QsArc::new(ORDER * 2);
             let value_to_insert = QsOwned::new_from_str(&format!("value{}", ORDER * 2));
             let (left, right, split_key, entry_location) =
                 split_leaf(leaf.share(), key_to_insert, value_to_insert);

@@ -2,13 +2,12 @@ use std::{borrow::Borrow, marker::PhantomData, mem::MaybeUninit, ops::Deref};
 
 use crate::{
     pointers::{
-        marker, Arcable, AtomicPointerArrayValue, OwnedAtomicThinArc, OwnedNodeRef, OwnedThinArc,
-        OwnedThinAtomicPtr, SharedThinArc,
+        marker, AtomicPointerArrayValue, OwnedAtomicThinArc, OwnedNodeRef, OwnedThinAtomicPtr,
     },
     sync::{AtomicUsize, Ordering},
 };
 use smallvec::Array;
-use thin::{QsOwned, QsShared};
+use thin::{Arcable, QsArc, QsOwned, QsShared, QsWeak};
 
 use crate::{node::NodeHeader, BTreeKey, BTreeValue};
 pub const ORDER: usize = 2_usize.pow(6);
@@ -188,7 +187,7 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
 impl<const CAPACITY: usize, T: Send + 'static + ?Sized + Arcable>
     NodeStorageArray<CAPACITY, T, OwnedAtomicThinArc<T>>
 {
-    fn get_cloned(&self, index: usize, num_elements: usize) -> OwnedThinArc<T> {
+    fn get_cloned(&self, index: usize, num_elements: usize) -> QsArc<T> {
         debug_assert!(index < num_elements);
         unsafe {
             self.array
@@ -223,7 +222,7 @@ impl<
     fn drop(&mut self) {
         for key in self.keys.iter_owned(self.num_keys()) {
             // OK to drop immediately -- if we're dropping an internal node while it still has keys, we're dropping the entire tree
-            unsafe { OwnedThinArc::drop_immediately(key) };
+            unsafe { QsArc::drop_immediately(key) };
         }
 
         if self.num_keys() > 0 {
@@ -275,11 +274,11 @@ impl<
         (num_keys, num_keys + 1)
     }
 
-    pub fn iter_keys<'a>(&'a self) -> impl Iterator<Item = SharedThinArc<K>> + 'a {
+    pub fn iter_keys<'a>(&'a self) -> impl Iterator<Item = QsWeak<K>> + 'a {
         self.keys.iter(self.num_keys())
     }
 
-    pub fn iter_keys_owned<'a>(&'a self) -> impl Iterator<Item = OwnedThinArc<K>> + 'a {
+    pub fn iter_keys_owned<'a>(&'a self) -> impl Iterator<Item = QsArc<K>> + 'a {
         self.keys.iter_owned(self.num_keys())
     }
 
@@ -306,7 +305,7 @@ impl<
         self.children.remove(0, self.num_children())
     }
 
-    pub fn get_key(&self, index: usize) -> SharedThinArc<K> {
+    pub fn get_key(&self, index: usize) -> QsWeak<K> {
         self.keys.get(index, self.num_keys())
     }
 
@@ -318,20 +317,20 @@ impl<
         self.children.iter_owned(self.num_children())
     }
 
-    pub fn insert(&self, key: OwnedThinArc<K>, child: QsOwned<NodeHeader>, index: usize) {
+    pub fn insert(&self, key: QsArc<K>, child: QsOwned<NodeHeader>, index: usize) {
         let (num_keys, num_children) = self.num_keys_and_children();
         self.keys.insert(key, index, num_keys);
         self.children.insert(child, index, num_children);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn replace_key(&self, index: usize, key: OwnedThinArc<K>) -> OwnedThinArc<K> {
+    pub fn replace_key(&self, index: usize, key: QsArc<K>) -> QsArc<K> {
         self.keys.replace(index, key)
     }
 
     pub fn insert_child_with_split_key(
         &self,
-        key: OwnedThinArc<K>,
+        key: QsArc<K>,
         child: QsOwned<NodeHeader>,
         index: usize,
     ) {
@@ -341,28 +340,28 @@ impl<
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn push(&self, key: OwnedThinArc<K>, child: QsOwned<NodeHeader>) {
+    pub fn push(&self, key: QsArc<K>, child: QsOwned<NodeHeader>) {
         let (num_keys, num_children) = self.num_keys_and_children();
         self.keys.push(key, num_keys);
         self.children.push(child, num_children);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
-    pub fn push_key(&self, key: OwnedThinArc<K>) {
+    pub fn push_key(&self, key: QsArc<K>) {
         let num_keys = self.num_keys();
         self.keys.push(key, num_keys);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn pop(&self) -> (OwnedThinArc<K>, QsOwned<NodeHeader>) {
+    pub fn pop(&self) -> (QsArc<K>, QsOwned<NodeHeader>) {
         let index = self.num_children() - 1;
         self.remove_child_at_index(index)
     }
 
-    pub fn set_key(&self, index: usize, key: OwnedThinArc<K>) {
+    pub fn set_key(&self, index: usize, key: QsArc<K>) {
         self.keys.set(index, key);
     }
 
-    pub fn remove_child_at_index(&self, index: usize) -> (OwnedThinArc<K>, QsOwned<NodeHeader>) {
+    pub fn remove_child_at_index(&self, index: usize) -> (QsArc<K>, QsOwned<NodeHeader>) {
         debug_assert!(index > 0);
         let (num_keys, num_children) = self.num_keys_and_children();
         let child = self.children.remove(index, num_children);
@@ -371,7 +370,7 @@ impl<
         (key, child)
     }
 
-    pub fn remove(&self, index: usize) -> (OwnedThinArc<K>, QsOwned<NodeHeader>) {
+    pub fn remove(&self, index: usize) -> (QsArc<K>, QsOwned<NodeHeader>) {
         let (num_keys, num_children) = self.num_keys_and_children();
         let key = self.keys.remove(index, num_keys);
         let child = self.children.remove(index, num_children);
@@ -382,8 +381,8 @@ impl<
 
     pub fn drain<'a>(
         &'a self,
-        new_split_key: OwnedThinArc<K>,
-    ) -> impl Iterator<Item = (OwnedThinArc<K>, QsOwned<NodeHeader>)> + 'a {
+        new_split_key: QsArc<K>,
+    ) -> impl Iterator<Item = (QsArc<K>, QsOwned<NodeHeader>)> + 'a {
         let num_keys = self.num_keys.swap(0, Ordering::AcqRel);
         let keys = std::iter::once(new_split_key).chain(self.keys.iter_owned(num_keys));
 
@@ -395,7 +394,7 @@ impl<
         self.children.set(self.num_keys(), child);
     }
 
-    pub fn extend(&self, other: impl Iterator<Item = (OwnedThinArc<K>, QsOwned<NodeHeader>)>) {
+    pub fn extend(&self, other: impl Iterator<Item = (QsArc<K>, QsOwned<NodeHeader>)>) {
         let num_keys = self.num_keys();
         let mut added = 0;
 
@@ -417,7 +416,7 @@ impl<
         }
     }
 
-    pub fn extend_keys(&self, other: impl Iterator<Item = OwnedThinArc<K>>) {
+    pub fn extend_keys(&self, other: impl Iterator<Item = QsArc<K>>) {
         let num_keys = self.num_keys();
         let mut added = 0;
         for key in other {
@@ -470,7 +469,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop
         let num_keys = self.num_keys();
         for i in 0..num_keys {
             let key = self.keys.into_owned(i, num_keys);
-            unsafe { OwnedThinArc::drop_immediately(key) };
+            unsafe { QsArc::drop_immediately(key) };
 
             let value = self.values.into_owned(i, num_keys);
             QsOwned::drop_immediately(value);
@@ -508,18 +507,18 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     pub fn iter_values<'a>(&'a self) -> impl Iterator<Item = QsShared<V>> + 'a {
         self.values.iter(self.num_keys())
     }
-    pub fn push(&self, key: OwnedThinArc<K>, value: QsOwned<V>) {
+    pub fn push(&self, key: QsArc<K>, value: QsOwned<V>) {
         let num_keys = self.num_keys();
         self.keys.push(key, num_keys);
         self.values.push(value, num_keys);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn get_key(&self, index: usize) -> SharedThinArc<K> {
+    pub fn get_key(&self, index: usize) -> QsWeak<K> {
         self.keys.get(index, self.num_keys())
     }
 
-    pub fn clone_key(&self, index: usize) -> OwnedThinArc<K> {
+    pub fn clone_key(&self, index: usize) -> QsArc<K> {
         let arc = self.keys.get_cloned(index, self.num_keys());
         arc
     }
@@ -528,12 +527,12 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
         self.values.get(index, self.num_keys())
     }
 
-    pub fn pop(&self) -> (OwnedThinArc<K>, QsOwned<V>) {
+    pub fn pop(&self) -> (QsArc<K>, QsOwned<V>) {
         let index = self.num_keys() - 1;
         self.remove(index)
     }
 
-    pub fn extend(&self, other: impl Iterator<Item = (OwnedThinArc<K>, QsOwned<V>)>) {
+    pub fn extend(&self, other: impl Iterator<Item = (QsArc<K>, QsOwned<V>)>) {
         for (key, value) in other {
             self.push(key, value);
         }
@@ -550,7 +549,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
             .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().borrow().cmp(key))
     }
 
-    pub fn drain<'a>(&'a self) -> impl Iterator<Item = (OwnedThinArc<K>, QsOwned<V>)> + 'a {
+    pub fn drain<'a>(&'a self) -> impl Iterator<Item = (QsArc<K>, QsOwned<V>)> + 'a {
         let num_keys = self.num_keys.swap(0, Ordering::AcqRel);
         self.keys
             .iter_owned(num_keys)
@@ -566,14 +565,14 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
         }
     }
 
-    pub fn insert(&self, key: OwnedThinArc<K>, value: QsOwned<V>, index: usize) {
+    pub fn insert(&self, key: QsArc<K>, value: QsOwned<V>, index: usize) {
         let num_keys = self.num_keys();
         self.keys.insert(key, index, num_keys);
         self.values.insert(value, index, num_keys);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
 
-    pub fn remove(&self, index: usize) -> (OwnedThinArc<K>, QsOwned<V>) {
+    pub fn remove(&self, index: usize) -> (QsArc<K>, QsOwned<V>) {
         let num_keys = self.num_keys();
         let key = self.keys.remove(index, num_keys);
         let value = self.values.remove(index, num_keys);
@@ -598,7 +597,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 mod tests {
     use crate::leaf_node::LeafNode;
     use btree_macros::qsbr_test;
-    use thin::QsOwned;
+    use thin::{QsArc, QsOwned};
 
     use super::*;
 
@@ -607,8 +606,8 @@ mod tests {
         let array = QsOwned::new(InternalNodeStorage::<3, 4, u32, String>::new());
 
         // Create some test data
-        let key1 = OwnedThinArc::new(1u32);
-        let key2 = OwnedThinArc::new(2u32);
+        let key1 = QsArc::new(1u32);
+        let key2 = QsArc::new(2u32);
 
         let node1 = unsafe { QsOwned::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
         let node1_shared = node1.share();
@@ -673,7 +672,7 @@ mod tests {
         let array = LeafNodeStorage::<3, u32, String>::new();
 
         // Create test data
-        let key = OwnedThinArc::new(1u32);
+        let key = QsArc::new(1u32);
         assert_eq!(*key, 1u32);
         let key_shared = key.share();
         assert_eq!(*key_shared, 1u32);

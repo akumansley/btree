@@ -2,20 +2,20 @@ use crate::{
     node::Height,
     pointers::{
         marker::{Internal, LockedShared, Root, Unknown, Unlocked},
-        SharedNodeRef, SharedThinArc,
+        SharedNodeRef,
     },
     BTree, BTreeKey, BTreeValue,
 };
 use qsbr::qsbr_pool;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use thin::QsShared;
+use thin::{QsShared, QsWeak};
 
 // maybe avoid allocating into a vec
 // test the subranges to see if they're any good
 
 pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    start_key: Option<SharedThinArc<K>>,
-    end_key: Option<SharedThinArc<K>>,
+    start_key: Option<QsWeak<K>>,
+    end_key: Option<QsWeak<K>>,
     predicate: impl Fn(&V) -> bool + Sync,
     tree: &BTree<K, V>,
 ) -> Vec<QsShared<V>> {
@@ -91,12 +91,12 @@ pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 
 // returns N+1 keys, which can be used to split the range [start_key, end_key) into N subranges
 fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    start_key: Option<SharedThinArc<K>>,
-    end_key: Option<SharedThinArc<K>>,
+    start_key: Option<QsWeak<K>>,
+    end_key: Option<QsWeak<K>>,
     lca: SharedNodeRef<K, V, LockedShared, Internal>,
     mut start_child_index: usize,
     mut end_child_index: usize,
-) -> Vec<Option<SharedThinArc<K>>> {
+) -> Vec<Option<QsWeak<K>>> {
     let mut prev_split_key_candidates = Vec::new();
     let mut split_key_candidates = Vec::new();
     let mut nodes_under_consideration = Vec::new();
@@ -181,7 +181,7 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
     let mut remainder = num_split_key_candidates % N;
     let mut index = 0;
 
-    let mut selected_split_keys: Vec<Option<SharedThinArc<K>>> = Vec::new();
+    let mut selected_split_keys: Vec<Option<QsWeak<K>>> = Vec::new();
     selected_split_keys.push(start_key);
 
     for _ in 1..N {
@@ -201,8 +201,8 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
 }
 
 fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    start_key: Option<SharedThinArc<K>>,
-    end_key: Option<SharedThinArc<K>>,
+    start_key: Option<QsWeak<K>>,
+    end_key: Option<QsWeak<K>>,
     root: SharedNodeRef<K, V, LockedShared, Root>,
 ) -> (SharedNodeRef<K, V, LockedShared, Unknown>, usize, usize) {
     let top_of_tree: SharedNodeRef<K, V, LockedShared, Unknown> =
@@ -240,8 +240,8 @@ fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 #[cfg(test)]
 fn leaves_between<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     tree: &BTree<K, V>,
-    start_key: Option<SharedThinArc<K>>,
-    end_key: Option<SharedThinArc<K>>,
+    start_key: Option<QsWeak<K>>,
+    end_key: Option<QsWeak<K>>,
 ) -> Vec<*mut ()> {
     let mut cursor = tree.cursor();
     match start_key.as_ref() {
@@ -286,24 +286,23 @@ mod test {
 
     use crate::array_types::ORDER;
     use crate::node::Height;
-    use crate::pointers::OwnedThinArc;
     use crate::BTree;
-    use thin::QsOwned;
+    use thin::{QsArc, QsOwned};
 
     use super::*;
 
     fn make_tree(count: usize) -> BTree<usize, usize> {
         let tree: BTree<usize, usize> = BTree::new();
         for i in 0..count {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(i));
+            tree.insert(QsArc::new(i), QsOwned::new(i));
         }
         tree
     }
 
     fn assert_subranges<K: BTreeKey + Eq + std::fmt::Debug + ?Sized>(
-        result: &[Option<SharedThinArc<K>>],
-        expected_start: Option<SharedThinArc<K>>,
-        expected_end: Option<SharedThinArc<K>>,
+        result: &[Option<QsWeak<K>>],
+        expected_start: Option<QsWeak<K>>,
+        expected_end: Option<QsWeak<K>>,
         expected_min_len: usize,
         expected_max_len: usize,
     ) {
@@ -330,8 +329,8 @@ mod test {
             let tree = make_tree(ORDER - 1);
 
             // should be in the same (only) leaf
-            let start_key1 = OwnedThinArc::new(7);
-            let end_key1 = OwnedThinArc::new(38);
+            let start_key1 = QsArc::new(7);
+            let end_key1 = QsArc::new(38);
 
             let locked_root = tree.root.as_node_ref().lock_shared();
 
@@ -353,8 +352,8 @@ mod test {
             let tree = make_tree(ORDER * 2 - 1);
 
             // should be in the two different leaves
-            let start_key = OwnedThinArc::new(11);
-            let end_key = OwnedThinArc::new(ORDER + 11);
+            let start_key = QsArc::new(11);
+            let end_key = QsArc::new(ORDER + 11);
 
             let locked_root = tree.root.as_node_ref().lock_shared();
 
@@ -381,8 +380,8 @@ mod test {
 
         {
             let tree = make_tree((ORDER * 5) - 5);
-            let start_key = OwnedThinArc::new(ORDER / 2); // leaf 0
-            let end_key = OwnedThinArc::new(ORDER * 4 + 11); // leaf 4
+            let start_key = QsArc::new(ORDER / 2); // leaf 0
+            let end_key = QsArc::new(ORDER * 4 + 11); // leaf 4
 
             let locked_root = tree.root.as_node_ref().lock_shared();
             let (lca_locked_unknown, start_idx, end_idx) = find_least_common_ancestor(
@@ -413,8 +412,8 @@ mod test {
 
         {
             let tree = make_tree(ORDER * 64);
-            let start_key = OwnedThinArc::new(ORDER / 2 - 1);
-            let end_key = OwnedThinArc::new(ORDER * 64 - 1);
+            let start_key = QsArc::new(ORDER / 2 - 1);
+            let end_key = QsArc::new(ORDER * 64 - 1);
 
             let locked_root = tree.root.as_node_ref().lock_shared();
             let (lca_locked_unknown, start_idx, end_idx) = find_least_common_ancestor(
@@ -485,8 +484,8 @@ mod test {
         let num_rows = if cfg!(miri) { 10 } else { 100_000 };
         let tree = make_tree(num_rows);
         let results = scan_parallel(
-            Some(OwnedThinArc::new(0).share()),
-            Some(OwnedThinArc::new(100_000).share()),
+            Some(QsArc::new(0).share()),
+            Some(QsArc::new(100_000).share()),
             |v: &usize| v % 100 == 0,
             &tree,
         );
@@ -506,8 +505,8 @@ mod test {
         let num_rows = ORDER - 1;
         let tree = make_tree(num_rows);
         let results = scan_parallel(
-            Some(OwnedThinArc::new(0).share()),
-            Some(OwnedThinArc::new(num_rows).share()),
+            Some(QsArc::new(0).share()),
+            Some(QsArc::new(num_rows).share()),
             |_v: &usize| true,
             &tree,
         );
@@ -525,11 +524,13 @@ mod test {
     #[qsbr_test]
     #[cfg(not(miri))]
     fn it_parallel_scans_small_tree() {
+        use thin::QsArc;
+
         let num_rows = ORDER * 2;
         let tree = make_tree(num_rows);
         let results = scan_parallel(
-            Some(OwnedThinArc::new(0).share()),
-            Some(OwnedThinArc::new(num_rows).share()),
+            Some(QsArc::new(0).share()),
+            Some(QsArc::new(num_rows).share()),
             |_v: &usize| true,
             &tree,
         );

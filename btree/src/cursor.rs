@@ -2,7 +2,6 @@ use std::borrow::Borrow;
 use std::ops::Deref;
 
 use crate::pointers::node_ref::{marker, SharedNodeRef};
-use crate::pointers::OwnedThinArc;
 use crate::reference::Entry;
 use crate::search::get_leaf_exclusively_using_optimistic_search_with_fallback;
 use crate::search::get_leaf_shared_using_optimistic_search_with_fallback;
@@ -16,7 +15,7 @@ use crate::search::{
 use crate::splitting::EntryLocation;
 use crate::tree::{BTree, BTreeKey, BTreeValue, ModificationType};
 use crate::util::UnwrapEither;
-use thin::{QsOwned, QsShared};
+use thin::{QsArc, QsOwned, QsShared};
 
 pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub tree: &'a BTree<K, V>,
@@ -265,12 +264,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         leaf.update(self.current_index, value);
     }
 
-    pub fn insert_or_update<F>(
-        &mut self,
-        key: OwnedThinArc<K>,
-        value: QsOwned<V>,
-        update_fn: F,
-    ) -> bool
+    pub fn insert_or_update<F>(&mut self, key: QsArc<K>, value: QsOwned<V>, update_fn: F) -> bool
     where
         F: Fn(QsShared<V>) -> QsOwned<V> + Send + Sync,
     {
@@ -419,6 +413,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for CursorMut<'a, K,
 #[cfg(test)]
 mod tests {
     use btree_macros::qsbr_test;
+    use thin::QsArc;
 
     use crate::array_types::ORDER;
     use crate::qsbr_reclaimer;
@@ -432,7 +427,7 @@ mod tests {
 
         // Insert some test data
         for i in 0..10 {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Test forward traversal
@@ -483,7 +478,7 @@ mod tests {
         // Using ORDER * 2 ensures we have at least 2 leaves
         let n = ORDER * 2;
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
             tree.check_invariants();
         }
 
@@ -532,7 +527,7 @@ mod tests {
 
         // Insert some test data
         for i in 0..10 {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Test forward traversal
@@ -586,7 +581,7 @@ mod tests {
         // Using ORDER * 2 ensures we have at least 2 leaves
         let n = ORDER * 2;
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
             tree.check_invariants();
         }
 
@@ -639,7 +634,7 @@ mod tests {
         // Insert enough elements to ensure multiple leaves
         let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
         for i in 0..n {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
             tree.check_invariants();
         }
 

@@ -1,13 +1,13 @@
-use crate::{pointers::OwnedThinArc, sync::AtomicUsize};
+use crate::sync::AtomicUsize;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use std::sync::Arc;
-use thin::{QsOwned, QsShared};
+use thin::{QsArc, QsOwned, QsShared};
 
 use crate::{array_types::ORDER, BTree, BTreeKey, BTreeValue};
 use qsbr::{qsbr_pool, qsbr_reclaimer};
 
 pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>,
+    sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
     tree: &BTree<K, V>,
 ) {
     let pool = qsbr_pool();
@@ -33,7 +33,7 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
     V: BTreeValue + ?Sized,
     F: Fn(QsShared<V>) -> QsOwned<V> + Send + Sync,
 >(
-    sorted_kv_pairs: Vec<(OwnedThinArc<K>, QsOwned<V>)>,
+    sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
     update_fn: &F,
     tree: &BTree<K, V>,
 ) {
@@ -87,16 +87,16 @@ mod tests {
 
         // Insert initial values
         for i in 0..num_elements {
-            tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
         }
 
         // Create updates with modified values
         let updates_for_comparison: Vec<(usize, String)> = (0..num_elements)
             .map(|i| (i, format!("updated_value{}", i)))
             .collect();
-        let updates: Vec<(OwnedThinArc<usize>, QsOwned<String>)> = updates_for_comparison
+        let updates: Vec<(QsArc<usize>, QsOwned<String>)> = updates_for_comparison
             .iter()
-            .map(|(key, value)| (OwnedThinArc::new(*key), QsOwned::new(value.clone())))
+            .map(|(key, value)| (QsArc::new(*key), QsOwned::new(value.clone())))
             .collect();
 
         // Perform bulk update
@@ -128,13 +128,15 @@ mod tests {
     #[cfg(not(miri))]
     fn test_bulk_insert_or_update() {
         // Create a tree with initial values (even numbers)
+
+        use thin::QsArc;
         let tree = BTree::<usize, String>::new();
         let num_elements = ORDER * 4;
 
         // Insert initial values (even numbers)
         for i in 0..num_elements {
             if i % 2 == 0 {
-                tree.insert(OwnedThinArc::new(i), QsOwned::new(format!("value{}", i)));
+                tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
             }
         }
 
@@ -150,9 +152,9 @@ mod tests {
                 }
             })
             .collect();
-        let entries: Vec<(OwnedThinArc<usize>, QsOwned<String>)> = entries_for_comparison
+        let entries: Vec<(QsArc<usize>, QsOwned<String>)> = entries_for_comparison
             .iter()
-            .map(|(key, value)| (OwnedThinArc::new(*key), QsOwned::new(value.clone())))
+            .map(|(key, value)| (QsArc::new(*key), QsOwned::new(value.clone())))
             .collect();
 
         // Define update function that appends "_updated" to existing values

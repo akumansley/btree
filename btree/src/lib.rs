@@ -35,7 +35,6 @@ mod tree;
 mod util;
 pub use cursor::{Cursor, CursorMut};
 pub use iter::{BackwardBTreeIterator, ForwardBTreeIterator};
-pub use pointers::OwnedThinArc;
 pub use qsbr::{qsbr_reclaimer, MemoryReclaimer};
 pub use reference::{Entry, Ref};
 pub use tree::{BTree, BTreeKey, BTreeValue};

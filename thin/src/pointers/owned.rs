@@ -270,7 +270,7 @@ mod tests {
     fn test_empty() {
         let ptr = Owned::new_from_slice(&[]);
         let vec: Vec<usize> = ptr.into_iter().collect();
-        assert_eq!(vec, vec![]);
+        assert_eq!(vec, Vec::<usize>::default());
     }
 
     #[test]

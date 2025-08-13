@@ -1,7 +1,7 @@
-use btree::{qsbr_reclaimer, BTree, OwnedThinArc};
+use btree::{qsbr_reclaimer, BTree};
 use criterion::{criterion_group, criterion_main, Bencher, BenchmarkGroup, BenchmarkId, Criterion};
 use std::time::Duration;
-use thin::QsOwned;
+use thin::{QsArc, QsOwned};
 
 const NUM_ELEMENTS: usize = 10_000_000;
 
@@ -16,10 +16,7 @@ fn bulk_load_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::WallTi
                     // Generate sorted key-value pairs
                     let mut pairs = Vec::with_capacity(num_elements);
                     for i in 0..num_elements {
-                        pairs.push((
-                            OwnedThinArc::new(i),
-                            QsOwned::new_from_str(&format!("value{}", i)),
-                        ));
+                        pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i))));
                     }
 
                     qsbr_reclaimer().register_thread();
@@ -50,10 +47,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                 qsbr_reclaimer().register_thread();
                 let mut pairs = Vec::with_capacity(num_elements);
                 for i in 0..num_elements {
-                    pairs.push((
-                        OwnedThinArc::new(i),
-                        QsOwned::new_from_str(&format!("value{}", i)),
-                    ));
+                    pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i))));
                 }
                 let tree: BTree<usize, str> = BTree::bulk_load_parallel(pairs);
 
@@ -63,7 +57,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                     let mut updates = Vec::with_capacity(num_elements);
                     for i in 0..num_elements {
                         updates.push((
-                            OwnedThinArc::new(i),
+                            QsArc::new(i),
                             QsOwned::new_from_str(&format!("updated_value - {}, {}", iter, i)),
                         ));
                     }
@@ -95,7 +89,7 @@ fn scan_parallel_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wa
                 let mut pairs = Vec::with_capacity(num_elements);
                 for i in 0..num_elements {
                     pairs.push((
-                        OwnedThinArc::new(i),                          // K: usize
+                        QsArc::new(i),                                 // K: usize
                         QsOwned::new_from_str(&format!("value{}", i)), // V: str
                     ));
                 }
@@ -110,8 +104,8 @@ fn scan_parallel_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wa
                     0
                 };
 
-                let start_key = OwnedThinArc::new(start_key_val);
-                let end_key = OwnedThinArc::new(end_key_val);
+                let start_key = QsArc::new(start_key_val);
+                let end_key = QsArc::new(end_key_val);
                 let predicate = |_v: &str| true; // Simple predicate that always returns true
 
                 let mut sum = Duration::ZERO;

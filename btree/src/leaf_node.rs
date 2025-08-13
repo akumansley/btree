@@ -1,8 +1,7 @@
 use crate::pointers::atomic::SharedThinAtomicPtr;
 use crate::pointers::node_ref::SharedNodeRef;
-use crate::pointers::{OwnedNodeRef, SharedThinArc};
+use crate::pointers::OwnedNodeRef;
 use crate::sync::Ordering;
-use crate::OwnedThinArc;
 use crate::{
     array_types::{LeafNodeStorageArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
     node::{Height, NodeHeader},
@@ -13,7 +12,7 @@ use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::{fmt, ptr};
-use thin::{QsOwned, QsShared};
+use thin::{QsArc, QsOwned, QsShared, QsWeak};
 
 #[repr(C)]
 pub struct LeafNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
@@ -83,7 +82,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         self.storage.binary_search_keys(search_key)
     }
 
-    pub fn get<Q>(&self, search_key: &Q) -> Option<(SharedThinArc<K>, QsShared<V>)>
+    pub fn get<Q>(&self, search_key: &Q) -> Option<(QsWeak<K>, QsShared<V>)>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -102,7 +101,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
             }
         }
     }
-    pub fn insert(&mut self, key_to_insert: OwnedThinArc<K>, value: QsOwned<V>) -> bool {
+    pub fn insert(&mut self, key_to_insert: QsArc<K>, value: QsOwned<V>) -> bool {
         match self.binary_search_key(key_to_insert.deref()) {
             Ok(index) => {
                 let old_value = self.storage.set(index, value);
@@ -123,7 +122,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
 
     pub fn insert_new_value_at_index(
         &mut self,
-        key_to_insert: OwnedThinArc<K>,
+        key_to_insert: QsArc<K>,
         value: QsOwned<V>,
         index: usize,
     ) {
