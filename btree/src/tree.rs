@@ -299,6 +299,36 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         });
     }
 
+    pub fn modify_if(
+        &self,
+        key: &K,
+        predicate: impl Fn(&V) -> bool,
+        modify_fn: impl Fn(&V) -> QsOwned<V>,
+    ) {
+        debug_println!("top-level modify_if {:?}", key);
+
+        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.root.as_node_ref(),
+            key,
+        );
+
+        let index = match optimistic_leaf.binary_search_key(&key) {
+            Ok(index) => index,
+            Err(_) => {
+                optimistic_leaf.unlock_exclusive();
+                return;
+            } // nothing to modify
+        };
+        let value = optimistic_leaf.storage.get_value(index);
+        if !predicate(&value) {
+            optimistic_leaf.unlock_exclusive();
+            return;
+        }
+        let new_value = modify_fn(&value);
+        optimistic_leaf.update(index, new_value);
+        optimistic_leaf.unlock_exclusive();
+    }
+
     pub fn print_tree(&self) {
         let root = self.root.as_node_ref().lock_shared();
         println!("BTree:");
@@ -1052,6 +1082,81 @@ mod tests {
                 "Tree length should be 20 after bulk_insert_or_update_parallel"
             );
         }
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_modify_if() {
+        qsbr_reclaimer().register_thread();
+        let tree = BTree::<usize, String>::new();
+
+        // Insert some test data
+        for i in 0..10 {
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+        }
+
+        // Test 1: Modify with predicate that returns true
+        tree.modify_if(
+            &5,
+            |v| v.contains("value"),
+            |_| QsOwned::new("modified5".to_string()),
+        );
+        assert_eq!(tree.get(&5).as_deref(), Some(&"modified5".to_string()));
+
+        // Test 2: Try to modify with predicate that returns false (should not modify)
+        tree.modify_if(
+            &5,
+            |v| v.contains("nonexistent"),
+            |_| QsOwned::new("should_not_change".to_string()),
+        );
+        assert_eq!(
+            tree.get(&5).as_deref(),
+            Some(&"modified5".to_string()),
+            "Value should not change when predicate returns false"
+        );
+
+        // Test 3: Modify based on existing value
+        tree.modify_if(
+            &3,
+            |_| true,
+            |old_val| QsOwned::new(format!("updated_{}", old_val)),
+        );
+        assert_eq!(tree.get(&3).as_deref(), Some(&"updated_value3".to_string()));
+
+        // Test 4: Try to modify non-existent key (should do nothing)
+        tree.modify_if(
+            &999,
+            |_| true,
+            |_| QsOwned::new("should_not_insert".to_string()),
+        );
+        assert_eq!(tree.get(&999), None, "Non-existent key should remain None");
+
+        // Test 5: Modify with selective predicate
+        for i in 0..10 {
+            tree.modify_if(
+                &i,
+                |v| v.starts_with("value"),
+                |old_val| QsOwned::new(format!("prefix_{}", old_val)),
+            );
+        }
+        // Check that keys 0, 1, 2, 4, 6, 7, 8, 9 were modified (they still had "value" prefix)
+        assert_eq!(tree.get(&0).as_deref(), Some(&"prefix_value0".to_string()));
+        assert_eq!(tree.get(&1).as_deref(), Some(&"prefix_value1".to_string()));
+        // Key 3 should still be "updated_value3" since it doesn't start with "value"
+        assert_eq!(
+            tree.get(&3).as_deref(),
+            Some(&"updated_value3".to_string()),
+            "Key 3 should not be modified since 'updated_value3' doesn't start with 'value'"
+        );
+        // Key 5 was already "modified5", which doesn't start with "value", so it shouldn't change
+        assert_eq!(
+            tree.get(&5).as_deref(),
+            Some(&"modified5".to_string()),
+            "Key 5 should not be modified since it doesn't match predicate"
+        );
+
+        tree.check_invariants();
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
