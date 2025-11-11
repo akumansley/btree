@@ -271,36 +271,35 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         self.remove_if(key, |_| true);
     }
 
-    pub fn remove_if(&self, key: &K, predicate: impl Fn(&V) -> bool) {
+    pub fn remove_if(&self, key: &K, predicate: impl Fn(&V) -> bool) -> bool {
         debug_println!("top-level remove {:?}", key);
 
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
             key,
         );
-        let value = match optimistic_leaf.get(&key) {
-            Some((_, v_ptr)) => v_ptr,
-            None => {
+        let index = match optimistic_leaf.binary_search_key(&key) {
+            Ok(index) => index,
+            Err(_) => {
                 optimistic_leaf.unlock_exclusive();
-                return;
+                return false;
             } // nothing to remove
         };
+        let value = optimistic_leaf.storage.get_value(index);
         if !predicate(&value) {
             optimistic_leaf.unlock_exclusive();
-            return;
+            return false;
         }
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal) {
-            let removed = optimistic_leaf.remove(key);
-            if removed {
-                self.root.len.fetch_sub(1, Ordering::Relaxed);
-            }
+            optimistic_leaf.remove_at_index(index);
+            self.root.len.fetch_sub(1, Ordering::Relaxed);
             debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
             optimistic_leaf.unlock_exclusive();
-            return;
+            return true;
         }
         optimistic_leaf.unlock_exclusive();
 
-        // we need structural modifications, so fall back to exclusive search
+        // we may need structural modifications, so fall back to exclusive search
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
             self.root.as_node_ref().lock_exclusive(),
             key,
@@ -311,16 +310,18 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
         // need to re-check the predicate since we released our locks to restart the search
         let search_result = leaf_node_exclusive.binary_search_key(&key);
+        let mut removed = false;
         match search_result {
             Ok(index) => {
                 let value = leaf_node_exclusive.storage.get_value(index);
                 if predicate(&value) {
                     leaf_node_exclusive.remove_at_index(search_result.unwrap());
                     self.root.len.fetch_sub(1, Ordering::Relaxed);
+                    removed = true;
 
                     if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
                         coalesce_or_redistribute_leaf_node(search_stack);
-                        return;
+                        return true;
                     }
                 }
             }
@@ -331,6 +332,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         search_stack.drain().for_each(|n| {
             n.assert_exclusive().unlock_exclusive();
         });
+        removed
     }
 
     pub fn modify_if(
