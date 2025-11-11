@@ -114,6 +114,23 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         leaf_node_shared.unlock_shared();
     }
 
+    pub fn get_exclusively_and<Q>(&self, search_key: &Q, closure: impl Fn(&V))
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Ord,
+    {
+        let leaf_node_exclusive = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.root.as_node_ref(),
+            search_key,
+        );
+        let value = match leaf_node_exclusive.get(search_key) {
+            Some((_, value)) => value,
+            None => return,
+        };
+        closure(&value);
+        leaf_node_exclusive.unlock_exclusive();
+    }
+
     pub fn scan_parallel(
         &self,
         start_key: QsWeak<K>,
