@@ -135,6 +135,17 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         drop(owned_value);
     }
 
+    pub fn modify_value(
+        &mut self,
+        index: usize,
+        new_value: QsOwned<V>,
+        modify_fn: impl Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V>,
+    ) {
+        let old_value = unsafe { self.storage.into_owned(index) };
+        let modified_value = modify_fn(old_value, new_value);
+        unsafe { self.storage.clobber(index, modified_value) };
+    }
+
     pub fn remove(&mut self, key: &K) -> bool {
         match self.binary_search_key(key) {
             Ok(index) => {

@@ -74,7 +74,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         entries: Vec<(QsArc<K>, QsOwned<V>)>,
         update_fn: &F,
     ) where
-        F: Fn(QsOwned<V>, QsShared<V>) -> QsOwned<V> + Send + Sync,
+        F: Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V> + Send + Sync,
     {
         bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
@@ -1116,7 +1116,7 @@ mod tests {
                 .collect();
 
             // Define update function
-            let update_fn = |_, old_value: QsShared<str>| {
+            let update_fn = |old_value: QsOwned<str>, _| {
                 QsOwned::new_from_str(&format!("updated_{}", old_value.deref()))
             };
 

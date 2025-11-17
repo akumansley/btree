@@ -1,7 +1,7 @@
 use crate::sync::AtomicUsize;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use std::sync::Arc;
-use thin::{QsArc, QsOwned, QsShared};
+use thin::{QsArc, QsOwned};
 
 use crate::{array_types::ORDER, BTree, BTreeKey, BTreeValue};
 use qsbr::{qsbr_pool, qsbr_reclaimer};
@@ -31,7 +31,7 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeV
 pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
-    F: Fn(QsOwned<V>, QsShared<V>) -> QsOwned<V> + Send + Sync,
+    F: Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V> + Send + Sync,
 >(
     sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
     update_fn: &F,
@@ -49,7 +49,7 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
                 let insertion_count = Arc::clone(&insertion_count);
                 let mut cursor = tree.cursor_mut();
                 for (key, value) in chunk {
-                    let was_inserted = cursor.insert_or_update(key, value, update_fn);
+                    let was_inserted = cursor.insert_or_modify(key, value, update_fn);
 
                     // Increment the insertion count if a new key was inserted
                     if was_inserted {
@@ -158,7 +158,7 @@ mod tests {
             .collect();
 
         // Define update function that appends "_updated" to existing values
-        let update_fn = |_: QsOwned<String>, old_value: QsShared<String>| {
+        let update_fn = |old_value: QsOwned<String>, _: QsOwned<String>| {
             let old_string = old_value.deref();
             QsOwned::new(format!("{}_updated", old_string))
         };

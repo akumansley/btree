@@ -134,7 +134,10 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
         }
     }
 
-    fn into_owned(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
+    /// SAFETY: the caller must ensure that they have exclusive access to the value at the given index
+    /// that the value is initialized, and they must clean up the slot after calling this -- the method
+    /// leaves the existing pointer in place as a landing pad for optimistic readers
+    unsafe fn into_owned(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
         debug_assert!(index < num_elements);
 
         unsafe {
@@ -153,7 +156,8 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
     }
 
     fn remove(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
-        let ptr = self.into_owned(index, num_elements);
+        // SAFETY: we're about to clobber the slot, so this is fine
+        let ptr = unsafe { self.into_owned(index, num_elements) };
         self.atomic_shift_left(index, num_elements);
         ptr
     }
@@ -468,10 +472,10 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop
     fn drop(&mut self) {
         let num_keys = self.num_keys();
         for i in 0..num_keys {
-            let key = self.keys.into_owned(i, num_keys);
+            let key = unsafe { self.keys.into_owned(i, num_keys) };
             unsafe { QsArc::drop_immediately(key) };
 
-            let value = self.values.into_owned(i, num_keys);
+            let value = unsafe { self.values.into_owned(i, num_keys) };
             QsOwned::drop_immediately(value);
         }
     }
@@ -525,6 +529,16 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 
     pub fn get_value(&self, index: usize) -> QsShared<V> {
         self.values.get(index, self.num_keys())
+    }
+
+    pub unsafe fn into_owned(&self, index: usize) -> QsOwned<V> {
+        unsafe { self.values.into_owned(index, self.num_keys()) }
+    }
+
+    /// SAFETY: this will clobber an existing value and not invoke drop, so
+    /// the caller must ensure the value has been moved out of the slot eg with into_owned
+    pub unsafe fn clobber(&self, index: usize, value: QsOwned<V>) {
+        self.values.set(index, value);
     }
 
     pub fn pop(&self) -> (QsArc<K>, QsOwned<V>) {

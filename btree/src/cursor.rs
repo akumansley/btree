@@ -15,7 +15,7 @@ use crate::search::{
 use crate::splitting::EntryLocation;
 use crate::tree::{BTree, BTreeKey, BTreeValue, GetOrInsertResult, ModificationType};
 use crate::util::UnwrapEither;
-use thin::{QsArc, QsOwned, QsShared};
+use thin::{QsArc, QsOwned};
 
 pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub tree: &'a BTree<K, V>,
@@ -265,23 +265,21 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     }
 
     /// update_fn is called with the new value and the existing old value
-    pub fn insert_or_update<F>(
+    pub fn insert_or_modify<F>(
         &mut self,
         key: QsArc<K>,
         new_value: QsOwned<V>,
-        update_fn: F,
+        modify_fn: F,
     ) -> bool
     where
-        F: Fn(QsOwned<V>, QsShared<V>) -> QsOwned<V> + Send + Sync,
+        F: Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V> + Send + Sync,
     {
         self.seek(&key);
 
         let mut leaf = self.current_leaf.unwrap();
         let search_result = leaf.binary_search_key(&key);
         if let Ok(index) = search_result {
-            let old_value = leaf.storage.get_value(index);
-            let new_value = update_fn(new_value, old_value);
-            leaf.update(index, new_value);
+            leaf.modify_value(index, new_value, modify_fn);
             return false; // Key already existed, no insertion
         } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
             let index = search_result.unwrap_err();
@@ -304,9 +302,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 }
                 GetOrInsertResult::Got(returned_value) => {
                     let mut leaf = entry_location.leaf;
-                    let updated_value =
-                        update_fn(returned_value, leaf.storage.get_value(entry_location.index));
-                    leaf.update(entry_location.index, updated_value);
+                    leaf.modify_value(entry_location.index, returned_value, modify_fn);
                     self.current_leaf = Some(leaf);
                     self.current_index = entry_location.index;
                     false
