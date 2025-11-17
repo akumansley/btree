@@ -31,7 +31,7 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeV
 pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
-    F: Fn(QsShared<V>) -> QsOwned<V> + Send + Sync,
+    F: Fn(QsOwned<V>, QsShared<V>) -> QsOwned<V> + Send + Sync,
 >(
     sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
     update_fn: &F,
@@ -158,7 +158,7 @@ mod tests {
             .collect();
 
         // Define update function that appends "_updated" to existing values
-        let update_fn = |old_value: QsShared<String>| {
+        let update_fn = |_: QsOwned<String>, old_value: QsShared<String>| {
             let old_string = old_value.deref();
             QsOwned::new(format!("{}_updated", old_string))
         };

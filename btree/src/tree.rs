@@ -74,7 +74,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         entries: Vec<(QsArc<K>, QsOwned<V>)>,
         update_fn: &F,
     ) where
-        F: Fn(QsShared<V>) -> QsOwned<V> + Send + Sync,
+        F: Fn(QsOwned<V>, QsShared<V>) -> QsOwned<V> + Send + Sync,
     {
         bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
@@ -225,21 +225,22 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         optimistic_leaf.unlock_exclusive();
 
         // case 3: key doesn't exist, and we need to split
-        let (entry_location, was_inserted) = self.get_or_insert_pessimistic(key, value);
+        let (entry_location, result) = self.get_or_insert_pessimistic(key, value);
 
         // Increment the tree length if a new key was inserted
-        if was_inserted {
+        if matches!(result, GetOrInsertResult::Inserted) {
             self.root.len.fetch_add(1, Ordering::Relaxed);
         }
 
         CursorMut::new_from_location(self, entry_location)
     }
 
+    // returns the passed in value if it wasn't inserted
     pub(crate) fn get_or_insert_pessimistic(
         &self,
         key: QsArc<K>,
         value: QsOwned<V>,
-    ) -> (EntryLocation<K, V>, bool) {
+    ) -> (EntryLocation<K, V>, GetOrInsertResult<V>) {
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
             self.root.as_node_ref().lock_exclusive(),
             &key,
@@ -256,7 +257,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
                 n.assert_exclusive().unlock_exclusive();
             });
 
-            return (EntryLocation::new(leaf_node, index.unwrap()), false);
+            return (
+                EntryLocation::new(leaf_node, index.unwrap()),
+                GetOrInsertResult::Got(value),
+            );
         }
 
         let entry_location = insert_into_leaf_after_splitting_returning_leaf_with_new_entry(
@@ -264,7 +268,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             key,
             value,
         );
-        (entry_location, true)
+        (entry_location, GetOrInsertResult::Inserted)
     }
     pub fn remove(&self, key: &K) {
         debug_println!("top-level remove {:?}", key);
@@ -445,6 +449,11 @@ pub enum ModificationType {
     Insertion,
     Removal,
     NonModifying,
+}
+
+pub(crate) enum GetOrInsertResult<V: BTreeValue + ?Sized> {
+    Inserted,
+    Got(QsOwned<V>),
 }
 
 #[cfg(test)]
@@ -1107,7 +1116,7 @@ mod tests {
                 .collect();
 
             // Define update function
-            let update_fn = |old_value: QsShared<str>| {
+            let update_fn = |_, old_value: QsShared<str>| {
                 QsOwned::new_from_str(&format!("updated_{}", old_value.deref()))
             };
 

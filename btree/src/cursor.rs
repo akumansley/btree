@@ -13,7 +13,7 @@ use crate::search::{
     get_last_leaf_shared_using_shared_search,
 };
 use crate::splitting::EntryLocation;
-use crate::tree::{BTree, BTreeKey, BTreeValue, ModificationType};
+use crate::tree::{BTree, BTreeKey, BTreeValue, GetOrInsertResult, ModificationType};
 use crate::util::UnwrapEither;
 use thin::{QsArc, QsOwned, QsShared};
 
@@ -264,9 +264,15 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         leaf.update(self.current_index, value);
     }
 
-    pub fn insert_or_update<F>(&mut self, key: QsArc<K>, value: QsOwned<V>, update_fn: F) -> bool
+    /// update_fn is called with the new value and the existing old value
+    pub fn insert_or_update<F>(
+        &mut self,
+        key: QsArc<K>,
+        new_value: QsOwned<V>,
+        update_fn: F,
+    ) -> bool
     where
-        F: Fn(QsShared<V>) -> QsOwned<V> + Send + Sync,
+        F: Fn(QsOwned<V>, QsShared<V>) -> QsOwned<V> + Send + Sync,
     {
         self.seek(&key);
 
@@ -274,32 +280,38 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         let search_result = leaf.binary_search_key(&key);
         if let Ok(index) = search_result {
             let old_value = leaf.storage.get_value(index);
-            let new_value = update_fn(old_value);
+            let new_value = update_fn(new_value, old_value);
             leaf.update(index, new_value);
             return false; // Key already existed, no insertion
         } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
             let index = search_result.unwrap_err();
-            leaf.insert_new_value_at_index(key, value, index);
+            leaf.insert_new_value_at_index(key, new_value, index);
             return true; // New key inserted
         } else {
             // we need to split the leaf, so give up the lock
             leaf.unlock_exclusive();
 
-            let (entry_location, was_inserted) = self.tree.get_or_insert_pessimistic(key, value);
+            let (entry_location, result) =
+                // if this returned new value in the non-insert case, it'd work
+                self.tree.get_or_insert_pessimistic(key, new_value);
 
             // someone may have inserted while we were searching
-            if was_inserted {
-                self.current_leaf = Some(entry_location.leaf);
-                self.current_index = entry_location.index;
-            } else {
-                // get_or_insert_pessimistic just did a get, so we need to update the value
-                let mut leaf = entry_location.leaf;
-                let new_value = update_fn(leaf.storage.get_value(entry_location.index));
-                leaf.update(entry_location.index, new_value);
-                self.current_leaf = Some(leaf);
-                self.current_index = entry_location.index;
+            match result {
+                GetOrInsertResult::Inserted => {
+                    self.current_leaf = Some(entry_location.leaf);
+                    self.current_index = entry_location.index;
+                    true
+                }
+                GetOrInsertResult::Got(returned_value) => {
+                    let mut leaf = entry_location.leaf;
+                    let updated_value =
+                        update_fn(returned_value, leaf.storage.get_value(entry_location.index));
+                    leaf.update(entry_location.index, updated_value);
+                    self.current_leaf = Some(leaf);
+                    self.current_index = entry_location.index;
+                    false
+                }
             }
-            return was_inserted; // Return whether a new key was inserted
         }
     }
 
