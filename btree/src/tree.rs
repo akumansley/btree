@@ -97,7 +97,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         result
     }
 
-    pub fn get_with<Q, T>(&self, search_key: &Q, closure: impl Fn(&V) -> T) -> Option<T>
+    pub fn get_with<Q, T>(&self, search_key: &Q, closure: impl Fn(QsShared<V>) -> T) -> Option<T>
     where
         K: Borrow<Q>,
         Q: ?Sized + Ord,
@@ -110,7 +110,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             Some((_, value)) => value,
             None => return None,
         };
-        let result = closure(&value);
+        let result = closure(value);
         leaf_node_shared.unlock_shared();
         Some(result)
     }
