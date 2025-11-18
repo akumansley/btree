@@ -343,7 +343,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         &self,
         key: &K,
         predicate: impl Fn(&V) -> bool,
-        modify_fn: impl Fn(&V) -> QsOwned<V>,
+        modify_fn: impl FnOnce(QsOwned<V>) -> QsOwned<V>,
     ) {
         debug_println!("top-level modify_if {:?}", key);
 
@@ -364,8 +364,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             optimistic_leaf.unlock_exclusive();
             return;
         }
-        let new_value = modify_fn(&value);
-        optimistic_leaf.update(index, new_value);
+        optimistic_leaf.modify_value(index, modify_fn);
         optimistic_leaf.unlock_exclusive();
     }
 
@@ -1171,7 +1170,7 @@ mod tests {
         tree.modify_if(
             &3,
             |_| true,
-            |old_val| QsOwned::new(format!("updated_{}", old_val)),
+            |old_val| QsOwned::new(format!("updated_{}", old_val.deref())),
         );
         assert_eq!(tree.get(&3).as_deref(), Some(&"updated_value3".to_string()));
 
@@ -1188,7 +1187,7 @@ mod tests {
             tree.modify_if(
                 &i,
                 |v| v.starts_with("value"),
-                |old_val| QsOwned::new(format!("prefix_{}", old_val)),
+                |old_val| QsOwned::new(format!("prefix_{}", old_val.deref())),
             );
         }
         // Check that keys 0, 1, 2, 4, 6, 7, 8, 9 were modified (they still had "value" prefix)

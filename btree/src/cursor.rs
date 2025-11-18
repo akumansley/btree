@@ -284,7 +284,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         if let Ok(index) = search_result {
             let existing_value = leaf.storage.get_value(index);
             if predicate(existing_value) {
-                leaf.modify_value(index, new_value, modify_fn);
+                leaf.modify_value(index, |old_value| modify_fn(old_value, new_value));
                 return InsertOrModifyIfResult::Modified;
             }
             return InsertOrModifyIfResult::DidNothing;
@@ -309,7 +309,9 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 }
                 GetOrInsertResult::GotReturningNewValue(returned_value) => {
                     let mut leaf = entry_location.leaf;
-                    leaf.modify_value(entry_location.index, returned_value, modify_fn);
+                    leaf.modify_value(entry_location.index, |old_value| {
+                        modify_fn(old_value, returned_value)
+                    });
                     self.current_leaf = Some(leaf);
                     self.current_index = entry_location.index;
                     InsertOrModifyIfResult::Modified
