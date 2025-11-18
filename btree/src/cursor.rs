@@ -13,9 +13,11 @@ use crate::search::{
     get_last_leaf_shared_using_shared_search,
 };
 use crate::splitting::EntryLocation;
-use crate::tree::{BTree, BTreeKey, BTreeValue, GetOrInsertResult, ModificationType};
+use crate::tree::{
+    BTree, BTreeKey, BTreeValue, GetOrInsertResult, InsertOrModifyIfResult, ModificationType,
+};
 use crate::util::UnwrapEither;
-use thin::{QsArc, QsOwned};
+use thin::{QsArc, QsOwned, QsShared};
 
 pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub tree: &'a BTree<K, V>,
@@ -265,12 +267,13 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     }
 
     /// update_fn is called with the new value and the existing old value
-    pub fn insert_or_modify<F>(
+    pub fn insert_or_modify_if<F>(
         &mut self,
         key: QsArc<K>,
         new_value: QsOwned<V>,
+        predicate: impl Fn(QsShared<V>) -> bool,
         modify_fn: F,
-    ) -> bool
+    ) -> InsertOrModifyIfResult
     where
         F: Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V> + Send + Sync,
     {
@@ -279,12 +282,16 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         let mut leaf = self.current_leaf.unwrap();
         let search_result = leaf.binary_search_key(&key);
         if let Ok(index) = search_result {
-            leaf.modify_value(index, new_value, modify_fn);
-            return false; // Key already existed, no insertion
+            let existing_value = leaf.storage.get_value(index);
+            if predicate(existing_value) {
+                leaf.modify_value(index, new_value, modify_fn);
+                return InsertOrModifyIfResult::Modified;
+            }
+            return InsertOrModifyIfResult::DidNothing;
         } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
             let index = search_result.unwrap_err();
             leaf.insert_new_value_at_index(key, new_value, index);
-            return true; // New key inserted
+            return InsertOrModifyIfResult::Inserted; // New key inserted
         } else {
             // we need to split the leaf, so give up the lock
             leaf.unlock_exclusive();
@@ -298,14 +305,14 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 GetOrInsertResult::Inserted => {
                     self.current_leaf = Some(entry_location.leaf);
                     self.current_index = entry_location.index;
-                    true
+                    InsertOrModifyIfResult::Inserted
                 }
-                GetOrInsertResult::Got(returned_value) => {
+                GetOrInsertResult::GotReturningNewValue(returned_value) => {
                     let mut leaf = entry_location.leaf;
                     leaf.modify_value(entry_location.index, returned_value, modify_fn);
                     self.current_leaf = Some(leaf);
                     self.current_index = entry_location.index;
-                    false
+                    InsertOrModifyIfResult::Modified
                 }
             }
         }

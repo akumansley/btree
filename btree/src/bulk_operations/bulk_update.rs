@@ -1,4 +1,5 @@
 use crate::sync::AtomicUsize;
+use crate::tree::InsertOrModifyIfResult;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use std::sync::Arc;
 use thin::{QsArc, QsOwned};
@@ -49,10 +50,10 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
                 let insertion_count = Arc::clone(&insertion_count);
                 let mut cursor = tree.cursor_mut();
                 for (key, value) in chunk {
-                    let was_inserted = cursor.insert_or_modify(key, value, update_fn);
+                    let result = cursor.insert_or_modify_if(key, value, |_| true, update_fn);
 
                     // Increment the insertion count if a new key was inserted
-                    if was_inserted {
+                    if matches!(result, InsertOrModifyIfResult::Inserted) {
                         insertion_count.fetch_add(1, crate::sync::Ordering::Relaxed);
                     }
                 }
