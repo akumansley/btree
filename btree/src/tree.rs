@@ -344,7 +344,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         key: &K,
         predicate: impl Fn(&V) -> bool,
         modify_fn: impl FnOnce(QsOwned<V>) -> QsOwned<V>,
-    ) {
+    ) -> bool {
         debug_println!("top-level modify_if {:?}", key);
 
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
@@ -356,16 +356,17 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             Ok(index) => index,
             Err(_) => {
                 optimistic_leaf.unlock_exclusive();
-                return;
+                return false;
             } // nothing to modify
         };
         let value = optimistic_leaf.storage.get_value(index);
         if !predicate(&value) {
             optimistic_leaf.unlock_exclusive();
-            return;
+            return false;
         }
         optimistic_leaf.modify_value(index, modify_fn);
         optimistic_leaf.unlock_exclusive();
+        true
     }
 
     pub fn print_tree(&self) {
