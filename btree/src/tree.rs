@@ -97,7 +97,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         result
     }
 
-    pub fn get_and<Q>(&self, search_key: &Q, closure: impl Fn(&V))
+    pub fn get_with<Q, T>(&self, search_key: &Q, closure: impl Fn(&V) -> T) -> Option<T>
     where
         K: Borrow<Q>,
         Q: ?Sized + Ord,
@@ -108,10 +108,11 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         );
         let value = match leaf_node_shared.get(search_key) {
             Some((_, value)) => value,
-            None => return,
+            None => return None,
         };
-        closure(&value);
+        let result = closure(&value);
         leaf_node_shared.unlock_shared();
+        Some(result)
     }
 
     pub fn get_exclusively_and<Q>(&self, search_key: &Q, closure: impl Fn(&V))
