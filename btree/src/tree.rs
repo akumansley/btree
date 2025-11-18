@@ -347,25 +347,17 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     ) -> bool {
         debug_println!("top-level modify_if {:?}", key);
 
-        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
-            self.root.as_node_ref(),
-            key,
-        );
-
-        let index = match optimistic_leaf.binary_search_key(&key) {
-            Ok(index) => index,
-            Err(_) => {
-                optimistic_leaf.unlock_exclusive();
-                return false;
-            } // nothing to modify
-        };
-        let value = optimistic_leaf.storage.get_value(index);
-        if !predicate(&value) {
-            optimistic_leaf.unlock_exclusive();
+        let mut cursor = self.cursor_mut();
+        let found = cursor.seek(key);
+        if !found {
             return false;
         }
-        optimistic_leaf.modify_value(index, modify_fn);
-        optimistic_leaf.unlock_exclusive();
+        let entry = cursor.current().unwrap();
+        let value = entry.value();
+        if !predicate(value) {
+            return false;
+        }
+        cursor.modify_value(modify_fn);
         true
     }
 

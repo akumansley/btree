@@ -266,6 +266,12 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         leaf.update(self.current_index, value);
     }
 
+    pub fn modify_value(&mut self, modify_fn: impl FnOnce(QsOwned<V>) -> QsOwned<V>) {
+        let leaf = self.current_leaf.as_mut().unwrap();
+        let index = self.current_index;
+        leaf.modify_value(index, modify_fn);
+    }
+
     /// update_fn is called with the new value and the existing old value
     pub fn insert_or_modify_if<F>(
         &mut self,
