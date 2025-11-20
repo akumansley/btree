@@ -115,7 +115,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         Some(result)
     }
 
-    pub fn get_exclusively_and<Q>(&self, search_key: &Q, closure: impl Fn(&V))
+    pub fn get_exclusively_and<Q>(&self, search_key: &Q, closure: impl Fn(QsShared<V>))
     where
         K: Borrow<Q>,
         Q: ?Sized + Ord,
@@ -128,7 +128,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             Some((_, value)) => value,
             None => return,
         };
-        closure(&value);
+        closure(value);
         leaf_node_exclusive.unlock_exclusive();
     }
 
