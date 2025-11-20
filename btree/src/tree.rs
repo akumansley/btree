@@ -276,7 +276,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         self.remove_if(key, |_| true);
     }
 
-    pub fn remove_if(&self, key: &K, predicate: impl Fn(&V) -> bool) -> bool {
+    pub fn remove_if(&self, key: &K, predicate: impl Fn(QsShared<V>) -> bool) -> bool {
         debug_println!("top-level remove {:?}", key);
 
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
@@ -291,7 +291,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             } // nothing to remove
         };
         let value = optimistic_leaf.storage.get_value(index);
-        if !predicate(&value) {
+        if !predicate(value) {
             optimistic_leaf.unlock_exclusive();
             return false;
         }
@@ -319,7 +319,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         match search_result {
             Ok(index) => {
                 let value = leaf_node_exclusive.storage.get_value(index);
-                if predicate(&value) {
+                if predicate(value) {
                     leaf_node_exclusive.remove_at_index(search_result.unwrap());
                     self.root.len.fetch_sub(1, Ordering::Relaxed);
                     removed = true;
