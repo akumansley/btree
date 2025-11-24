@@ -4,6 +4,8 @@ use std::ops::Deref;
 
 use std::{marker::PhantomData, ptr::NonNull};
 
+use serde::{Serialize, Serializer};
+
 use crate::{arcs::common::impl_thin_arc_traits, Arcable};
 
 pub struct QsWeak<T: ?Sized + Arcable + 'static> {
@@ -23,3 +25,15 @@ impl<T: ?Sized + Arcable> Clone for QsWeak<T> {
 }
 
 impl<T: ?Sized + Arcable> Copy for QsWeak<T> {}
+
+// it makes sense for QsWeak to implement serialize, but not deserialize, because
+// a QsWeak must be derived from a QsArc
+
+impl<T: Serialize + ?Sized + Arcable> Serialize for QsWeak<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (**self).serialize(serializer)
+    }
+}
