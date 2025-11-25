@@ -27,7 +27,7 @@ pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
 
 impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
     pub fn seek_to_start(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
+        if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_shared();
         }
         let leaf = match get_first_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref())
@@ -40,7 +40,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
     }
 
     pub fn seek_to_end(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
+        if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_shared();
         }
         let leaf = match get_last_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref())
@@ -213,7 +213,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         }
     }
     pub fn seek_to_start(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
+        if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_exclusive();
         }
         let leaf = match get_first_leaf_exclusively_using_optimistic_search(
@@ -227,7 +227,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     }
 
     pub fn seek_to_end(&mut self) {
-        if let Some(leaf) = self.current_leaf.as_ref().cloned() {
+        if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_exclusive();
         }
         let leaf =
