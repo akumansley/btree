@@ -248,7 +248,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             ModificationType::Insertion,
         );
         // since we restarted our search, we need to see if the key exists again before we split
-        let leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
+        let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
         let index = leaf_node.binary_search_key(&key);
         if index.is_ok() {
             // someone has inserted the key while we were searching
@@ -261,6 +261,21 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             return (
                 EntryLocation::new(leaf_node, index.unwrap()),
                 GetOrInsertResult::GotReturningNewValue(value),
+            );
+        }
+
+        // Check if the leaf now has capacity, and insert if so
+        if leaf_node.has_capacity_for_modification(ModificationType::Insertion) {
+            let insert_index = index.unwrap_err();
+            leaf_node.insert_new_value_at_index(key, value, insert_index);
+            self.root.len.fetch_add(1, Ordering::Relaxed);
+            search_stack.pop_lowest();
+            search_stack.drain().for_each(|n| {
+                n.assert_exclusive().unlock_exclusive();
+            });
+            return (
+                EntryLocation::new(leaf_node, insert_index),
+                GetOrInsertResult::Inserted,
             );
         }
 

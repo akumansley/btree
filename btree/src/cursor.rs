@@ -302,24 +302,21 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
             // we need to split the leaf, so give up the lock
             leaf.unlock_exclusive();
 
-            let (entry_location, result) =
-                // if this returned new value in the non-insert case, it'd work
+            // someone may have inserted while we were searching, so use get_or_insert
+            // entry_location is the resulting locked leaf that the cursor will hold
+            let (EntryLocation { leaf, index }, result) =
                 self.tree.get_or_insert_pessimistic(key, new_value);
+            self.current_leaf = Some(leaf);
+            self.current_index = index;
 
-            // someone may have inserted while we were searching
             match result {
-                GetOrInsertResult::Inserted => {
-                    self.current_leaf = Some(entry_location.leaf);
-                    self.current_index = entry_location.index;
-                    InsertOrModifyIfResult::Inserted
-                }
+                GetOrInsertResult::Inserted => InsertOrModifyIfResult::Inserted,
                 GetOrInsertResult::GotReturningNewValue(returned_value) => {
-                    let mut leaf = entry_location.leaf;
-                    leaf.modify_value(entry_location.index, |old_value| {
-                        modify_fn(old_value, returned_value)
-                    });
-                    self.current_leaf = Some(leaf);
-                    self.current_index = entry_location.index;
+                    self.current_leaf
+                        .unwrap()
+                        .modify_value(self.current_index, |old_value| {
+                            modify_fn(old_value, returned_value)
+                        });
                     InsertOrModifyIfResult::Modified
                 }
             }
@@ -722,5 +719,54 @@ mod tests {
                 }
             });
         });
+    }
+
+    #[qsbr_test]
+    fn test_cursor_mut_insert_or_modify_if_with_forced_splits() {
+        let tree = BTree::<usize, usize>::new();
+        let num_threads = 16;
+        let operations_per_thread = 500;
+
+        let barrier = Barrier::new(num_threads);
+
+        std::thread::scope(|s| {
+            for thread_id in 0..num_threads {
+                let tree_ref = &tree;
+                let barrier_ref = &barrier;
+                s.spawn(move || {
+                    let _guard = qsbr_reclaimer().guard();
+
+                    barrier_ref.wait();
+
+                    for op in 0..operations_per_thread {
+                        // Use sequential keys to force splits more aggressively
+                        let key = thread_id * operations_per_thread + op;
+
+                        if op % 5 == 0 && op > 0 {
+                            // Remove a previous key
+                            let remove_key = thread_id * operations_per_thread + (op - 1);
+                            tree_ref.remove(&remove_key);
+                        } else {
+                            // Use cursor's insert_or_modify_if
+                            let mut cursor = tree_ref.cursor_mut();
+                            cursor.insert_or_modify_if(
+                                QsArc::new(key),
+                                QsOwned::new(key),
+                                |_| true,
+                                |old_val, new_val| QsOwned::new(*old_val + *new_val),
+                            );
+                            drop(cursor);
+                        }
+
+                        // Yield frequently to increase contention during splits
+                        if op % 3 == 0 {
+                            std::thread::yield_now();
+                        }
+                    }
+                });
+            }
+        });
+
+        tree.check_invariants();
     }
 }
