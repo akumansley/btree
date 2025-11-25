@@ -769,4 +769,53 @@ mod tests {
 
         tree.check_invariants();
     }
+
+    #[qsbr_test]
+    fn test_cursor_mut_insert_or_modify_if_with_get_with_on_empty_tree() {
+        let tree = BTree::<usize, usize>::new();
+        let num_threads = 8;
+        let barrier = Barrier::new(num_threads);
+
+        std::thread::scope(|s| {
+            // Half the threads do insert_or_modify_if
+            for thread_id in 0..num_threads / 2 {
+                let tree_ref = &tree;
+                let barrier_ref = &barrier;
+                s.spawn(move || {
+                    let _guard = qsbr_reclaimer().guard();
+                    barrier_ref.wait();
+
+                    for op in 0..100 {
+                        let key = thread_id * 100 + op;
+                        let mut cursor = tree_ref.cursor_mut();
+                        cursor.insert_or_modify_if(
+                            QsArc::new(key),
+                            QsOwned::new(key),
+                            |_| true,
+                            |old_val, new_val| QsOwned::new(*old_val + *new_val),
+                        );
+                        drop(cursor);
+                        std::thread::yield_now();
+                    }
+                });
+            }
+
+            // Other half do get_with
+            for _ in num_threads / 2..num_threads {
+                let tree_ref = &tree;
+                let barrier_ref = &barrier;
+                s.spawn(move || {
+                    let _guard = qsbr_reclaimer().guard();
+                    barrier_ref.wait();
+
+                    for key in 0..400 {
+                        let _ = tree_ref.get_with(&key, |v| *v);
+                        std::thread::yield_now();
+                    }
+                });
+            }
+        });
+
+        tree.check_invariants();
+    }
 }

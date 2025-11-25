@@ -108,7 +108,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         );
         let value = match leaf_node_shared.get(search_key) {
             Some((_, value)) => value,
-            None => return None,
+            None => {
+                leaf_node_shared.unlock_shared();
+                return None;
+            }
         };
         let result = closure(value);
         leaf_node_shared.unlock_shared();
@@ -126,7 +129,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         );
         let value = match leaf_node_exclusive.get(search_key) {
             Some((_, value)) => value,
-            None => return,
+            None => {
+                leaf_node_exclusive.unlock_exclusive();
+                return;
+            }
         };
         closure(value);
         leaf_node_exclusive.unlock_exclusive();
