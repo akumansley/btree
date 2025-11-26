@@ -447,6 +447,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             tree: self,
             current_leaf: None,
             current_index: 0,
+            current_leaf_num_keys: None,
         }
     }
 

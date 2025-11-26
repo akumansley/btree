@@ -23,9 +23,24 @@ pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub tree: &'a BTree<K, V>,
     pub current_leaf: Option<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>>,
     pub current_index: usize,
+    pub current_leaf_num_keys: Option<u16>,
 }
 
 impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
+    fn set_current_leaf(&mut self, leaf: SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>) {
+        self.current_leaf = Some(leaf);
+        self.current_leaf_num_keys = Some(leaf.num_keys().try_into().unwrap());
+    }
+
+    fn release_current_leaf(&mut self) {
+        self.current_leaf.take().unwrap().unlock_shared();
+        self.current_leaf_num_keys = None;
+    }
+
+    fn current_leaf_num_keys(&self) -> usize {
+        self.current_leaf_num_keys.unwrap() as usize
+    }
+
     pub fn seek_to_start(&mut self) {
         if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_shared();
@@ -35,7 +50,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             Ok(leaf) => leaf,
             Err(_) => get_first_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
         };
-        self.current_leaf = Some(leaf);
+        self.set_current_leaf(leaf);
         self.current_index = 0;
     }
 
@@ -48,8 +63,9 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             Ok(leaf) => leaf,
             Err(_) => get_last_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
         };
-        self.current_index = leaf.num_keys().saturating_sub(1);
-        self.current_leaf = Some(leaf);
+        let num_keys = leaf.num_keys();
+        self.current_index = num_keys.saturating_sub(1);
+        self.set_current_leaf(leaf);
     }
 
     pub fn seek<Q>(&mut self, key: &Q) -> bool
@@ -67,7 +83,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
                     return true;
                 }
             }
-            self.current_leaf.take().unwrap().unlock_shared();
+            self.release_current_leaf();
         }
         self.seek_from_top(key)
     }
@@ -85,14 +101,14 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             key,
         );
         let result = leaf.binary_search_key(key);
-        self.current_leaf = Some(leaf);
+        self.set_current_leaf(leaf);
         self.current_index = result.unwrap_either();
         result.is_ok()
     }
 
     pub fn current(&self) -> Option<Entry<K, V>> {
         if let Some(leaf) = &self.current_leaf {
-            if self.current_index < leaf.num_keys() {
+            if self.current_index < self.current_leaf_num_keys() {
                 return Some(Entry::new(
                     leaf.storage.get_key(self.current_index),
                     leaf.storage.get_value(self.current_index),
@@ -108,7 +124,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
                 return false;
             }
             let leaf = self.current_leaf.unwrap();
-            if self.current_index < leaf.num_keys() - 1 {
+            if self.current_index < self.current_leaf_num_keys() - 1 {
                 self.current_index += 1;
                 return true;
             }
@@ -116,7 +132,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             // Move to next leaf
             let maybe_next_leaf = leaf.next_leaf();
             if maybe_next_leaf.is_none() {
-                self.current_leaf.take().unwrap().unlock_shared();
+                self.release_current_leaf();
                 return false;
             }
 
@@ -130,8 +146,8 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
                     continue;
                 }
             };
-            self.current_leaf.take().unwrap().unlock_shared();
-            self.current_leaf = Some(next_leaf);
+            self.release_current_leaf();
+            self.set_current_leaf(next_leaf);
             self.current_index = 0;
             return true;
         }
@@ -151,7 +167,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             // Move to previous leaf
             let maybe_prev_leaf = leaf.prev_leaf();
             if maybe_prev_leaf.is_none() {
-                self.current_leaf.take().unwrap().unlock_shared();
+                self.release_current_leaf();
                 return false;
             }
 
@@ -161,14 +177,14 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
                     // we didn't attain the lock, so restart from the top
                     // to the current key
                     let key = leaf.storage.get_key(self.current_index);
-                    self.current_leaf.take().unwrap().unlock_shared();
+                    self.release_current_leaf();
                     self.seek(&key);
                     continue;
                 }
             };
-            self.current_leaf.take().unwrap().unlock_shared();
-            self.current_index = prev_leaf.num_keys();
-            self.current_leaf = Some(prev_leaf);
+            self.release_current_leaf();
+            self.set_current_leaf(prev_leaf);
+            self.current_index = self.current_leaf_num_keys();
         }
     }
 }
