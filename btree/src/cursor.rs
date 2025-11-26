@@ -323,6 +323,10 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
             let index = search_result.unwrap_err();
             leaf.insert_new_value_at_index(key, new_value, index);
+            self.tree
+                .root
+                .len
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return InsertOrModifyIfResult::Inserted; // New key inserted
         } else {
             // we need to split the leaf, so give up the lock
