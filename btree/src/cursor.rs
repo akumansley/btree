@@ -29,7 +29,7 @@ pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
 impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
     fn set_current_leaf(&mut self, leaf: SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>) {
         self.current_leaf = Some(leaf);
-        self.current_leaf_num_keys = Some(leaf.num_keys().try_into().unwrap());
+        self.current_leaf_num_keys = Some(leaf.num_keys_relaxed().try_into().unwrap());
     }
 
     fn release_current_leaf(&mut self) {
@@ -63,9 +63,8 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             Ok(leaf) => leaf,
             Err(_) => get_last_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
         };
-        let num_keys = leaf.num_keys();
-        self.current_index = num_keys.saturating_sub(1);
         self.set_current_leaf(leaf);
+        self.current_index = self.current_leaf_num_keys().saturating_sub(1);
     }
 
     pub fn seek<Q>(&mut self, key: &Q) -> bool
@@ -106,6 +105,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
         result.is_ok()
     }
 
+    #[inline(always)]
     pub fn current(&self) -> Option<Entry<K, V>> {
         if let Some(leaf) = &self.current_leaf {
             if self.current_index < self.current_leaf_num_keys() {
@@ -118,7 +118,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
         None
     }
 
-    pub fn move_next(&mut self) -> bool {
+    pub fn move_next_slow(&mut self) -> bool {
         loop {
             if self.current_leaf.is_none() {
                 return false;
@@ -150,6 +150,16 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             self.set_current_leaf(next_leaf);
             self.current_index = 0;
             return true;
+        }
+    }
+
+    #[inline(always)]
+    pub fn move_next(&mut self) -> bool {
+        if self.current_leaf.is_some() && self.current_index < self.current_leaf_num_keys() - 1 {
+            self.current_index += 1;
+            return true;
+        } else {
+            return self.move_next_slow();
         }
     }
 

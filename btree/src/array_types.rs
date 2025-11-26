@@ -500,6 +500,10 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
         self.num_keys.load(Ordering::Acquire)
     }
 
+    pub fn num_keys_relaxed(&self) -> usize {
+        self.num_keys.load(Ordering::Relaxed)
+    }
+
     pub fn keys(&self) -> &[OwnedAtomicThinArc<K>] {
         self.keys.as_slice(self.num_keys())
     }
@@ -519,7 +523,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     }
 
     pub fn get_key(&self, index: usize) -> QsWeak<K> {
-        self.keys.get(index, self.num_keys())
+        self.keys.get(index, self.num_keys_relaxed())
     }
 
     pub fn clone_key(&self, index: usize) -> QsArc<K> {
@@ -528,7 +532,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     }
 
     pub fn get_value(&self, index: usize) -> QsShared<V> {
-        self.values.get(index, self.num_keys())
+        self.values.get(index, self.num_keys_relaxed())
     }
 
     pub unsafe fn into_owned(&self, index: usize) -> QsOwned<V> {

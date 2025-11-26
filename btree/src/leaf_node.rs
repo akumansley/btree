@@ -161,6 +161,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         self.storage.num_keys()
     }
 
+    pub fn num_keys_relaxed(&self) -> usize {
+        self.storage.num_keys_relaxed()
+    }
+
     pub fn has_capacity_for_modification(&self, modification_type: ModificationType) -> bool {
         match modification_type {
             ModificationType::Insertion => self.num_keys() < MAX_KEYS_PER_NODE,
