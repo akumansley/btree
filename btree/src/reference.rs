@@ -70,6 +70,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Entry<K, V> {
     pub fn key(&self) -> &K {
         self.key.deref()
     }
+    pub fn key_shared_ptr(&self) -> QsWeak<K> {
+        self.key
+    }
     pub fn value(&self) -> &V {
         self.value.deref()
     }

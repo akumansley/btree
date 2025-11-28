@@ -341,13 +341,19 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
 
             match result {
                 GetOrInsertResult::Inserted => InsertOrModifyIfResult::Inserted,
-                GetOrInsertResult::GotReturningNewValue(returned_value) => {
-                    self.current_leaf
-                        .unwrap()
-                        .modify_value(self.current_index, |old_value| {
-                            modify_fn(old_value, returned_value)
-                        });
-                    InsertOrModifyIfResult::Modified
+                GetOrInsertResult::GotReturningExistingAndProposed(
+                    existing_value,
+                    proposed_value,
+                ) => {
+                    if predicate(existing_value) {
+                        self.current_leaf
+                            .unwrap()
+                            .modify_value(self.current_index, |old_value| {
+                                modify_fn(old_value, proposed_value)
+                            });
+                        return InsertOrModifyIfResult::Modified;
+                    }
+                    return InsertOrModifyIfResult::DidNothing;
                 }
             }
         }

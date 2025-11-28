@@ -266,7 +266,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
             return (
                 EntryLocation::new(leaf_node, index.unwrap()),
-                GetOrInsertResult::GotReturningNewValue(value),
+                GetOrInsertResult::GotReturningExistingAndProposed(
+                    leaf_node.storage.get_value(index.unwrap()),
+                    value,
+                ),
             );
         }
 
@@ -468,7 +471,7 @@ pub enum ModificationType {
 
 pub(crate) enum GetOrInsertResult<V: BTreeValue + ?Sized> {
     Inserted,
-    GotReturningNewValue(QsOwned<V>),
+    GotReturningExistingAndProposed(QsShared<V>, QsOwned<V>),
 }
 
 pub enum InsertOrModifyIfResult {

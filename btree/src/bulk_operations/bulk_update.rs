@@ -1,7 +1,4 @@
-use crate::sync::AtomicUsize;
-use crate::tree::InsertOrModifyIfResult;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
-use std::sync::Arc;
 use thin::{QsArc, QsOwned};
 
 use crate::{array_types::ORDER, BTree, BTreeKey, BTreeValue};
@@ -38,35 +35,18 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
     update_fn: &F,
     tree: &BTree<K, V>,
 ) {
-    // Create an atomic counter to track the number of new insertions
-    let insertion_count = Arc::new(AtomicUsize::new(0));
-
     let pool = qsbr_pool();
     pool.install(|| {
         sorted_kv_pairs
             .into_par_iter()
             .chunks(ORDER * 8) // the cursors can still overlap leaves, but that shouldn't cause problems
             .for_each(|chunk| {
-                let insertion_count = Arc::clone(&insertion_count);
                 let mut cursor = tree.cursor_mut();
                 for (key, value) in chunk {
-                    let result = cursor.insert_or_modify_if(key, value, |_| true, update_fn);
-
-                    // Increment the insertion count if a new key was inserted
-                    if matches!(result, InsertOrModifyIfResult::Inserted) {
-                        insertion_count.fetch_add(1, crate::sync::Ordering::Relaxed);
-                    }
+                    cursor.insert_or_modify_if(key, value, |_| true, update_fn);
                 }
             });
     });
-
-    // Update the tree length with the number of new insertions
-    let new_insertions = insertion_count.load(crate::sync::Ordering::Relaxed);
-    if new_insertions > 0 {
-        tree.root
-            .len
-            .fetch_add(new_insertions, crate::sync::Ordering::Relaxed);
-    }
 
     pool.broadcast(|_| {
         unsafe { qsbr_reclaimer().mark_current_thread_quiescent() };
