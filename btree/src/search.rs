@@ -209,9 +209,13 @@ pub fn get_leaf_exclusively_using_optimistic_search_with_fallback<
     }
 }
 
-pub fn get_leaf_exclusively_using_exclusive_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+pub fn get_leaf_exclusively_using_exclusive_search<
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: Ord + ?Sized,
+    V: BTreeValue + ?Sized,
+>(
     locked_root: SharedNodeRef<K, V, marker::LockedExclusive, marker::Root>,
-    search_key: &K,
+    search_key: &Q,
     modification_type: ModificationType,
 ) -> SearchDequeue<K, V> {
     let mut search = SearchDequeue::new();

@@ -19,6 +19,7 @@ use crate::search::{
     get_leaf_exclusively_using_optimistic_search_with_fallback,
     get_leaf_shared_using_optimistic_search_with_fallback,
 };
+use crate::search_dequeue::SearchDequeue;
 use crate::splitting::{
     insert_into_leaf_after_splitting,
     insert_into_leaf_after_splitting_returning_leaf_with_new_entry, EntryLocation,
@@ -295,6 +296,96 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         );
         (entry_location, GetOrInsertResult::Inserted)
     }
+
+    pub fn remove_or_modify_if<Q>(
+        &mut self,
+        key: &Q,
+        decider: impl Fn(QsShared<V>) -> RemoveOrModifyDecision,
+        modify_fn: impl FnOnce(QsOwned<V>) -> QsOwned<V>,
+    ) -> RemoveOrModifyIfResult
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.root.as_node_ref(),
+            key,
+        );
+        let index = match optimistic_leaf.binary_search_key(&key) {
+            Ok(index) => index,
+            Err(_) => {
+                optimistic_leaf.unlock_exclusive();
+                return RemoveOrModifyIfResult::DidNothing;
+            } // nothing to remove
+        };
+        let decision = decider(optimistic_leaf.storage.get_value(index));
+
+        // Handle non-remove cases immediately (no structural changes possible)
+        match decision {
+            RemoveOrModifyDecision::DoNothing => {
+                optimistic_leaf.unlock_exclusive();
+                return RemoveOrModifyIfResult::DidNothing;
+            }
+            RemoveOrModifyDecision::Modify => {
+                optimistic_leaf.modify_value(index, modify_fn);
+                optimistic_leaf.unlock_exclusive();
+                return RemoveOrModifyIfResult::Modified;
+            }
+            RemoveOrModifyDecision::Remove => {} // fall through to removal logic
+        }
+        // Decided to Remove: do we have capacity to remove immediately?
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal) {
+            optimistic_leaf.remove_at_index(index);
+            self.root.len.fetch_sub(1, Ordering::Relaxed);
+            optimistic_leaf.unlock_exclusive();
+            return RemoveOrModifyIfResult::Removed;
+        }
+
+        // we don't -- we may need to do structural modifications, so fall back to exclusive search
+        optimistic_leaf.unlock_exclusive();
+        let search_stack = get_leaf_exclusively_using_exclusive_search(
+            self.root.as_node_ref().lock_exclusive(),
+            key,
+            ModificationType::Removal,
+        );
+        let mut pessimistic_leaf = search_stack.peek_lowest().assert_leaf().assert_exclusive();
+
+        let unlock_stack = |mut s: SearchDequeue<K, V>| {
+            s.drain().for_each(|n| {
+                n.assert_exclusive().unlock_exclusive();
+            });
+        };
+
+        let Ok(index) = pessimistic_leaf.binary_search_key(key) else {
+            unlock_stack(search_stack);
+            return RemoveOrModifyIfResult::DidNothing;
+        };
+
+        // Now we've locked the necessary path to the leaf,
+        // but everything could've changed so we need to re-evaluate
+        match decider(pessimistic_leaf.storage.get_value(index)) {
+            RemoveOrModifyDecision::DoNothing => {
+                unlock_stack(search_stack);
+                RemoveOrModifyIfResult::DidNothing
+            }
+            RemoveOrModifyDecision::Modify => {
+                pessimistic_leaf.modify_value(index, modify_fn);
+                unlock_stack(search_stack);
+                RemoveOrModifyIfResult::Modified
+            }
+            RemoveOrModifyDecision::Remove => {
+                pessimistic_leaf.remove_at_index(index);
+                self.root.len.fetch_sub(1, Ordering::Relaxed);
+                if pessimistic_leaf.num_keys() < MIN_KEYS_PER_NODE {
+                    coalesce_or_redistribute_leaf_node(search_stack);
+                } else {
+                    unlock_stack(search_stack);
+                }
+                RemoveOrModifyIfResult::Removed
+            }
+        }
+    }
+
     pub fn remove(&self, key: &K) {
         debug_println!("top-level remove {:?}", key);
         self.remove_if(key, |_| true);
@@ -476,6 +567,19 @@ pub(crate) enum GetOrInsertResult<V: BTreeValue + ?Sized> {
 
 pub enum InsertOrModifyIfResult {
     Inserted,
+    Modified,
+    DidNothing,
+}
+
+pub enum RemoveOrModifyDecision {
+    Remove,
+    Modify,
+    DoNothing,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RemoveOrModifyIfResult {
+    Removed,
     Modified,
     DidNothing,
 }
@@ -843,6 +947,108 @@ mod tests {
                 tree.remove_if(&i, |v| v.contains('1')); // Only remove values containing '1'
             }
         }
+        tree.check_invariants();
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_remove_or_modify_if_structural_modifications() {
+        qsbr_reclaimer().register_thread();
+        let mut tree = BTree::<usize, usize>::new();
+
+        // Insert enough elements to create multiple leaves and force structural modifications
+        let n = ORDER * 4;
+        for i in 0..n {
+            tree.insert(QsArc::new(i), QsOwned::new(i));
+        }
+        tree.check_invariants();
+
+        // Remove elements to trigger coalescing/redistribution
+        // Remove every other element to stress the structural modification path
+        for i in (0..n).step_by(2) {
+            let result = tree.remove_or_modify_if(&i, |_| RemoveOrModifyDecision::Remove, |v| v);
+            assert_eq!(result, RemoveOrModifyIfResult::Removed);
+            tree.check_invariants();
+
+            // Verify we can still access remaining elements (locks released)
+            if i + 1 < n {
+                assert_eq!(tree.get(&(i + 1)).as_deref(), Some(&(i + 1)));
+            }
+        }
+
+        // Verify final state
+        let expected_len = n / 2;
+        assert_eq!(tree.len(), expected_len);
+        for i in (1..n).step_by(2) {
+            assert_eq!(tree.get(&i).as_deref(), Some(&i));
+        }
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_remove_or_modify_if_sequence() {
+        qsbr_reclaimer().register_thread();
+        let mut tree = BTree::<usize, String>::new();
+
+        // Insert elements
+        for i in 0..100 {
+            tree.insert(QsArc::new(i), QsOwned::new(format!("v{}", i)));
+        }
+
+        // Sequence of operations mixing all decision types
+        for i in 0..100 {
+            let result = tree.remove_or_modify_if(
+                &i,
+                |_| match i % 4 {
+                    0 => RemoveOrModifyDecision::Remove,
+                    1 => RemoveOrModifyDecision::Modify,
+                    2 => RemoveOrModifyDecision::DoNothing,
+                    _ => RemoveOrModifyDecision::Remove,
+                },
+                |_| QsOwned::new(format!("modified{}", i)),
+            );
+
+            match i % 4 {
+                0 | 3 => assert_eq!(result, RemoveOrModifyIfResult::Removed),
+                1 => assert_eq!(result, RemoveOrModifyIfResult::Modified),
+                2 => assert_eq!(result, RemoveOrModifyIfResult::DidNothing),
+                _ => unreachable!(),
+            }
+            tree.check_invariants();
+        }
+
+        // Verify final state
+        for i in 0..100 {
+            match i % 4 {
+                0 | 3 => assert!(tree.get(&i).is_none()),
+                1 => assert_eq!(tree.get(&i).as_deref(), Some(&format!("modified{}", i))),
+                2 => assert_eq!(tree.get(&i).as_deref(), Some(&format!("v{}", i))),
+                _ => unreachable!(),
+            }
+        }
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_remove_or_modify_if_empty_tree() {
+        qsbr_reclaimer().register_thread();
+        let mut tree = BTree::<usize, usize>::new();
+
+        let result = tree.remove_or_modify_if(&1, |_| RemoveOrModifyDecision::Remove, |v| v);
+        assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
+
+        let result = tree.remove_or_modify_if(&1, |_| RemoveOrModifyDecision::Modify, |v| v);
+        assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
+
+        let result = tree.remove_or_modify_if(&1, |_| RemoveOrModifyDecision::DoNothing, |v| v);
+        assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
+
+        // Tree should still be usable
+        tree.insert(QsArc::new(1), QsOwned::new(100));
+        assert_eq!(tree.get(&1).as_deref(), Some(&100));
         tree.check_invariants();
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
