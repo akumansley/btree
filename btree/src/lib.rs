@@ -37,4 +37,7 @@ pub use cursor::{Cursor, CursorMut};
 pub use iter::{BackwardBTreeIterator, ForwardBTreeIterator};
 pub use qsbr::{qsbr_reclaimer, MemoryReclaimer};
 pub use reference::{Entry, Ref};
-pub use tree::{BTree, BTreeKey, BTreeValue, InsertOrModifyIfResult};
+pub use tree::{
+    BTree, BTreeKey, BTreeValue, InsertOrModifyIfResult, RemoveOrModifyDecision,
+    RemoveOrModifyIfResult,
+};
