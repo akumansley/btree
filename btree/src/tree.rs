@@ -298,7 +298,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     }
 
     pub fn remove_or_modify_if<Q>(
-        &mut self,
+        &self,
         key: &Q,
         decider: impl Fn(QsShared<V>) -> RemoveOrModifyDecision,
         modify_fn: impl FnOnce(QsOwned<V>) -> QsOwned<V>,
