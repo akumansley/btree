@@ -124,7 +124,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
                 return false;
             }
             let leaf = self.current_leaf.unwrap();
-            if self.current_index < self.current_leaf_num_keys() - 1 {
+            if self.current_index < self.current_leaf_num_keys().saturating_sub(1) {
                 self.current_index += 1;
                 return true;
             }
@@ -155,7 +155,9 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
 
     #[inline(always)]
     pub fn move_next(&mut self) -> bool {
-        if self.current_leaf.is_some() && self.current_index < self.current_leaf_num_keys() - 1 {
+        if self.current_leaf.is_some()
+            && self.current_index < self.current_leaf_num_keys().saturating_sub(1)
+        {
             self.current_index += 1;
             return true;
         } else {
@@ -263,7 +265,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                     get_last_leaf_exclusively_using_shared_search(self.tree.root.as_node_ref())
                 }
             };
-        self.current_index = leaf.num_keys() - 1;
+        self.current_index = leaf.num_keys().saturating_sub(1);
         self.current_leaf = Some(leaf);
     }
 
@@ -450,7 +452,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                     }
                 };
                 self.current_leaf.take().unwrap().unlock_exclusive();
-                self.current_index = prev_leaf.num_keys() - 1;
+                self.current_index = prev_leaf.num_keys().saturating_sub(1);
                 self.current_leaf = Some(prev_leaf);
                 return true;
             }
@@ -853,5 +855,21 @@ mod tests {
         });
 
         tree.check_invariants();
+    }
+
+    #[qsbr_test]
+    fn test_cursor_move_next_empty_tree() {
+        let tree = BTree::<usize, usize>::new();
+        let mut cursor = tree.cursor();
+        cursor.seek_to_start();
+        assert!(!cursor.move_next());
+    }
+
+    #[qsbr_test]
+    fn test_cursor_mut_seek_to_end_empty_tree() {
+        let tree = BTree::<usize, usize>::new();
+        let mut cursor = tree.cursor_mut();
+        cursor.seek_to_end();
+        assert!(cursor.current().is_none());
     }
 }

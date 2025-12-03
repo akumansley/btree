@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn test_remove_or_modify_if_structural_modifications() {
         qsbr_reclaimer().register_thread();
-        let mut tree = BTree::<usize, usize>::new();
+        let tree = BTree::<usize, usize>::new();
 
         // Insert enough elements to create multiple leaves and force structural modifications
         let n = ORDER * 4;
@@ -990,7 +990,7 @@ mod tests {
     #[test]
     fn test_remove_or_modify_if_sequence() {
         qsbr_reclaimer().register_thread();
-        let mut tree = BTree::<usize, String>::new();
+        let tree = BTree::<usize, String>::new();
 
         // Insert elements
         for i in 0..100 {
@@ -1035,7 +1035,7 @@ mod tests {
     #[test]
     fn test_remove_or_modify_if_empty_tree() {
         qsbr_reclaimer().register_thread();
-        let mut tree = BTree::<usize, usize>::new();
+        let tree = BTree::<usize, usize>::new();
 
         let result = tree.remove_or_modify_if(&1, |_| RemoveOrModifyDecision::Remove, |v| v);
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
