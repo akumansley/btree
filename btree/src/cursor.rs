@@ -397,7 +397,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 return false;
             }
             let leaf = self.current_leaf.unwrap();
-            if self.current_index < leaf.num_keys() - 1 {
+            if self.current_index < leaf.num_keys().saturating_sub(1) {
                 self.current_index += 1;
                 return true;
             }
