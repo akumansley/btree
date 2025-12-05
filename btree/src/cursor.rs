@@ -92,17 +92,42 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if self.current_leaf.is_some() {
-            self.current_leaf.take().unwrap().unlock_shared();
+        loop {
+            if self.current_leaf.is_some() {
+                self.current_leaf.take().unwrap().unlock_shared();
+            }
+            let leaf = get_leaf_shared_using_optimistic_search_with_fallback(
+                self.tree.root.as_node_ref(),
+                key,
+            );
+            let result = leaf.binary_search_key(key);
+            let index = result.unwrap_either();
+
+            // If insertion point is past the end of this leaf, advance to next leaf
+            // to maintain "points at element" semantics
+            if result.is_err() && index >= leaf.num_keys() {
+                if let Some(next_leaf_ref) = leaf.next_leaf() {
+                    match next_leaf_ref.try_lock_shared() {
+                        Ok(next_leaf) => {
+                            leaf.unlock_shared();
+                            self.set_current_leaf(next_leaf);
+                            self.current_index = 0;
+                            return false;
+                        }
+                        Err(_) => {
+                            // Couldn't get lock, retry from top
+                            leaf.unlock_shared();
+                            continue;
+                        }
+                    }
+                }
+                // No next leaf - we're past the end of the tree
+            }
+
+            self.set_current_leaf(leaf);
+            self.current_index = index;
+            return result.is_ok();
         }
-        let leaf = get_leaf_shared_using_optimistic_search_with_fallback(
-            self.tree.root.as_node_ref(),
-            key,
-        );
-        let result = leaf.binary_search_key(key);
-        self.set_current_leaf(leaf);
-        self.current_index = result.unwrap_either();
-        result.is_ok()
     }
 
     #[inline(always)]
@@ -311,10 +336,21 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     where
         F: Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V> + Send + Sync,
     {
-        self.seek(&key);
-
-        let mut leaf = self.current_leaf.unwrap();
+        // Search directly for the insertion leaf without using seek,
+        // since seek has "points at element" semantics which may advance
+        // to the next leaf when the key would be at the end of a leaf.
+        if self.current_leaf.is_some() {
+            self.current_leaf.take().unwrap().unlock_exclusive();
+        }
+        let leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.tree.root.as_node_ref(),
+            &key,
+        );
         let search_result = leaf.binary_search_key(&key);
+        self.current_leaf = Some(leaf);
+        self.current_index = search_result.unwrap_either();
+
+        let leaf = self.current_leaf.as_mut().unwrap();
         if let Ok(index) = search_result {
             let existing_value = leaf.storage.get_value(index);
             if predicate(existing_value) {
@@ -332,7 +368,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
             return InsertOrModifyIfResult::Inserted; // New key inserted
         } else {
             // we need to split the leaf, so give up the lock
-            leaf.unlock_exclusive();
+            self.current_leaf.take().unwrap().unlock_exclusive();
 
             // someone may have inserted while we were searching, so use get_or_insert
             // entry_location is the resulting locked leaf that the cursor will hold
@@ -349,6 +385,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 ) => {
                     if predicate(existing_value) {
                         self.current_leaf
+                            .as_mut()
                             .unwrap()
                             .modify_value(self.current_index, |old_value| {
                                 modify_fn(old_value, proposed_value)
@@ -366,17 +403,42 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if self.current_leaf.is_some() {
-            self.current_leaf.take().unwrap().unlock_exclusive();
+        loop {
+            if self.current_leaf.is_some() {
+                self.current_leaf.take().unwrap().unlock_exclusive();
+            }
+            let leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+                self.tree.root.as_node_ref(),
+                key,
+            );
+            let result = leaf.binary_search_key(key);
+            let index = result.unwrap_either();
+
+            // If insertion point is past the end of this leaf, advance to next leaf
+            // to maintain "points at element" semantics
+            if result.is_err() && index >= leaf.num_keys() {
+                if let Some(next_leaf_ref) = leaf.next_leaf() {
+                    match next_leaf_ref.try_lock_exclusive() {
+                        Ok(next_leaf) => {
+                            leaf.unlock_exclusive();
+                            self.current_leaf = Some(next_leaf);
+                            self.current_index = 0;
+                            return false;
+                        }
+                        Err(_) => {
+                            // Couldn't get lock, retry from top
+                            leaf.unlock_exclusive();
+                            continue;
+                        }
+                    }
+                }
+                // No next leaf - we're past the end of the tree
+            }
+
+            self.current_leaf = Some(leaf);
+            self.current_index = index;
+            return result.is_ok();
         }
-        let leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
-            self.tree.root.as_node_ref(),
-            key,
-        );
-        let result = leaf.binary_search_key(key);
-        self.current_leaf = Some(leaf);
-        self.current_index = result.unwrap_either();
-        result.is_ok()
     }
 
     pub fn current(&self) -> Option<Entry<K, V>> {
@@ -881,20 +943,126 @@ mod tests {
         tree.insert(QsArc::new_from_str("prefix key3"), QsOwned::new(3));
         let mut cursor = tree.cursor();
 
+        // "prefiy" > "prefix key3", so no greater key exists -> points at None
         assert!(!cursor.seek("prefiy"));
         assert!(cursor.current().is_none());
         assert!(cursor.move_prev());
-        println!("{}", cursor.current().unwrap().key());
         assert!(cursor.current().unwrap().key() == "prefix key3");
 
+        // "prefix" < "prefix key1", so points at next greater key "prefix key1"
         assert!(!cursor.seek("prefix"));
-        println!("{}", cursor.current().unwrap().key());
-        assert!(cursor.current().is_none());
+        assert!(cursor.current().unwrap().key() == "prefix key1");
         assert!(cursor.move_next());
-        println!("{}", cursor.current().unwrap().key());
         assert!(cursor.current().unwrap().key() == "prefix key2");
         assert!(cursor.move_next());
-        assert!(cursor.move_next());
+        assert!(cursor.current().unwrap().key() == "prefix key3");
         assert!(!cursor.move_next());
+
+        // Exact match
+        assert!(cursor.seek("prefix key2"));
+        assert!(cursor.current().unwrap().key() == "prefix key2");
+    }
+
+    #[qsbr_test]
+    fn test_cursor_seek_between_leaves() {
+        let tree = BTree::<usize, usize>::new();
+
+        // Insert enough elements to force multiple leaves (ORDER = 64)
+        // Use keys 0, 10, 20, 30, ... to leave gaps for seeking between
+        for i in 0..(ORDER * 2) {
+            tree.insert(QsArc::new(i * 10), QsOwned::new(i));
+        }
+
+        let mut cursor = tree.cursor();
+
+        // Seek to a key that exists
+        assert!(cursor.seek(&100));
+        assert_eq!(*cursor.current().unwrap().key(), 100);
+
+        // Seek to a key between two existing keys within a leaf
+        // 105 should point at 110 (next greater key)
+        assert!(!cursor.seek(&105));
+        assert_eq!(*cursor.current().unwrap().key(), 110);
+
+        // Seek to a key that would be between leaves
+        // Find the boundary by looking for where one leaf ends and another begins
+        // With ORDER=64 keys per leaf, after splitting we'd have ~32-64 keys per leaf
+        // Let's seek to a value just after what should be the last key in first leaf
+        cursor.seek_to_start();
+        let mut prev_key = *cursor.current().unwrap().key();
+        for _ in 0..ORDER {
+            if !cursor.move_next() {
+                break;
+            }
+            prev_key = *cursor.current().unwrap().key();
+        }
+        // prev_key is now around the ORDER-th element
+        // Seek to prev_key + 5 (a gap), should point at prev_key + 10
+        let gap_key = prev_key + 5;
+        let expected_next = prev_key + 10;
+        assert!(!cursor.seek(&gap_key));
+        assert!(
+            cursor.current().is_some(),
+            "seek to {} should point at next greater key {}, not None",
+            gap_key,
+            expected_next
+        );
+        assert_eq!(*cursor.current().unwrap().key(), expected_next);
+
+        // Seek past the end
+        let max_key = (ORDER * 2 - 1) * 10;
+        assert!(!cursor.seek(&(max_key + 5)));
+        assert!(cursor.current().is_none());
+    }
+
+    #[qsbr_test]
+    fn test_cursor_seek_at_leaf_boundary() {
+        let tree = BTree::<usize, usize>::new();
+
+        // Insert enough elements to force multiple leaves
+        for i in 0..(ORDER * 2) {
+            tree.insert(QsArc::new(i * 10), QsOwned::new(i));
+        }
+
+        // Find the actual leaf boundary by traversing and detecting when we cross leaves
+        let mut cursor = tree.cursor();
+        cursor.seek_to_start();
+
+        // Collect all keys and find where leaf boundaries are
+        let mut keys = Vec::new();
+        loop {
+            keys.push(*cursor.current().unwrap().key());
+            if !cursor.move_next() {
+                break;
+            }
+        }
+
+        // Now seek to keys just before each key to test "points at element" semantics
+        for &key in &keys {
+            if key > 0 {
+                // Seek to key - 5 (which doesn't exist), should point at key
+                assert!(!cursor.seek(&(key - 5)));
+                assert!(
+                    cursor.current().is_some(),
+                    "seek to {} should point at {}, not None",
+                    key - 5,
+                    key
+                );
+                assert_eq!(
+                    *cursor.current().unwrap().key(),
+                    key,
+                    "seek to {} should point at {}",
+                    key - 5,
+                    key
+                );
+            }
+        }
+
+        // Also test move_prev after seek past end of a leaf
+        // Find a key near the middle of the tree
+        let mid_key = keys[keys.len() / 2];
+        cursor.seek(&mid_key);
+        assert!(cursor.move_prev());
+        assert_eq!(*cursor.current().unwrap().key(), keys[keys.len() / 2 - 1]);
     }
 }
