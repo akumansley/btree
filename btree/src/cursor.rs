@@ -872,4 +872,29 @@ mod tests {
         cursor.seek_to_end();
         assert!(cursor.current().is_none());
     }
+
+    #[qsbr_test]
+    fn test_cursor_move_next_prefix_scan() {
+        let tree = BTree::<str, usize>::new();
+        tree.insert(QsArc::new_from_str("prefix key1"), QsOwned::new(1));
+        tree.insert(QsArc::new_from_str("prefix key2"), QsOwned::new(2));
+        tree.insert(QsArc::new_from_str("prefix key3"), QsOwned::new(3));
+        let mut cursor = tree.cursor();
+
+        assert!(!cursor.seek("prefiy"));
+        assert!(cursor.current().is_none());
+        assert!(cursor.move_prev());
+        println!("{}", cursor.current().unwrap().key());
+        assert!(cursor.current().unwrap().key() == "prefix key3");
+
+        assert!(!cursor.seek("prefix"));
+        println!("{}", cursor.current().unwrap().key());
+        assert!(cursor.current().is_none());
+        assert!(cursor.move_next());
+        println!("{}", cursor.current().unwrap().key());
+        assert!(cursor.current().unwrap().key() == "prefix key2");
+        assert!(cursor.move_next());
+        assert!(cursor.move_next());
+        assert!(!cursor.move_next());
+    }
 }
