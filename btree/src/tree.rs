@@ -181,10 +181,14 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
         if leaf_node.has_capacity_for_modification(ModificationType::Insertion) {
-            leaf_node.insert(key, value);
+            let inserted = leaf_node.insert(key, value);
             search_stack.drain().for_each(|n| {
                 n.assert_exclusive().unlock_exclusive();
             });
+            if inserted {
+                self.root.len.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
         } else {
             // if the key already exists, we don't need to split
             // so check for that case and exit early, but only bother checking
@@ -194,7 +198,8 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             // you might think we handled this above, but someone could've come along and
             // inserted the key between the optimistic search and the exclusive search
             if leaf_node.get(&key).is_some() {
-                leaf_node.insert(key, value);
+                // key exists, so no len change needed
+                let _ = leaf_node.insert(key, value);
                 search_stack.drain().for_each(|n| {
                     n.assert_exclusive().unlock_exclusive();
                 });
@@ -244,6 +249,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     }
 
     // returns the passed in value if it wasn't inserted
+    // caller is responsible for updating len when Inserted is returned
     pub(crate) fn get_or_insert_pessimistic(
         &self,
         key: QsArc<K>,
@@ -278,7 +284,6 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         if leaf_node.has_capacity_for_modification(ModificationType::Insertion) {
             let insert_index = index.unwrap_err();
             leaf_node.insert_new_value_at_index(key, value, insert_index);
-            self.root.len.fetch_add(1, Ordering::Relaxed);
             search_stack.pop_lowest();
             search_stack.drain().for_each(|n| {
                 n.assert_exclusive().unlock_exclusive();

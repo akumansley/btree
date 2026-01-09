@@ -101,6 +101,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
             }
         }
     }
+    #[must_use = "must check if insertion occurred to update tree len"]
     pub fn insert(&mut self, key_to_insert: QsArc<K>, value: QsOwned<V>) -> bool {
         match self.binary_search_key(key_to_insert.deref()) {
             Ok(index) => {

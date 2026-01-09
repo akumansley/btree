@@ -378,7 +378,13 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
             self.current_index = index;
 
             match result {
-                GetOrInsertResult::Inserted => InsertOrModifyIfResult::Inserted,
+                GetOrInsertResult::Inserted => {
+                    self.tree
+                        .root
+                        .len
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    InsertOrModifyIfResult::Inserted
+                }
                 GetOrInsertResult::GotReturningExistingAndProposed(
                     existing_value,
                     proposed_value,
