@@ -335,7 +335,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         modify_fn: F,
     ) -> InsertOrModifyIfResult<E>
     where
-        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)> + Send + Sync,
+        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>,
     {
         // Search directly for the insertion leaf without using seek,
         // since seek has "points at element" semantics which may advance
