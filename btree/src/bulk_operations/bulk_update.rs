@@ -1,6 +1,7 @@
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use thin::{QsArc, QsOwned};
 
+use crate::tree::ModifyDecision;
 use crate::{array_types::ORDER, BTree, BTreeKey, BTreeValue};
 use qsbr::{qsbr_pool, qsbr_reclaimer};
 
@@ -29,7 +30,8 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeV
 pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
-    F: Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V> + Send + Sync,
+    E,
+    F: Fn(QsOwned<V>, QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)> + Send + Sync,
 >(
     sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
     update_fn: &F,
@@ -43,7 +45,7 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
             .for_each(|chunk| {
                 let mut cursor = tree.cursor_mut();
                 for (key, value) in chunk {
-                    cursor.insert_or_modify_if(key, value, |_| true, update_fn);
+                    cursor.insert_or_modify_if(key, value, |_| ModifyDecision::Modify, update_fn);
                 }
             });
     });
@@ -139,9 +141,9 @@ mod tests {
             .collect();
 
         // Define update function that appends "_updated" to existing values
-        let update_fn = |old_value: QsOwned<String>, _: QsOwned<String>| {
+        let update_fn = |old_value: QsOwned<String>, _: QsOwned<String>| -> Result<QsOwned<String>, (QsOwned<String>, ())> {
             let old_string = old_value.deref();
-            QsOwned::new(format!("{}_updated", old_string))
+            Ok(QsOwned::new(format!("{}_updated", old_string)))
         };
 
         // Perform bulk insert/update

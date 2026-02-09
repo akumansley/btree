@@ -15,6 +15,7 @@ use crate::search::{
 use crate::splitting::EntryLocation;
 use crate::tree::{
     BTree, BTreeKey, BTreeValue, GetOrInsertResult, InsertOrModifyIfResult, ModificationType,
+    ModifyDecision,
 };
 use crate::util::UnwrapEither;
 use thin::{QsArc, QsOwned, QsShared};
@@ -319,22 +320,22 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         leaf.update(self.current_index, value);
     }
 
-    pub fn modify_value(&mut self, modify_fn: impl FnOnce(QsOwned<V>) -> QsOwned<V>) {
+    pub fn modify_value<E>(&mut self, modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>) -> Result<(), E> {
         let leaf = self.current_leaf.as_mut().unwrap();
         let index = self.current_index;
-        leaf.modify_value(index, modify_fn);
+        leaf.modify_value(index, modify_fn)
     }
 
     /// update_fn is called with the new value and the existing old value
-    pub fn insert_or_modify_if<F>(
+    pub fn insert_or_modify_if<F, E>(
         &mut self,
         key: QsArc<K>,
         new_value: QsOwned<V>,
-        predicate: impl Fn(QsShared<V>) -> bool,
+        predicate: impl Fn(QsShared<V>) -> ModifyDecision<E>,
         modify_fn: F,
-    ) -> InsertOrModifyIfResult
+    ) -> InsertOrModifyIfResult<E>
     where
-        F: Fn(QsOwned<V>, QsOwned<V>) -> QsOwned<V> + Send + Sync,
+        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)> + Send + Sync,
     {
         // Search directly for the insertion leaf without using seek,
         // since seek has "points at element" semantics which may advance
@@ -353,11 +354,16 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         let leaf = self.current_leaf.as_mut().unwrap();
         if let Ok(index) = search_result {
             let existing_value = leaf.storage.get_value(index);
-            if predicate(existing_value) {
-                leaf.modify_value(index, |old_value| modify_fn(old_value, new_value));
-                return InsertOrModifyIfResult::Modified;
+            match predicate(existing_value) {
+                ModifyDecision::Modify => {
+                    match leaf.modify_value(index, |old_value| modify_fn(old_value, new_value)) {
+                        Ok(()) => return InsertOrModifyIfResult::Modified,
+                        Err(e) => return InsertOrModifyIfResult::Error(e),
+                    }
+                }
+                ModifyDecision::DoNothing => return InsertOrModifyIfResult::DidNothing,
+                ModifyDecision::Error(e) => return InsertOrModifyIfResult::Error(e),
             }
-            return InsertOrModifyIfResult::DidNothing;
         } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
             let index = search_result.unwrap_err();
             leaf.insert_new_value_at_index(key, new_value, index);
@@ -389,16 +395,21 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                     existing_value,
                     proposed_value,
                 ) => {
-                    if predicate(existing_value) {
-                        self.current_leaf
-                            .as_mut()
-                            .unwrap()
-                            .modify_value(self.current_index, |old_value| {
-                                modify_fn(old_value, proposed_value)
-                            });
-                        return InsertOrModifyIfResult::Modified;
+                    match predicate(existing_value) {
+                        ModifyDecision::Modify => {
+                            match self.current_leaf
+                                .as_mut()
+                                .unwrap()
+                                .modify_value(self.current_index, |old_value| {
+                                    modify_fn(old_value, proposed_value)
+                                }) {
+                                Ok(()) => return InsertOrModifyIfResult::Modified,
+                                Err(e) => return InsertOrModifyIfResult::Error(e),
+                            }
+                        }
+                        ModifyDecision::DoNothing => return InsertOrModifyIfResult::DidNothing,
+                        ModifyDecision::Error(e) => return InsertOrModifyIfResult::Error(e),
                     }
-                    return InsertOrModifyIfResult::DidNothing;
                 }
             }
         }
@@ -855,11 +866,11 @@ mod tests {
                         } else {
                             // Use cursor's insert_or_modify_if
                             let mut cursor = tree_ref.cursor_mut();
-                            cursor.insert_or_modify_if(
+                            cursor.insert_or_modify_if::<_, ()>(
                                 QsArc::new(key),
                                 QsOwned::new(key),
-                                |_| true,
-                                |old_val, new_val| QsOwned::new(*old_val + *new_val),
+                                |_| ModifyDecision::Modify,
+                                |old_val, new_val| Ok(QsOwned::new(*old_val + *new_val)),
                             );
                             drop(cursor);
                         }
@@ -894,11 +905,11 @@ mod tests {
                     for op in 0..100 {
                         let key = thread_id * 100 + op;
                         let mut cursor = tree_ref.cursor_mut();
-                        cursor.insert_or_modify_if(
+                        cursor.insert_or_modify_if::<_, ()>(
                             QsArc::new(key),
                             QsOwned::new(key),
-                            |_| true,
-                            |old_val, new_val| QsOwned::new(*old_val + *new_val),
+                            |_| ModifyDecision::Modify,
+                            |old_val, new_val| Ok(QsOwned::new(*old_val + *new_val)),
                         );
                         drop(cursor);
                         std::thread::yield_now();

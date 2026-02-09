@@ -136,10 +136,18 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         drop(owned_value);
     }
 
-    pub fn modify_value(&mut self, index: usize, modify_fn: impl FnOnce(QsOwned<V>) -> QsOwned<V>) {
+    pub fn modify_value<E>(&mut self, index: usize, modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>) -> Result<(), E> {
         let old_value = unsafe { self.storage.into_owned(index) };
-        let modified_value = modify_fn(old_value);
-        unsafe { self.storage.clobber(index, modified_value) };
+        match modify_fn(old_value) {
+            Ok(modified_value) => {
+                unsafe { self.storage.clobber(index, modified_value) };
+                Ok(())
+            }
+            Err((original_value, error)) => {
+                unsafe { self.storage.clobber(index, original_value) };
+                Err(error)
+            }
+        }
     }
 
     pub fn remove(&mut self, key: &K) -> bool {
