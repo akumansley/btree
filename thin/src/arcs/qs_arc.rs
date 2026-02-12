@@ -83,6 +83,24 @@ impl QsArc<str> {
     }
 }
 
+impl From<&str> for QsArc<str> {
+    fn from(value: &str) -> Self {
+        Self::new_from_str(value)
+    }
+}
+
+impl From<String> for QsArc<str> {
+    fn from(value: String) -> Self {
+        Self::new_from_str(&value)
+    }
+}
+
+impl From<Box<str>> for QsArc<str> {
+    fn from(value: Box<str>) -> Self {
+        Self::new_from_str(&value)
+    }
+}
+
 impl<T: Clone> QsArc<[T]> {
     pub fn new_from_slice(init: &[T]) -> Self {
         Self::new_with(|| init_thin_slice(init))
