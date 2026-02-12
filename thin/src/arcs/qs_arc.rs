@@ -81,6 +81,10 @@ impl QsArc<str> {
     pub fn new_from_str(init: &str) -> Self {
         Self::new_with(|| init_thin_str(init))
     }
+
+    pub fn as_str(&self) -> &str {
+        self
+    }
 }
 
 impl From<&str> for QsArc<str> {
