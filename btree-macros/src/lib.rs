@@ -18,7 +18,7 @@ pub fn qsbr_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let _guard = qsbr::qsbr_reclaimer().guard();
             {
                 #fn_block
-            }
+            };
         }
     };
 
