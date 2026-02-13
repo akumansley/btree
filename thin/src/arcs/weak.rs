@@ -11,10 +11,10 @@ use crate::{
     Arcable,
 };
 
-pub struct QsWeak<T: ?Sized + Arcable + 'static> {
+pub struct Weak<T: ?Sized + Arcable + 'static> {
     ptr: NonNull<()>,
     _marker: PhantomData<*mut T>,
 }
 
-impl_thin_arc_traits!(QsWeak);
-impl_thin_arc_weak!(QsWeak, QsArc);
+impl_thin_arc_traits!(Weak);
+impl_thin_arc_weak!(Weak, Arc);

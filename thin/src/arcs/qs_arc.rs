@@ -8,11 +8,11 @@ use qsbr::qsbr_reclaimer;
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::arcable::{
-    init_thin_sized, init_thin_slice, init_thin_slice_uninitialized, init_thin_str,
-};
 use crate::SendPtr;
-use crate::{arcs::common::impl_thin_arc_traits, Arcable, QsWeak};
+use crate::{
+    arcs::common::{impl_thin_arc_strong, impl_thin_arc_traits},
+    Arcable,
+};
 
 /// QsArc is a thin pointer that maintains a reference to a pointee.
 ///
@@ -26,98 +26,22 @@ pub struct QsArc<T: ?Sized + Arcable + 'static> {
 }
 
 impl_thin_arc_traits!(QsArc);
+impl_thin_arc_strong!(QsArc, QsWeak);
 
 impl<T: ?Sized + Arcable> QsArc<T> {
-    pub fn new_with<C: FnOnce() -> *mut ()>(init: C) -> Self {
-        let ptr = init();
-        Self {
-            ptr: NonNull::new(ptr).unwrap(),
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn ref_count(&self) -> usize {
-        T::ref_count(self.ptr.as_ptr())
-    }
-
     pub unsafe fn drop_immediately(thin_arc: QsArc<T>) {
-        let ptr = thin_arc.ptr;
-        mem::forget(thin_arc);
-        if T::decrement_ref_count(ptr.as_ptr()) {
+        let ptr = thin_arc.into_ptr();
+        if T::decrement_ref_count(ptr) {
             unsafe {
-                T::drop_arc(ptr.as_ptr());
+                T::drop_arc(ptr);
             }
         }
     }
-
-    pub fn into_ptr(self) -> *mut () {
-        let ptr = self.ptr;
-        mem::forget(self);
-        ptr.as_ptr()
-    }
-
-    pub fn share(&self) -> QsWeak<T> {
-        let ptr = self.ptr;
-        unsafe { QsWeak::from_ptr(ptr.as_ptr()) }
-    }
 }
 
-impl<T: ?Sized + Arcable> Clone for QsArc<T> {
-    fn clone(&self) -> Self {
-        T::increment_ref_count(self.ptr.as_ptr());
-        Self {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        }
-    }
-}
-impl<T: Sized + Arcable> QsArc<T> {
-    pub fn new(init: T) -> Self {
-        Self::new_with(|| init_thin_sized(init))
-    }
-}
-
-impl QsArc<str> {
-    pub fn new_from_str(init: &str) -> Self {
-        Self::new_with(|| init_thin_str(init))
-    }
-
-    pub fn as_str(&self) -> &str {
-        self
-    }
-}
-
-impl From<&str> for QsArc<str> {
-    fn from(value: &str) -> Self {
-        Self::new_from_str(value)
-    }
-}
-
-impl From<String> for QsArc<str> {
-    fn from(value: String) -> Self {
-        Self::new_from_str(&value)
-    }
-}
-
-impl From<Box<str>> for QsArc<str> {
-    fn from(value: Box<str>) -> Self {
-        Self::new_from_str(&value)
-    }
-}
-
-impl<T: Clone> QsArc<[T]> {
-    pub fn new_from_slice(init: &[T]) -> Self {
-        Self::new_with(|| init_thin_slice(init))
-    }
-}
-
-impl<T> QsArc<[MaybeUninit<T>]> {
-    pub fn new_uninitialized(len: usize) -> Self {
-        Self::new_with(|| init_thin_slice_uninitialized::<T>(len))
-    }
-
-    pub unsafe fn assume_init(self) -> QsArc<[T]> {
-        unsafe { QsArc::from_ptr(self.into_ptr()) }
+impl<T: ?Sized + Arcable + 'static> From<crate::Arc<T>> for QsArc<T> {
+    fn from(arc: crate::Arc<T>) -> Self {
+        unsafe { QsArc::from_ptr(arc.into_ptr()) }
     }
 }
 
@@ -129,90 +53,6 @@ impl<T: ?Sized + Arcable + 'static> Drop for QsArc<T> {
                 unsafe { T::drop_arc(send_ptr.into_ptr().as_ptr()) };
             }));
         }
-    }
-}
-
-impl<T: ?Sized + Arcable> std::ops::DerefMut for QsArc<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { T::deref_mut_arc(self.ptr.as_ptr()) }
-    }
-}
-
-// Serde implementations specifically for QsArc
-impl<'de, T> Deserialize<'de> for QsArc<T>
-where
-    T: Deserialize<'de> + Arcable + Sized,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        T::deserialize(deserializer).map(QsArc::new)
-    }
-}
-
-impl<T: Serialize + ?Sized + Arcable> Serialize for QsArc<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        (**self).serialize(serializer)
-    }
-}
-
-struct ThinArrayDeserializer<T> {
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<'de, T> Visitor<'de> for ThinArrayDeserializer<T>
-where
-    T: Deserialize<'de> + Send + 'static + Clone,
-{
-    type Value = QsArc<[T]>;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("a sequence")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        if let Some(len) = seq.size_hint() {
-            let mut uninit = QsArc::new_uninitialized(len);
-            for i in 0..len {
-                if let Some(value) = seq.next_element()? {
-                    uninit[i].write(value);
-                } else {
-                    return Err(serde::de::Error::invalid_length(
-                        i,
-                        &format!("expected {} elements", len).as_str(),
-                    ));
-                }
-            }
-            Ok(unsafe { uninit.assume_init() })
-        } else {
-            let mut vec = Vec::new();
-            while let Some(value) = seq.next_element()? {
-                vec.push(value);
-            }
-            Ok(QsArc::new_from_slice(&vec))
-        }
-    }
-}
-
-// Add array implementations
-impl<'de, T> Deserialize<'de> for QsArc<[T]>
-where
-    T: Deserialize<'de> + Send + 'static + Clone,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(ThinArrayDeserializer {
-            _phantom: std::marker::PhantomData,
-        })
     }
 }
 
