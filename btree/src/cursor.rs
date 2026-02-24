@@ -722,6 +722,27 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
         }
     }
 
+    /// Calls `f` with the current entry while holding the leaf's shared lock.
+    ///
+    /// The shared lock is held for the duration of `f`, preventing writers from
+    /// modifying the leaf. The lock is released after `f` returns.
+    /// Returns `None` if the cursor is not positioned at a valid entry.
+    pub fn current_and<R>(&mut self, f: impl FnOnce(&Entry<K, V>) -> R) -> Option<R> {
+        let leaf = self.lock_at_remembered_position()?;
+        if self.current_index < leaf.num_keys() {
+            let entry = Entry::new(
+                leaf.storage.get_key(self.current_index),
+                leaf.storage.get_value(self.current_index),
+            );
+            let result = f(&entry);
+            self.remember_and_unlock(leaf, self.current_index);
+            Some(result)
+        } else {
+            self.remember_and_unlock(leaf, self.current_index);
+            None
+        }
+    }
+
     pub fn move_next(&mut self) -> bool {
         loop {
             let leaf = match self.lock_at_remembered_position() {
