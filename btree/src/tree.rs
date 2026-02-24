@@ -9,6 +9,7 @@ use crate::bulk_operations::{
 use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
+use crate::cursor::NonLockingCursor;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
 use crate::pointers::node_ref::{marker, SharedDiscriminatedNode};
 use crate::pointers::SharedNodeRef;
@@ -570,6 +571,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
     pub fn cursor_mut(&self) -> CursorMut<K, V> {
         CursorMut::new(self)
+    }
+
+    pub fn non_locking_cursor(&self) -> NonLockingCursor<K, V> {
+        NonLockingCursor::new(self)
     }
 }
 

@@ -33,7 +33,7 @@ mod splitting;
 mod sync;
 mod tree;
 mod util;
-pub use cursor::{Cursor, CursorMut};
+pub use cursor::{Cursor, CursorMut, NonLockingCursor};
 pub use iter::{BackwardBTreeIterator, ForwardBTreeIterator};
 pub use qsbr::{qsbr_reclaimer, MemoryReclaimer};
 pub use reference::{Entry, Ref};

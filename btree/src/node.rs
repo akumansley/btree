@@ -107,6 +107,10 @@ impl NodeHeader {
         self.lock.retire();
     }
 
+    pub fn is_retired(&self) -> bool {
+        self.lock.is_retired()
+    }
+
     pub fn height(&self) -> Height {
         self.height
     }
