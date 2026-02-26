@@ -160,6 +160,10 @@ impl HybridLatch {
         self.version.load(Ordering::Acquire) == LockInfo::RETIRED
     }
 
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
     pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {
         if self.rw_lock.is_locked_exclusive() {
             return Err(());

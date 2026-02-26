@@ -552,6 +552,7 @@ pub struct NonLockingCursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     unlocked_leaf: Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>>,
     current_index: usize,
     remembered_key: Option<QsWeak<K>>,
+    remembered_version: u64,
 }
 
 impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V> {
@@ -561,6 +562,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
             unlocked_leaf: None,
             current_index: 0,
             remembered_key: None,
+            remembered_version: 0,
         }
     }
 
@@ -568,6 +570,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
         self.unlocked_leaf = None;
         self.current_index = 0;
         self.remembered_key = None;
+        self.remembered_version = 0;
     }
 
     fn remember_and_unlock(
@@ -581,6 +584,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
         } else {
             self.remembered_key = None;
         }
+        self.remembered_version = leaf.header().version();
         self.unlocked_leaf = Some(leaf.unlock_shared());
     }
 
@@ -609,8 +613,12 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
         // Fast path: try to re-lock the stored leaf
         if let Ok(locked_leaf) = unlocked_leaf.try_lock_shared() {
             if !locked_leaf.header().is_retired() && locked_leaf.num_keys() > 0 {
-                self.current_index =
-                    locked_leaf.binary_search_key(&*remembered_key).unwrap_either();
+                // If the version hasn't changed, no writes happened since we last
+                // held the lock, so our remembered index is still valid.
+                if locked_leaf.header().version() != self.remembered_version {
+                    self.current_index =
+                        locked_leaf.binary_search_key(&*remembered_key).unwrap_either();
+                }
                 return Some(locked_leaf);
             }
             locked_leaf.unlock_shared();

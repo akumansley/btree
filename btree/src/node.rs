@@ -111,6 +111,10 @@ impl NodeHeader {
         self.lock.is_retired()
     }
 
+    pub fn version(&self) -> u64 {
+        self.lock.version()
+    }
+
     pub fn height(&self) -> Height {
         self.height
     }
