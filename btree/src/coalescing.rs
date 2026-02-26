@@ -33,7 +33,7 @@ pub fn coalesce_or_redistribute_leaf_node<K: BTreeKey + ?Sized, V: BTreeValue + 
     let (full_leaf_node, node_position) =
         locked_parent.get_neighbor_of_underfull_leaf(locked_underfull_leaf);
 
-    let locked_full_leaf = full_leaf_node.lock_exclusive();
+    let locked_full_leaf = full_leaf_node.lock_exclusive_jittered();
 
     if locked_underfull_leaf.num_keys() + locked_full_leaf.num_keys() <= MAX_KEYS_PER_NODE {
         match node_position {

@@ -79,7 +79,7 @@ where
     // update sibling pointers
     if let Some(next_leaf) = left_leaf.next_leaf() {
         // if we have a right sibling, it's new sibling is right_leaf
-        let next_leaf = next_leaf.lock_exclusive();
+        let next_leaf = next_leaf.lock_exclusive_jittered();
         right_leaf
             .next_leaf
             .store(next_leaf.to_shared_leaf_ptr(), Ordering::Release);

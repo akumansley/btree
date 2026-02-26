@@ -473,6 +473,51 @@ impl_all_derefs_for_node_ref!(
     SharedNodeRef
 );
 
+// Leaf-specific jittered exclusive lock methods.
+// These use a timed try-lock with jittered ~10ms timeout, retrying indefinitely,
+// to avoid deadlocks when acquiring exclusive locks on leaf nodes.
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
+    SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>
+{
+    pub fn lock_exclusive_jittered(
+        self,
+    ) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
+        self.header().lock_exclusive_jittered();
+        SharedNodeRef {
+            node: ManuallyDrop::new(self.into_ptr()),
+            lock_info: LockInfo::exclusive(),
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn lock_exclusive_if_not_retired_jittered(
+        self,
+    ) -> Result<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>, LockError> {
+        self.header().lock_exclusive_if_not_retired_jittered()?;
+        Ok(SharedNodeRef {
+            node: ManuallyDrop::new(self.into_ptr()),
+            lock_info: LockInfo::exclusive(),
+            phantom: PhantomData,
+        })
+    }
+}
+
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
+    OwnedNodeRef<K, V, marker::Unlocked, marker::Leaf>
+{
+    pub fn lock_exclusive_jittered(
+        self,
+    ) -> OwnedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
+        self.header().lock_exclusive_jittered();
+        OwnedNodeRef {
+            node: ManuallyDrop::new(self.into_ptr()),
+            lock_info: LockInfo::exclusive(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Clone
     for SharedNodeRef<K, V, L, N>
 {

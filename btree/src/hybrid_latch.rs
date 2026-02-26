@@ -1,6 +1,7 @@
 use crate::sync::RawRwLock;
 use crate::sync::{AtomicU64, Ordering, RwLock};
 use std::fmt::{Debug, Display};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
@@ -164,6 +165,39 @@ impl HybridLatch {
         self.version.load(Ordering::Acquire)
     }
 
+    pub fn lock_exclusive_jittered(&self) {
+        debug_assert!(!self.is_retired());
+        if self.rw_lock.try_lock_exclusive() {
+            return;
+        }
+        loop {
+            std::thread::sleep(jittered_timeout());
+            if self.rw_lock.try_lock_exclusive() {
+                return;
+            }
+        }
+    }
+
+    pub fn lock_exclusive_if_not_retired_jittered(&self) -> Result<(), LockError> {
+        if self.rw_lock.try_lock_exclusive() {
+            if self.is_retired() {
+                self.rw_lock.unlock_exclusive();
+                return Err(LockError::Retired);
+            }
+            return Ok(());
+        }
+        loop {
+            std::thread::sleep(jittered_timeout());
+            if self.rw_lock.try_lock_exclusive() {
+                if self.is_retired() {
+                    self.rw_lock.unlock_exclusive();
+                    return Err(LockError::Retired);
+                }
+                return Ok(());
+            }
+        }
+    }
+
     pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {
         if self.rw_lock.is_locked_exclusive() {
             return Err(());
@@ -181,4 +215,24 @@ impl HybridLatch {
         }
         self.version.load(Ordering::Acquire) == version.0
     }
+}
+
+fn jittered_timeout() -> Duration {
+    thread_local! {
+        static RNG: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    let ms = RNG.with(|cell| {
+        let mut s = cell.get();
+        if s == 0 {
+            // Seed from the thread-local's own address — unique per thread.
+            s = (cell as *const _ as u32) | 1;
+        }
+        // xorshift32
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        cell.set(s);
+        5 + (s % 11) // 5..=15ms
+    });
+    Duration::from_millis(ms as u64)
 }

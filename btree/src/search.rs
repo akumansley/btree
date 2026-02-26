@@ -175,7 +175,7 @@ fn get_leaf_exclusively_using_optimistic_search<
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
-        |node| node.lock_exclusive_if_not_retired(),
+        |node| node.lock_exclusive_if_not_retired_jittered(),
         |node| node.unlock_exclusive(),
     )
 }
@@ -191,7 +191,7 @@ fn get_leaf_exclusively_using_shared_search<
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
-        |node| node.lock_exclusive(),
+        |node| node.lock_exclusive_jittered(),
     )
 }
 
@@ -223,7 +223,14 @@ pub fn get_leaf_exclusively_using_exclusive_search<
     search.push_node_on_bottom(locked_root);
     let top_of_tree =
         SharedNodeRef::from_unknown_node_ptr(locked_root.top_of_tree()).assume_unlocked();
-    let top_of_tree = top_of_tree.lock_exclusive();
+    let top_of_tree = if top_of_tree.is_leaf() {
+        top_of_tree
+            .assert_leaf()
+            .lock_exclusive_jittered()
+            .erase_node_type()
+    } else {
+        top_of_tree.lock_exclusive()
+    };
     search.push_node_on_bottom(top_of_tree);
     match top_of_tree.force() {
         SharedDiscriminatedNode::Leaf(leaf) => {
@@ -254,7 +261,14 @@ pub fn get_leaf_exclusively_using_exclusive_search<
         let found_child =
             SharedNodeRef::from_unknown_node_ptr(current_exclusive.find_child(search_key))
                 .assume_unlocked();
-        let found_child = found_child.lock_exclusive();
+        let found_child = if found_child.is_leaf() {
+            found_child
+                .assert_leaf()
+                .lock_exclusive_jittered()
+                .erase_node_type()
+        } else {
+            found_child.lock_exclusive()
+        };
         search.push_node_on_bottom(found_child);
         match found_child.force() {
             SharedDiscriminatedNode::Leaf(leaf) => {
@@ -287,7 +301,7 @@ pub fn get_first_leaf_exclusively_using_optimistic_search<
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
-        |node| node.lock_exclusive_if_not_retired(),
+        |node| node.lock_exclusive_if_not_retired_jittered(),
         |node| node.unlock_exclusive(),
     )
 }
@@ -301,7 +315,7 @@ pub fn get_first_leaf_exclusively_using_shared_search<
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
-        |node| node.lock_exclusive(),
+        |node| node.lock_exclusive_jittered(),
     )
 }
 
@@ -314,7 +328,7 @@ pub fn get_last_leaf_exclusively_using_optimistic_search<
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
-        |node| node.lock_exclusive_if_not_retired(),
+        |node| node.lock_exclusive_if_not_retired_jittered(),
         |node| node.unlock_exclusive(),
     )
 }
@@ -328,6 +342,6 @@ pub fn get_last_leaf_exclusively_using_shared_search<
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
-        |node| node.lock_exclusive(),
+        |node| node.lock_exclusive_jittered(),
     )
 }
