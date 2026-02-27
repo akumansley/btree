@@ -2,7 +2,6 @@ use crate::sync::RawRwLock;
 use crate::sync::{AtomicU64, Ordering, RwLock};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
-use std::hint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
@@ -171,7 +170,7 @@ impl HybridLatch {
         if self.rw_lock.try_lock_exclusive() {
             return;
         }
-        jittered_retry(|| self.rw_lock.try_lock_exclusive());
+        jittered_retry(&self.rw_lock);
     }
 
     pub fn lock_exclusive_if_not_retired_jittered(&self) -> Result<(), LockError> {
@@ -182,7 +181,7 @@ impl HybridLatch {
             }
             return Ok(());
         }
-        jittered_retry(|| self.rw_lock.try_lock_exclusive());
+        jittered_retry(&self.rw_lock);
         if self.is_retired() {
             self.rw_lock.unlock_exclusive();
             return Err(LockError::Retired);
@@ -209,39 +208,15 @@ impl HybridLatch {
     }
 }
 
-/// Jittered retry: spin-yield first, then escalate to short sleeps.
-fn jittered_retry(try_lock: impl Fn() -> bool) {
-    // Phase 1: spin with yield hints (~40 attempts)
-    for _ in 0..40 {
-        hint::spin_loop();
-        if try_lock() {
-            return;
-        }
-    }
-
-    // Phase 2: jittered microsecond sleeps, escalating from 1us to 1ms
-    thread_local! {
-        static RNG: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    }
-    let mut backoff_us: u32 = 1;
+/// Timed lock attempts with yields between retries to break deadlocks.
+/// Timeout escalates from 1us to 1ms to avoid starvation.
+fn jittered_retry(lock: &RwLock) {
+    let mut timeout_us: u64 = 10;
     loop {
-        let jitter = RNG.with(|cell| {
-            let mut s = cell.get();
-            if s == 0 {
-                s = (cell as *const _ as u32) | 1;
-            }
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            cell.set(s);
-            s
-        });
-        let sleep_us = backoff_us + (jitter % (backoff_us + 1));
-        std::thread::sleep(Duration::from_micros(sleep_us as u64));
-        if try_lock() {
+        if lock.try_lock_exclusive_for(Duration::from_micros(timeout_us)) {
             return;
         }
-        // Double the backoff, capped at 1ms
-        backoff_us = (backoff_us * 2).min(1000);
+        std::thread::yield_now();
+        timeout_us = (timeout_us * 2).min(1000);
     }
 }

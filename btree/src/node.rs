@@ -95,7 +95,6 @@ impl NodeHeader {
         }
     }
     pub fn unlock_shared(&self) {
-        debug_assert!(self.is_locked_shared());
         self.lock.unlock_shared();
     }
     pub fn lock_optimistic(&self) -> Result<LockInfo, ()> {

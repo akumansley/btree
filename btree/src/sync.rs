@@ -11,6 +11,7 @@ pub trait RawRwLock {
     fn unlock_shared(&self);
     fn lock_exclusive(&self);
     fn try_lock_exclusive(&self) -> bool;
+    fn try_lock_exclusive_for(&self, timeout: std::time::Duration) -> bool;
     fn unlock_exclusive(&self);
 }
 
@@ -27,18 +28,19 @@ pub type AtomicU64 = std::sync::atomic::AtomicU64;
 // RwLock has two implementations: one for miri and shuttle,
 // and one for normal
 #[cfg(all(not(miri), not(feature = "shuttle")))]
-pub type RwLock = WrappedUsyncRwLock;
+pub type RwLock = WrappedParkingLotRwLock;
 #[cfg(any(miri, feature = "shuttle"))]
 pub type RwLock = BasicSpinRwLock;
 
-use usync::lock_api::RawRwLock as UsyncRawRwLock;
-pub struct WrappedUsyncRwLock {
-    inner: usync::RawRwLock,
+use lock_api::RawRwLock as LockApiRawRwLock;
+use lock_api::RawRwLockTimed;
+pub struct WrappedParkingLotRwLock {
+    inner: parking_lot::RawRwLock,
 }
-impl RawRwLock for WrappedUsyncRwLock {
+impl RawRwLock for WrappedParkingLotRwLock {
     fn new() -> Self {
         Self {
-            inner: UsyncRawRwLock::INIT,
+            inner: <parking_lot::RawRwLock as LockApiRawRwLock>::INIT,
         }
     }
     fn lock_shared(&self) {
@@ -55,6 +57,9 @@ impl RawRwLock for WrappedUsyncRwLock {
     }
     fn try_lock_exclusive(&self) -> bool {
         self.inner.try_lock_exclusive()
+    }
+    fn try_lock_exclusive_for(&self, timeout: std::time::Duration) -> bool {
+        self.inner.try_lock_exclusive_for(timeout)
     }
     fn unlock_exclusive(&self) {
         unsafe { self.inner.unlock_exclusive() };
@@ -165,6 +170,21 @@ impl RawRwLock for BasicSpinRwLock {
         self.lock
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+    }
+
+    fn try_lock_exclusive_for(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.try_lock_exclusive() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::hint::spin_loop();
+            #[cfg(feature = "shuttle")]
+            shuttle::hint::spin_loop();
+        }
     }
 
     fn unlock_exclusive(&self) {
