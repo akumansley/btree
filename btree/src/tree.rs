@@ -1011,7 +1011,11 @@ mod tests {
         // Remove elements to trigger coalescing/redistribution
         // Remove every other element to stress the structural modification path
         for i in (0..n).step_by(2) {
-            let result = tree.remove_or_modify_if::<_, ()>(&i, |_| RemoveOrModifyDecision::Remove, |v| Ok(v));
+            let result = tree.remove_or_modify_if::<_, ()>(
+                &i,
+                |_| RemoveOrModifyDecision::Remove,
+                |v| Ok(v),
+            );
             assert_eq!(result, RemoveOrModifyIfResult::Removed);
             tree.check_invariants();
 
@@ -1081,13 +1085,16 @@ mod tests {
         qsbr_reclaimer().register_thread();
         let tree = BTree::<usize, usize>::new();
 
-        let result = tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Remove, |v| Ok(v));
+        let result =
+            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Remove, |v| Ok(v));
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
-        let result = tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Modify, |v| Ok(v));
+        let result =
+            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Modify, |v| Ok(v));
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
-        let result = tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::DoNothing, |v| Ok(v));
+        let result =
+            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::DoNothing, |v| Ok(v));
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
         // Tree should still be usable
@@ -1390,9 +1397,13 @@ mod tests {
                 .collect();
 
             // Define update function
-            let update_fn = |old_value: QsOwned<str>, _| -> Result<QsOwned<str>, (QsOwned<str>, ())> {
-                Ok(QsOwned::new_from_str(&format!("updated_{}", old_value.deref())))
-            };
+            let update_fn =
+                |old_value: QsOwned<str>, _| -> Result<QsOwned<str>, (QsOwned<str>, ())> {
+                    Ok(QsOwned::new_from_str(&format!(
+                        "updated_{}",
+                        old_value.deref()
+                    )))
+                };
 
             tree.bulk_insert_or_update_parallel(entries, &update_fn);
             assert_eq!(
@@ -1418,7 +1429,13 @@ mod tests {
         // Test 1: Modify with predicate that returns Modify
         let _ = tree.modify_if::<()>(
             &5,
-            |v| if v.contains("value") { ModifyDecision::Modify } else { ModifyDecision::DoNothing },
+            |v| {
+                if v.contains("value") {
+                    ModifyDecision::Modify
+                } else {
+                    ModifyDecision::DoNothing
+                }
+            },
             |_| Ok(QsOwned::new("modified5".to_string())),
         );
         assert_eq!(tree.get(&5).as_deref(), Some(&"modified5".to_string()));
@@ -1426,7 +1443,13 @@ mod tests {
         // Test 2: Try to modify with predicate that returns DoNothing (should not modify)
         let _ = tree.modify_if::<()>(
             &5,
-            |v| if v.contains("nonexistent") { ModifyDecision::Modify } else { ModifyDecision::DoNothing },
+            |v| {
+                if v.contains("nonexistent") {
+                    ModifyDecision::Modify
+                } else {
+                    ModifyDecision::DoNothing
+                }
+            },
             |_| Ok(QsOwned::new("should_not_change".to_string())),
         );
         assert_eq!(
@@ -1455,7 +1478,13 @@ mod tests {
         for i in 0..10 {
             let _ = tree.modify_if::<()>(
                 &i,
-                |v| if v.starts_with("value") { ModifyDecision::Modify } else { ModifyDecision::DoNothing },
+                |v| {
+                    if v.starts_with("value") {
+                        ModifyDecision::Modify
+                    } else {
+                        ModifyDecision::DoNothing
+                    }
+                },
                 |old_val| Ok(QsOwned::new(format!("prefix_{}", old_val.deref()))),
             );
         }

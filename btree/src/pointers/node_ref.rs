@@ -517,7 +517,6 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     }
 }
 
-
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Clone
     for SharedNodeRef<K, V, L, N>
 {

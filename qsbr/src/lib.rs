@@ -53,8 +53,6 @@ struct MemoryReclaimerInner {
     quiesced_threads: FxHashSet<ThreadId>,
 }
 
-
-
 #[cfg(not(feature = "shuttle"))]
 std::thread_local! {
     /// Each thread buffers callbacks locally until it quiesces
@@ -190,29 +188,27 @@ impl MemoryReclaimer {
         self.complete_interval_if_possible(&mut inner);
     }
 
-
-
     /// Deregisters the current thread and marks it quiescent
     /// Panics if not registered
     pub unsafe fn deregister_current_thread_and_mark_quiescent(&self) {
         let thread_id = gettid();
-        
+
         THREAD_STATE.with(|state| {
             let mut state = state.borrow_mut();
-            
+
             if state.registration_count == 0 {
                 panic!(
                     "Thread {} not registered! Call register_thread() before deregistering.",
                     thread_id
                 );
             }
-            
+
             state.registration_count -= 1;
-            
+
             // Only remove from shared set and mark quiescent if this is the last deregistration
             if state.registration_count == 0 {
                 let mut inner = self.inner.lock().unwrap();
-                
+
                 // Flush thread-local callbacks into the current interval.
                 inner
                     .current_interval_callbacks
@@ -438,44 +434,44 @@ mod tests {
     #[test]
     fn test_reference_counted_registration() {
         let reclaimer = MemoryReclaimer::new();
-        
+
         // Register multiple times
         let tid1 = reclaimer.register_thread();
         let tid2 = reclaimer.register_thread();
         let tid3 = reclaimer.register_thread();
-        
+
         // All should return the same thread ID
         assert_eq!(tid1, tid2);
         assert_eq!(tid2, tid3);
-        
+
         // Should be able to add callbacks since we're registered
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&counter);
         reclaimer.add_callback(Box::new(move || {
             counter_clone.fetch_add(1, Ordering::SeqCst);
         }));
-        
+
         // Should still be able to add callbacks after multiple registrations
         let counter_clone = Arc::clone(&counter);
         reclaimer.add_callback(Box::new(move || {
             counter_clone.fetch_add(1, Ordering::SeqCst);
         }));
-        
+
         // First deregister - should still be registered (count goes from 3 to 2)
         unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
-        
+
         // Register again to test we can still add callbacks
         reclaimer.register_thread();
         let counter_clone = Arc::clone(&counter);
         reclaimer.add_callback(Box::new(move || {
             counter_clone.fetch_add(1, Ordering::SeqCst);
         }));
-        
+
         // Final deregisters to bring count to 0
         unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
         unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
         unsafe { reclaimer.deregister_current_thread_and_mark_quiescent() };
-        
+
         // Three callbacks should have executed
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
@@ -511,7 +507,7 @@ mod tests {
                 }));
                 // _guard2 drops here, but thread should still be registered
             }
-            
+
             // Should still be able to add callbacks
             let counter_clone = Arc::clone(&counter);
             reclaimer.add_callback(Box::new(move || {

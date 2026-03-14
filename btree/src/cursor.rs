@@ -320,7 +320,10 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         leaf.update(self.current_index, value);
     }
 
-    pub fn modify_value<E>(&mut self, modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>) -> Result<(), E> {
+    pub fn modify_value<E>(
+        &mut self,
+        modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>,
+    ) -> Result<(), E> {
         let leaf = self.current_leaf.as_mut().unwrap();
         let index = self.current_index;
         leaf.modify_value(index, modify_fn)
@@ -394,23 +397,22 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 GetOrInsertResult::GotReturningExistingAndProposed(
                     existing_value,
                     proposed_value,
-                ) => {
-                    match predicate(existing_value) {
-                        ModifyDecision::Modify => {
-                            match self.current_leaf
-                                .as_mut()
-                                .unwrap()
-                                .modify_value(self.current_index, |old_value| {
-                                    modify_fn(old_value, proposed_value)
-                                }) {
-                                Ok(()) => return InsertOrModifyIfResult::Modified,
-                                Err(e) => return InsertOrModifyIfResult::Error(e),
-                            }
+                ) => match predicate(existing_value) {
+                    ModifyDecision::Modify => {
+                        match self
+                            .current_leaf
+                            .as_mut()
+                            .unwrap()
+                            .modify_value(self.current_index, |old_value| {
+                                modify_fn(old_value, proposed_value)
+                            }) {
+                            Ok(()) => return InsertOrModifyIfResult::Modified,
+                            Err(e) => return InsertOrModifyIfResult::Error(e),
                         }
-                        ModifyDecision::DoNothing => return InsertOrModifyIfResult::DidNothing,
-                        ModifyDecision::Error(e) => return InsertOrModifyIfResult::Error(e),
                     }
-                }
+                    ModifyDecision::DoNothing => return InsertOrModifyIfResult::DidNothing,
+                    ModifyDecision::Error(e) => return InsertOrModifyIfResult::Error(e),
+                },
             }
         }
     }
@@ -616,8 +618,9 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
                 // If the version hasn't changed, no writes happened since we last
                 // held the lock, so our remembered index is still valid.
                 if locked_leaf.header().version() != self.remembered_version {
-                    self.current_index =
-                        locked_leaf.binary_search_key(&*remembered_key).unwrap_either();
+                    self.current_index = locked_leaf
+                        .binary_search_key(&*remembered_key)
+                        .unwrap_either();
                 }
                 return Some(locked_leaf);
             }
@@ -634,20 +637,20 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
     }
 
     pub fn seek_to_start(&mut self) {
-        let leaf =
-            match get_first_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref()) {
-                Ok(leaf) => leaf,
-                Err(_) => get_first_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
-            };
+        let leaf = match get_first_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref())
+        {
+            Ok(leaf) => leaf,
+            Err(_) => get_first_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
+        };
         self.remember_and_unlock(leaf, 0);
     }
 
     pub fn seek_to_end(&mut self) {
-        let leaf =
-            match get_last_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref()) {
-                Ok(leaf) => leaf,
-                Err(_) => get_last_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
-            };
+        let leaf = match get_last_leaf_shared_using_optimistic_search(self.tree.root.as_node_ref())
+        {
+            Ok(leaf) => leaf,
+            Err(_) => get_last_leaf_shared_using_shared_search(self.tree.root.as_node_ref()),
+        };
         let index = leaf.num_keys().saturating_sub(1);
         self.remember_and_unlock(leaf, index);
     }

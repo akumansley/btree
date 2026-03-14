@@ -141,7 +141,9 @@ mod tests {
             .collect();
 
         // Define update function that appends "_updated" to existing values
-        let update_fn = |old_value: QsOwned<String>, _: QsOwned<String>| -> Result<QsOwned<String>, (QsOwned<String>, ())> {
+        let update_fn = |old_value: QsOwned<String>,
+                         _: QsOwned<String>|
+         -> Result<QsOwned<String>, (QsOwned<String>, ())> {
             let old_string = old_value.deref();
             Ok(QsOwned::new(format!("{}_updated", old_string)))
         };
