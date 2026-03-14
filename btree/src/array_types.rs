@@ -137,7 +137,7 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
     /// SAFETY: the caller must ensure that they have exclusive access to the value at the given index
     /// that the value is initialized, and they must clean up the slot after calling this -- the method
     /// leaves the existing pointer in place as a landing pad for optimistic readers
-    unsafe fn into_owned(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
+    unsafe fn load_owned(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
         debug_assert!(index < num_elements);
 
         unsafe {
@@ -145,7 +145,7 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
                 .get_unchecked(index)
                 .assume_init_ref()
                 // ORDERING: if we're claiming we own the value pointed herein, we should've synchronized using locks
-                .into_owned(Ordering::Relaxed)
+                .load_owned(Ordering::Relaxed)
                 .unwrap()
         }
     }
@@ -157,7 +157,7 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
 
     fn remove(&self, index: usize, num_elements: usize) -> P::OwnedPointer {
         // SAFETY: we're about to clobber the slot, so this is fine
-        let ptr = unsafe { self.into_owned(index, num_elements) };
+        let ptr = unsafe { self.load_owned(index, num_elements) };
         self.atomic_shift_left(index, num_elements);
         ptr
     }
@@ -178,7 +178,7 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized, P: AtomicPointerArrayVal
             self.array
                 .get_unchecked(i)
                 .assume_init_ref()
-                .into_owned(Ordering::Relaxed)
+                .load_owned(Ordering::Relaxed)
                 .unwrap()
         })
     }
@@ -238,6 +238,18 @@ impl<
                 )
             }
         }
+    }
+}
+
+impl<
+        const CAPACITY: usize,
+        const CAPACITY_PLUS_ONE: usize,
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+    > Default for InternalNodeStorage<CAPACITY, CAPACITY_PLUS_ONE, K, V>
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -391,7 +403,7 @@ impl<
         let keys = std::iter::once(new_split_key).chain(self.keys.iter_owned(num_keys));
 
         let children = self.children.iter_owned(num_keys + 1);
-        keys.zip(children).map(|(key, child)| (key, child))
+        keys.zip(children)
     }
 
     pub fn push_extra_child(&self, child: QsOwned<NodeHeader>) {
@@ -413,10 +425,8 @@ impl<
 
     pub fn extend_children(&self, other: impl Iterator<Item = QsOwned<NodeHeader>>) {
         let num_keys = self.num_keys();
-        let mut added = 0;
-        for child in other {
+        for (added, child) in other.enumerate() {
             self.children.push(child, num_keys + added);
-            added += 1;
         }
     }
 
@@ -444,9 +454,9 @@ impl<
 
     pub fn check_invariants(&self) {
         assert!(self.num_keys() <= CAPACITY);
-        for (key1, key2) in self.keys().into_iter().zip(self.keys().into_iter().skip(1)) {
+        for (key1, key2) in self.keys().iter().zip(self.keys().iter().skip(1)) {
             assert!(
-                &*key1.load(Ordering::Relaxed).unwrap() < &*key2.load(Ordering::Relaxed).unwrap(),
+                *key1.load(Ordering::Relaxed).unwrap() < *key2.load(Ordering::Relaxed).unwrap(),
                 "key1: {:?} key2: {:?}",
                 &*key1.load(Ordering::Relaxed).unwrap(),
                 &*key2.load(Ordering::Relaxed).unwrap()
@@ -472,12 +482,20 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop
     fn drop(&mut self) {
         let num_keys = self.num_keys();
         for i in 0..num_keys {
-            let key = unsafe { self.keys.into_owned(i, num_keys) };
+            let key = unsafe { self.keys.load_owned(i, num_keys) };
             unsafe { QsArc::drop_immediately(key) };
 
-            let value = unsafe { self.values.into_owned(i, num_keys) };
+            let value = unsafe { self.values.load_owned(i, num_keys) };
             QsOwned::drop_immediately(value);
         }
+    }
+}
+
+impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Default
+    for LeafNodeStorage<CAPACITY, K, V>
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -527,20 +545,19 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     }
 
     pub fn clone_key(&self, index: usize) -> QsArc<K> {
-        let arc = self.keys.get_cloned(index, self.num_keys());
-        arc
+        self.keys.get_cloned(index, self.num_keys())
     }
 
     pub fn get_value(&self, index: usize) -> QsShared<V> {
         self.values.get(index, self.num_keys_relaxed())
     }
 
-    pub unsafe fn into_owned(&self, index: usize) -> QsOwned<V> {
-        unsafe { self.values.into_owned(index, self.num_keys()) }
+    pub unsafe fn load_owned(&self, index: usize) -> QsOwned<V> {
+        unsafe { self.values.load_owned(index, self.num_keys()) }
     }
 
     /// SAFETY: this will clobber an existing value and not invoke drop, so
-    /// the caller must ensure the value has been moved out of the slot eg with into_owned
+    /// the caller must ensure the value has been moved out of the slot eg with load_owned
     pub unsafe fn clobber(&self, index: usize, value: QsOwned<V>) {
         self.values.set(index, value);
     }
@@ -600,9 +617,9 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 
     pub fn check_invariants(&self) {
         assert!(self.num_keys() <= CAPACITY);
-        for (key1, key2) in self.keys().into_iter().zip(self.keys().into_iter().skip(1)) {
+        for (key1, key2) in self.keys().iter().zip(self.keys().iter().skip(1)) {
             assert!(
-                &*key1.load(Ordering::Relaxed).unwrap() < &*key2.load(Ordering::Relaxed).unwrap(),
+                *key1.load(Ordering::Relaxed).unwrap() < *key2.load(Ordering::Relaxed).unwrap(),
                 "key1: {:?} key2: {:?}",
                 &*key1.load(Ordering::Relaxed).unwrap(),
                 &*key2.load(Ordering::Relaxed).unwrap()

@@ -2,8 +2,6 @@ use std::{alloc, mem::MaybeUninit, ptr, slice};
 
 use crate::arcable::{ArcArray, Arcable, RefCount};
 
-/// Arcable impl for str
-
 pub fn init_thin_str(init: &str) -> *mut () {
     let layout = ArcArray::<u8>::layout(init.len());
     let ptr = unsafe { alloc::alloc(layout).cast::<ArcArray<u8>>() };

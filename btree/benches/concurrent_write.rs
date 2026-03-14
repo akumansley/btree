@@ -40,7 +40,7 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
 
                                 for _ in start..end {
                                     let key = rng.random_range(0..NUM_OPERATIONS);
-                                    let value = format!("value{}", key);
+                                    let value = format!("value{key}");
                                     tree.insert(QsArc::new(key), QsOwned::new_from_str(&value));
                                 }
                                 threads_done.fetch_add(1, Ordering::Relaxed);
@@ -53,10 +53,7 @@ fn pure_insert_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usiz
                     sum += start.elapsed();
                     drop(tree);
                 }
-                println!(
-                    "done - iters: {}, elapsed: {:?}, num_threads: {}",
-                    iters, sum, num_threads
-                );
+                println!("done - iters: {iters}, elapsed: {sum:?}, num_threads: {num_threads}");
                 unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                 sum
             })
@@ -79,7 +76,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                     // Pre-populate the tree
                     let mut pairs = Vec::new();
                     for i in 0..NUM_OPERATIONS / 10 {
-                        pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i))));
+                        pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{i}"))));
                     }
                     let tree = BTree::bulk_load(pairs);
 
@@ -98,7 +95,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                                     match operation {
                                         0 => {
                                             // Insert/Update (40%)
-                                            let value = format!("value{}", key);
+                                            let value = format!("value{key}");
                                             tree.insert(
                                                 QsArc::new(key),
                                                 QsOwned::new_from_str(&value),
@@ -128,10 +125,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                     sum += start.elapsed();
                 }
 
-                println!(
-                    "done - iters: {}, elapsed: {:?}, num_threads: {}",
-                    iters, sum, num_threads
-                );
+                println!("done - iters: {iters}, elapsed: {sum:?}, num_threads: {num_threads}");
                 sum
             })
         },
@@ -153,7 +147,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                     // Pre-populate the tree with bulk load
                     let mut pairs = Vec::new();
                     for i in 0..NUM_OPERATIONS / 10 {
-                        pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i))));
+                        pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{i}"))));
                     }
                     let tree = BTree::bulk_load(pairs);
 
@@ -174,7 +168,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                     match operation {
                                         0 => {
                                             // Insert (1%)
-                                            let value = format!("value{}", key);
+                                            let value = format!("value{key}");
                                             tree.insert(
                                                 QsArc::new(key),
                                                 QsOwned::new_from_str(&value),
@@ -186,7 +180,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                                         }
                                         2 => {
                                             // Update (1%)
-                                            let value = format!("newvalue{}", key);
+                                            let value = format!("newvalue{key}");
                                             tree.insert(
                                                 QsArc::new(key),
                                                 QsOwned::new_from_str(&value),
@@ -208,10 +202,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                     sum += start.elapsed();
                 }
 
-                println!(
-                    "done - iters: {}, elapsed: {:?}, num_threads: {}",
-                    iters, sum, num_threads
-                );
+                println!("done - iters: {iters}, elapsed: {sum:?}, num_threads: {num_threads}");
                 unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                 sum
             })

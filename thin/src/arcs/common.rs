@@ -41,6 +41,8 @@ macro_rules! impl_thin_arc_traits {
         }
 
         impl<T: ?Sized + Arcable> $arc_type<T> {
+            /// # Safety
+            /// Caller must ensure the pointer is valid.
             pub unsafe fn from_ptr(ptr: *mut ()) -> $arc_type<T> {
                 Self {
                     ptr: NonNull::new(ptr).unwrap(),
@@ -179,6 +181,8 @@ macro_rules! impl_thin_arc_strong {
                 Self::new_with(|| crate::arcable::init_thin_slice_uninitialized::<T>(len))
             }
 
+            /// # Safety
+            /// Caller must ensure all elements have been initialized.
             pub unsafe fn assume_init(self) -> $arc_type<[T]> {
                 unsafe { $arc_type::from_ptr(self.into_ptr()) }
             }
@@ -237,7 +241,7 @@ macro_rules! impl_thin_arc_strong {
                         } else {
                             return Err(serde::de::Error::invalid_length(
                                 i,
-                                &format!("expected {} elements", len).as_str(),
+                                &format!("expected {len} elements").as_str(),
                             ));
                         }
                     }
@@ -288,10 +292,7 @@ macro_rules! impl_thin_arc_weak {
 
         impl<T: ?Sized + Arcable> Clone for $weak_type<T> {
             fn clone(&self) -> Self {
-                Self {
-                    ptr: self.ptr,
-                    _marker: PhantomData,
-                }
+                *self
             }
         }
 

@@ -40,9 +40,8 @@ struct ArcInner<T: Sized> {
 }
 
 pub fn init_thin_sized<T: Sized + Arcable>(init: T) -> *mut () {
-    let ptr = Box::into_raw(Box::new(ArcInner {
+    Box::into_raw(Box::new(ArcInner {
         ref_count: RefCount::new(),
         data: init,
-    })) as *mut ();
-    ptr
+    })) as *mut ()
 }

@@ -29,7 +29,7 @@ macro_rules! impl_node_ref_traits {
         /// Shared trait impls for Owned and Shared NodeRefs:
         /// - Debug
         /// - PartialEq
-        impl<K: BTreeKey, V: BTreeValue, L: LockState, N: NodeType> Debug
+        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Debug
             for $struct_name<K, V, L, N>
         {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -456,20 +456,20 @@ macro_rules! impl_all_derefs_for_node_ref {
 }
 
 // Replace all the individual Deref and DerefMut implementations with the combined macro
-impl_all_derefs_for_node_ref!(Leaf, LeafNodeInner, to_shared_leaf_ptr, OwnedNodeRef);
-impl_all_derefs_for_node_ref!(Root, RootNodeInner, to_shared_root_ptr, OwnedNodeRef);
+impl_all_derefs_for_node_ref!(Leaf, LeafNodeInner, as_shared_leaf_ptr, OwnedNodeRef);
+impl_all_derefs_for_node_ref!(Root, RootNodeInner, as_shared_root_ptr, OwnedNodeRef);
 impl_all_derefs_for_node_ref!(
     Internal,
     InternalNodeInner,
-    to_shared_internal_ptr,
+    as_shared_internal_ptr,
     OwnedNodeRef
 );
-impl_all_derefs_for_node_ref!(Leaf, LeafNodeInner, to_shared_leaf_ptr, SharedNodeRef);
-impl_all_derefs_for_node_ref!(Root, RootNodeInner, to_shared_root_ptr, SharedNodeRef);
+impl_all_derefs_for_node_ref!(Leaf, LeafNodeInner, as_shared_leaf_ptr, SharedNodeRef);
+impl_all_derefs_for_node_ref!(Root, RootNodeInner, as_shared_root_ptr, SharedNodeRef);
 impl_all_derefs_for_node_ref!(
     Internal,
     InternalNodeInner,
-    to_shared_internal_ptr,
+    as_shared_internal_ptr,
     SharedNodeRef
 );
 
@@ -505,6 +505,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     OwnedNodeRef<K, V, marker::Unlocked, marker::Leaf>
 {
+    #[allow(dead_code)]
     pub fn lock_exclusive_jittered(
         self,
     ) -> OwnedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
@@ -521,11 +522,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Cl
     for SharedNodeRef<K, V, L, N>
 {
     fn clone(&self) -> Self {
-        Self {
-            node: self.node,
-            lock_info: self.lock_info,
-            phantom: self.phantom,
-        }
+        *self
     }
 }
 
@@ -554,7 +551,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
     pub fn share(&self) -> SharedNodeRef<K, V, L, N> {
         SharedNodeRef {
             node: ManuallyDrop::new(self.node.share()),
-            lock_info: self.lock_info.clone(),
+            lock_info: self.lock_info,
             phantom: PhantomData,
         }
     }
@@ -630,12 +627,12 @@ macro_rules! impl_node_ptr_conversions {
     };
 }
 
-impl_node_ptr_conversions!(LeafNode, marker::Leaf, to_shared_leaf_ptr, into_leaf_ptr);
-impl_node_ptr_conversions!(RootNode, marker::Root, to_shared_root_ptr, into_root_ptr);
+impl_node_ptr_conversions!(LeafNode, marker::Leaf, as_shared_leaf_ptr, into_leaf_ptr);
+impl_node_ptr_conversions!(RootNode, marker::Root, as_shared_root_ptr, into_root_ptr);
 impl_node_ptr_conversions!(
     InternalNode,
     marker::Internal,
-    to_shared_internal_ptr,
+    as_shared_internal_ptr,
     into_internal_ptr
 );
 

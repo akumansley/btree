@@ -161,16 +161,17 @@ impl MemoryReclaimer {
         });
     }
 
-    /// Marks the current thread as quiescent
-    /// Panics if not registered
+    /// Marks the current thread as quiescent.
+    ///
+    /// # Safety
+    /// The caller must ensure that it does not hold any possibly dropped QSBR-managed references.
     pub unsafe fn mark_current_thread_quiescent(&self) {
         let thread_id = gettid();
         let mut inner = self.inner.lock().unwrap();
 
         if !inner.registered_threads.contains(&thread_id) {
             panic!(
-                "Thread {} not registered! Call register_thread() before calling mark_current_thread_quiescent().",
-                thread_id
+                "Thread {thread_id} not registered! Call register_thread() before calling mark_current_thread_quiescent().",
             );
         }
 
@@ -188,8 +189,10 @@ impl MemoryReclaimer {
         self.complete_interval_if_possible(&mut inner);
     }
 
-    /// Deregisters the current thread and marks it quiescent
-    /// Panics if not registered
+    /// Deregisters the current thread and marks it quiescent.
+    ///
+    /// # Safety
+    /// The caller must ensure that it does not hold any possibly dropped QSBR-managed references.
     pub unsafe fn deregister_current_thread_and_mark_quiescent(&self) {
         let thread_id = gettid();
 
@@ -198,8 +201,7 @@ impl MemoryReclaimer {
 
             if state.registration_count == 0 {
                 panic!(
-                    "Thread {} not registered! Call register_thread() before deregistering.",
-                    thread_id
+                    "Thread {thread_id} not registered! Call register_thread() before deregistering.",
                 );
             }
 
@@ -295,11 +297,9 @@ pub fn qsbr_pool() -> &'static ThreadPool {
             .num_threads(8)
             .start_handler(|_| {
                 qsbr_reclaimer().register_thread();
-                ()
             })
             .exit_handler(|_| {
                 unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
-                ()
             })
             .build()
             .unwrap()

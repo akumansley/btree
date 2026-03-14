@@ -42,7 +42,6 @@ impl<T: ?Sized + Arcable + 'static> From<QsArc<T>> for Arc<T> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json;
     use std::cmp::Ordering as CmpOrdering;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -66,7 +65,7 @@ mod tests {
         let mut thin_slice_uninitialized = Arc::new_uninitialized(3);
         assert_eq!(thin_slice_uninitialized.len(), 3);
         for i in 0..3 {
-            thin_slice_uninitialized[i].write(i as usize);
+            thin_slice_uninitialized[i].write(i);
         }
         let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
 

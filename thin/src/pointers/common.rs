@@ -78,12 +78,16 @@ macro_rules! impl_thin_ptr_traits {
                 self.ptr.as_ptr()
             }
 
+            /// # Safety
+            /// Caller must ensure the pointer is valid.
             pub unsafe fn from_ptr(ptr: *mut ()) -> Self {
                 Self {
                     ptr: NonNull::new(ptr).unwrap(),
                     _marker: PhantomData,
                 }
             }
+            /// # Safety
+            /// Caller must ensure the pointer is valid for type U.
             pub unsafe fn cast<U: Pointable>(self) -> $struct_name<U> {
                 let ptr = self.into_ptr();
                 unsafe { $struct_name::<U>::from_ptr(ptr) }

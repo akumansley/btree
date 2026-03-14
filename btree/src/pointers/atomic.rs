@@ -87,13 +87,12 @@ impl<T: Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
         }
     }
 
-    pub unsafe fn into_owned(&self, order: Ordering) -> Option<QsOwned<T>> {
+    pub unsafe fn must_load_owned(&self, order: Ordering) -> QsOwned<T> {
         let ptr = self.ptr.load(order);
         if ptr.is_null() {
             panic!("Attempted to load null pointer into owned");
-        } else {
-            unsafe { Some(QsOwned::from_ptr(ptr)) }
         }
+        unsafe { QsOwned::from_ptr(ptr) }
     }
 }
 
@@ -118,10 +117,10 @@ impl<T: Send + 'static + ?Sized + Pointable> AtomicPointerArrayValue<T> for Owne
         }
     }
 
-    fn into_owned(&self, ordering: Ordering) -> Option<Self::OwnedPointer> {
+    fn load_owned(&self, ordering: Ordering) -> Option<Self::OwnedPointer> {
         let ptr = self.ptr.load(ordering);
         if ptr.is_null() {
-            panic!("Attempted to load null pointer into owned");
+            None
         } else {
             Some(unsafe { QsOwned::from_ptr(ptr) })
         }
@@ -161,7 +160,8 @@ mod tests {
     fn test_thin_box() {
         let thin_str = QsOwned::new_from_str("hello");
         assert_eq!(thin_str.len(), 5);
-        assert_eq!(format!("hello {}", thin_str.deref()), "hello hello");
+        let thin_str_val = thin_str.deref();
+        assert_eq!(format!("hello {thin_str_val}"), "hello hello");
 
         let thin_usize = QsOwned::new(42);
         assert_eq!(*thin_usize, 42);
@@ -173,7 +173,7 @@ mod tests {
         let mut thin_slice_uninitialized = Owned::new_uninitialized(3);
         assert_eq!(thin_slice_uninitialized.len(), 3);
         for i in 0..3 {
-            thin_slice_uninitialized[i].write(i as usize);
+            thin_slice_uninitialized[i].write(i);
         }
         let thin_slice_init: QsOwned<[usize]> =
             unsafe { thin_slice_uninitialized.assume_init().into() };

@@ -32,7 +32,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> PartialEq for LeafNode<K, V> 
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Eq for LeafNode<K, V> {}
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> fmt::Debug for LeafNode<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "LeafNode({:p})", self)
+        write!(f, "LeafNode({self:p})")
     }
 }
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for LeafNode<K, V> {
@@ -45,6 +45,12 @@ pub struct LeafNodeInner<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub storage: LeafNodeStorageArray<K, V>,
     pub next_leaf: SharedThinAtomicPtr<LeafNode<K, V>>,
     pub prev_leaf: SharedThinAtomicPtr<LeafNode<K, V>>,
+}
+
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Default for LeafNode<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNode<K, V> {
@@ -87,7 +93,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        debug_println!("LeafNode get {:?}", search_key);
+        debug_println!("LeafNode get");
         match self.binary_search_key(search_key) {
             Ok(index) => Some((
                 self.storage.keys()[index].load(Ordering::Acquire).unwrap(),
@@ -96,7 +102,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
                     .unwrap(),
             )),
             Err(_) => {
-                debug_println!("LeafNode get {:?} not found", search_key);
+                debug_println!("LeafNode get not found");
                 None
             }
         }
@@ -106,8 +112,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         match self.binary_search_key(key_to_insert.deref()) {
             Ok(index) => {
                 let old_value = self.storage.set(index, value);
-                if old_value.is_some() {
-                    let owned_value = old_value.unwrap();
+                if let Some(owned_value) = old_value {
                     drop(owned_value);
                 }
                 // no need to qsbr this key -- it can't have been published yet
@@ -141,7 +146,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         index: usize,
         modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>,
     ) -> Result<(), E> {
-        let old_value = unsafe { self.storage.into_owned(index) };
+        let old_value = unsafe { self.storage.load_owned(index) };
         match modify_fn(old_value) {
             Ok(modified_value) => {
                 unsafe { self.storage.clobber(index, modified_value) };
@@ -209,10 +214,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
 
             right_neighbor_next_leaf
                 .prev_leaf
-                .store(to.to_shared_leaf_ptr(), Ordering::Release);
+                .store(to.as_shared_leaf_ptr(), Ordering::Release);
 
             to.next_leaf.store(
-                right_neighbor_next_leaf.to_shared_leaf_ptr(),
+                right_neighbor_next_leaf.as_shared_leaf_ptr(),
                 Ordering::Release,
             );
             right_neighbor_next_leaf.unlock_exclusive();
@@ -273,7 +278,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     }
 
     pub fn print_node(&self) {
-        println!("LeafNode: {:p}", self);
+        println!("LeafNode: {self:p}");
         println!("+----------------------+");
         println!("| Num Keys: {}           |", self.num_keys());
         println!("+----------------------+");

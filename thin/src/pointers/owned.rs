@@ -86,6 +86,8 @@ impl<T: Send + 'static> Owned<[MaybeUninit<T>]> {
         Owned::new_with(|| init_thin_slice_uninitialized::<T>(len))
     }
 
+    /// # Safety
+    /// Caller must ensure all elements have been initialized.
     pub unsafe fn assume_init(self) -> Owned<[T]> {
         unsafe { Owned::from_ptr(self.into_ptr()) }
     }
@@ -110,11 +112,10 @@ impl<T: Pointable> Iterator for ThinSliceIntoIter<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let array_ptr = self.ptr as *const Array<T>;
         unsafe {
-            let len = (*array_ptr).len;
+            let len = (*self.ptr).len;
             if self.position < len {
-                let elements_ptr = (*array_ptr).elements.as_ptr();
+                let elements_ptr = (*self.ptr).elements.as_ptr();
                 let item = elements_ptr.add(self.position).read().assume_init_read();
                 // i don't want to clone, but i do want to move out of here
                 // so we don't drop i guess
@@ -152,7 +153,7 @@ impl<T: Send + 'static> IntoIterator for Owned<[T]> {
             ptr: self.into_ptr() as *const Array<T>,
             position: 0,
             size,
-            phantom: PhantomData::default(),
+            phantom: PhantomData,
         }
     }
 }
@@ -163,7 +164,7 @@ impl<T: ?Sized + Pointable> DerefMut for Owned<T> {
     }
 }
 
-/** Serde **/
+/* Serde */
 
 impl<'de, T> Deserialize<'de> for Owned<T>
 where
@@ -212,7 +213,7 @@ where
                 } else {
                     return Err(serde::de::Error::invalid_length(
                         i,
-                        &format!("expected {} elements", len).as_str(),
+                        &format!("expected {len} elements").as_str(),
                     ));
                 }
             }

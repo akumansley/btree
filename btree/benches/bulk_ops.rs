@@ -16,7 +16,7 @@ fn bulk_load_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::WallTi
                     // Generate sorted key-value pairs
                     let mut pairs = Vec::with_capacity(num_elements);
                     for i in 0..num_elements {
-                        pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i))));
+                        pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{i}"))));
                     }
 
                     qsbr_reclaimer().register_thread();
@@ -26,8 +26,7 @@ fn bulk_load_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::WallTi
                     unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                 }
                 println!(
-                    "done - bulk_load iters: {}, elapsed: {:?}, num_elements: {}",
-                    iters, sum, num_elements
+                    "done - bulk_load iters: {iters}, elapsed: {sum:?}, num_elements: {num_elements}"
                 );
                 sum
             })
@@ -47,7 +46,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                 qsbr_reclaimer().register_thread();
                 let mut pairs = Vec::with_capacity(num_elements);
                 for i in 0..num_elements {
-                    pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i))));
+                    pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{i}"))));
                 }
                 let tree: BTree<usize, str> = BTree::bulk_load_parallel(pairs);
 
@@ -58,7 +57,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
                     for i in 0..num_elements {
                         updates.push((
                             QsArc::new(i),
-                            QsOwned::new_from_str(&format!("updated_value - {}, {}", iter, i)),
+                            QsOwned::new_from_str(&format!("updated_value - {iter}, {i}")),
                         ));
                     }
 
@@ -69,8 +68,7 @@ fn bulk_update_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wall
 
                 unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
                 println!(
-                    "done - bulk_update iters: {}, elapsed: {:?}, num_elements: {}",
-                    iters, sum, num_elements
+                    "done - bulk_update iters: {iters}, elapsed: {sum:?}, num_elements: {num_elements}"
                 );
                 sum
             })
@@ -90,7 +88,7 @@ fn scan_parallel_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wa
                 for i in 0..num_elements {
                     pairs.push((
                         QsArc::new(i),                                 // K: usize
-                        QsOwned::new_from_str(&format!("value{}", i)), // V: str
+                        QsOwned::new_from_str(&format!("value{i}")), // V: str
                     ));
                 }
                 let tree: BTree<usize, str> = BTree::bulk_load_parallel(pairs);
@@ -113,13 +111,12 @@ fn scan_parallel_benchmark(c: &mut BenchmarkGroup<'_, criterion::measurement::Wa
                     let start_instant = std::time::Instant::now();
                     // tree.scan_parallel is a method on BTree that calls the actual parallel scan logic
                     let _result =
-                        tree.scan_parallel(start_key.share(), end_key.share(), &predicate);
+                        tree.scan_parallel(start_key.share(), end_key.share(), predicate);
                     sum += start_instant.elapsed();
                 }
 
                 println!(
-                    "done - scan_parallel iters: {}, elapsed: {:?}, num_elements: {}",
-                    iters, sum, num_elements
+                    "done - scan_parallel iters: {iters}, elapsed: {sum:?}, num_elements: {num_elements}"
                 );
                 sum
             })

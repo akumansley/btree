@@ -38,6 +38,12 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for RootNodeInner<K, V> 
         OwnedNodeRef::drop_immediately(top_of_tree_ref);
     }
 }
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Default for RootNode<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
     pub fn new() -> Self {
         RootNode {

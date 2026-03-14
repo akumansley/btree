@@ -140,8 +140,7 @@ impl RawRwLock for BasicSpinRwLock {
         let prev = self.lock.fetch_sub(2, Ordering::Release);
         debug_assert!(
             prev >= 2 && prev % 2 == 0,
-            "unlock_shared: lock value was {}, which is invalid",
-            prev
+            "unlock_shared: lock value was {prev}, which is invalid"
         );
     }
 

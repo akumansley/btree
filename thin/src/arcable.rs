@@ -17,10 +17,9 @@ struct RefCount {
 
 impl RefCount {
     fn new() -> Self {
-        let result = Self {
+        Self {
             count: AtomicUsize::new(1),
-        };
-        result
+        }
     }
 
     fn increment(&self) -> bool {
@@ -49,15 +48,13 @@ impl RefCount {
     fn decrement(&self) -> bool {
         let old_count = self.count.fetch_sub(1, Ordering::Relaxed);
         if old_count == 0 {
-            panic!("attempted to decrement a ref_count of 0 {:p}", self);
+            panic!("attempted to decrement a ref_count of 0 {self:p}");
         }
-        let result = old_count == 1;
-        result
+        old_count == 1
     }
 
     fn load(&self) -> usize {
-        let count = self.count.load(Ordering::Relaxed);
-        count
+        self.count.load(Ordering::Relaxed)
     }
 }
 
@@ -65,8 +62,14 @@ pub trait Arcable {
     fn ref_count(ptr: *mut ()) -> usize;
     fn increment_ref_count(ptr: *mut ());
     fn decrement_ref_count(ptr: *mut ()) -> bool;
+    /// # Safety
+    /// Caller must ensure the pointer is valid and has not been dropped.
     unsafe fn deref_arc<'a>(ptr: *mut ()) -> &'a Self;
+    /// # Safety
+    /// Caller must ensure the pointer is valid and not aliased.
     unsafe fn deref_mut_arc<'a>(ptr: *mut ()) -> &'a mut Self;
+    /// # Safety
+    /// Caller must ensure the pointer is valid and the ref count is zero.
     unsafe fn drop_arc(ptr: *mut ());
 }
 

@@ -70,12 +70,12 @@ mod tests {
 
         // Insert initial values
         for i in 0..num_elements {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Create updates with modified values
         let updates_for_comparison: Vec<(usize, String)> = (0..num_elements)
-            .map(|i| (i, format!("updated_value{}", i)))
+            .map(|i| (i, format!("updated_value{i}")))
             .collect();
         let updates: Vec<(QsArc<usize>, QsOwned<String>)> = updates_for_comparison
             .iter()
@@ -119,7 +119,7 @@ mod tests {
         // Insert initial values (even numbers)
         for i in 0..num_elements {
             if i % 2 == 0 {
-                tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+                tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
             }
         }
 
@@ -129,9 +129,9 @@ mod tests {
         let entries_for_comparison: Vec<(usize, String)> = (0..num_elements)
             .map(|i| {
                 if i % 2 == 0 {
-                    (i, format!("value{}_updated", i))
+                    (i, format!("value{i}_updated"))
                 } else {
-                    (i, format!("value{}_new", i))
+                    (i, format!("value{i}_new"))
                 }
             })
             .collect();
@@ -145,7 +145,7 @@ mod tests {
                          _: QsOwned<String>|
          -> Result<QsOwned<String>, (QsOwned<String>, ())> {
             let old_string = old_value.deref();
-            Ok(QsOwned::new(format!("{}_updated", old_string)))
+            Ok(QsOwned::new(format!("{old_string}_updated")))
         };
 
         // Perform bulk insert/update

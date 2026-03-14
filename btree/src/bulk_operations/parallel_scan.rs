@@ -252,12 +252,9 @@ fn leaves_between<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     }
 
     let mut leaves = Vec::new();
-    loop {
-        let leaf_ref = match &cursor.current_leaf {
-            Some(leaf) => *leaf,
-            None => break,
-        };
-        let ptr = leaf_ref.to_shared_leaf_ptr().into_ptr();
+    while let Some(leaf) = &cursor.current_leaf {
+        let leaf_ref = *leaf;
+        let ptr = leaf_ref.as_shared_leaf_ptr().into_ptr();
         if leaves.last().copied() != Some(ptr) {
             leaves.push(ptr);
         }
@@ -400,7 +397,7 @@ mod test {
                 end_idx,
             );
 
-            println!("Scenario 1 Result: {:?}", result);
+            println!("Scenario 1 Result: {result:?}");
             assert_subranges(
                 &result,
                 Some(start_key.share()),
@@ -432,7 +429,7 @@ mod test {
                 end_idx,
             );
 
-            println!("Scenario 2 Result: {:?}", result);
+            println!("Scenario 2 Result: {result:?}");
             assert_subranges(
                 &result,
                 Some(start_key.share()),
@@ -471,12 +468,8 @@ mod test {
 
         let min = *leaf_counts.iter().min().unwrap();
         let max = *leaf_counts.iter().max().unwrap();
-        println!("leaf counts: {:?}", leaf_counts);
-        assert!(
-            max - min <= 1,
-            "Leaf counts not balanced: {:?}",
-            leaf_counts
-        );
+        println!("leaf counts: {leaf_counts:?}");
+        assert!(max - min <= 1, "Leaf counts not balanced: {leaf_counts:?}");
     }
 
     #[qsbr_test]

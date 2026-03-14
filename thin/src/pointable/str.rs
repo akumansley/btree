@@ -32,7 +32,7 @@ impl Pointable for str {
     }
 }
 
-pub fn init_thin_str<'a>(init: &'a str) -> *mut () {
+pub fn init_thin_str(init: &str) -> *mut () {
     let layout = Array::<u8>::layout(init.len());
     unsafe {
         let ptr = alloc::alloc(layout).cast::<Array<u8>>();

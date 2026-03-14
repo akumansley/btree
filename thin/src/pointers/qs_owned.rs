@@ -45,6 +45,8 @@ impl<T: Send + 'static> QsOwned<[MaybeUninit<T>]> {
         QsOwned::new_with(|| init_thin_slice_uninitialized::<T>(len))
     }
 
+    /// # Safety
+    /// Caller must ensure all elements have been initialized.
     pub unsafe fn assume_init(self) -> QsOwned<[T]> {
         unsafe { QsOwned::from_ptr(self.into_ptr()) }
     }
@@ -101,7 +103,7 @@ impl<T: ?Sized + Pointable> Drop for QsOwned<T> {
     }
 }
 
-/** Serde **/
+/* Serde */
 
 impl<'de, T> Deserialize<'de> for QsOwned<T>
 where
@@ -150,7 +152,7 @@ where
                 } else {
                     return Err(serde::de::Error::invalid_length(
                         i,
-                        &format!("expected {} elements", len).as_str(),
+                        &format!("expected {len} elements").as_str(),
                     ));
                 }
             }

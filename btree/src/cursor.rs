@@ -185,9 +185,9 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
             && self.current_index < self.current_leaf_num_keys().saturating_sub(1)
         {
             self.current_index += 1;
-            return true;
+            true
         } else {
-            return self.move_next_slow();
+            self.move_next_slow()
         }
     }
 
@@ -360,12 +360,12 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
             match predicate(existing_value) {
                 ModifyDecision::Modify => {
                     match leaf.modify_value(index, |old_value| modify_fn(old_value, new_value)) {
-                        Ok(()) => return InsertOrModifyIfResult::Modified,
-                        Err(e) => return InsertOrModifyIfResult::Error(e),
+                        Ok(()) => InsertOrModifyIfResult::Modified,
+                        Err(e) => InsertOrModifyIfResult::Error(e),
                     }
                 }
-                ModifyDecision::DoNothing => return InsertOrModifyIfResult::DidNothing,
-                ModifyDecision::Error(e) => return InsertOrModifyIfResult::Error(e),
+                ModifyDecision::DoNothing => InsertOrModifyIfResult::DidNothing,
+                ModifyDecision::Error(e) => InsertOrModifyIfResult::Error(e),
             }
         } else if leaf.has_capacity_for_modification(ModificationType::Insertion) {
             let index = search_result.unwrap_err();
@@ -374,7 +374,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 .root
                 .len
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return InsertOrModifyIfResult::Inserted; // New key inserted
+            InsertOrModifyIfResult::Inserted // New key inserted
         } else {
             // we need to split the leaf, so give up the lock
             self.current_leaf.take().unwrap().unlock_exclusive();
@@ -406,12 +406,12 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                             .modify_value(self.current_index, |old_value| {
                                 modify_fn(old_value, proposed_value)
                             }) {
-                            Ok(()) => return InsertOrModifyIfResult::Modified,
-                            Err(e) => return InsertOrModifyIfResult::Error(e),
+                            Ok(()) => InsertOrModifyIfResult::Modified,
+                            Err(e) => InsertOrModifyIfResult::Error(e),
                         }
                     }
-                    ModifyDecision::DoNothing => return InsertOrModifyIfResult::DidNothing,
-                    ModifyDecision::Error(e) => return InsertOrModifyIfResult::Error(e),
+                    ModifyDecision::DoNothing => InsertOrModifyIfResult::DidNothing,
+                    ModifyDecision::Error(e) => InsertOrModifyIfResult::Error(e),
                 },
             }
         }
@@ -474,7 +474,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
 
     pub fn move_next(&mut self) -> bool {
         loop {
-            if let None = self.current_leaf {
+            if self.current_leaf.is_none() {
                 return false;
             }
             let leaf = self.current_leaf.unwrap();
@@ -865,7 +865,7 @@ mod tests {
 
         // Insert some test data
         for i in 0..10 {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test forward traversal
@@ -873,19 +873,19 @@ mod tests {
         cursor.seek_to_start();
         for i in 0..10 {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_next();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test backward traversal
         cursor.seek_to_end();
         for i in (0..10).rev() {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_prev();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test mixed traversal
         cursor.seek_to_start();
@@ -916,7 +916,7 @@ mod tests {
         // Using ORDER * 2 ensures we have at least 2 leaves
         let n = ORDER * 2;
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
             tree.check_invariants();
         }
 
@@ -925,19 +925,19 @@ mod tests {
         cursor.seek_to_start();
         for i in 0..n {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_next();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test backward traversal across leaves
         cursor.seek_to_end();
         for i in (0..n).rev() {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_prev();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test seeking across leaves
         cursor.seek(&(ORDER - 1)); // Should be near end of first leaf
@@ -946,10 +946,7 @@ mod tests {
             format!("value{}", ORDER - 1)
         );
         cursor.move_next();
-        assert_eq!(
-            *cursor.current().unwrap().value(),
-            format!("value{}", ORDER)
-        ); // Should cross to next leaf
+        assert_eq!(*cursor.current().unwrap().value(), format!("value{ORDER}")); // Should cross to next leaf
 
         cursor.seek(&ORDER); // Should be at start of second leaf
         cursor.move_prev();
@@ -965,7 +962,7 @@ mod tests {
 
         // Insert some test data
         for i in 0..10 {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test forward traversal
@@ -973,19 +970,19 @@ mod tests {
         cursor.seek_to_start();
         for i in 0..10 {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_next();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test backward traversal
         cursor.seek_to_end();
         for i in (0..10).rev() {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_prev();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test mixed traversal
         cursor.seek_to_start();
@@ -1019,7 +1016,7 @@ mod tests {
         // Using ORDER * 2 ensures we have at least 2 leaves
         let n = ORDER * 2;
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
             tree.check_invariants();
         }
 
@@ -1028,19 +1025,19 @@ mod tests {
         cursor.seek_to_start();
         for i in 0..n {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_next();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test backward traversal across leaves
         cursor.seek_to_end();
         for i in (0..n).rev() {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_prev();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test seeking across leaves
         cursor.seek(&(ORDER - 1)); // Should be near end of first leaf
@@ -1049,10 +1046,7 @@ mod tests {
             format!("value{}", ORDER - 1)
         );
         cursor.move_next();
-        assert_eq!(
-            *cursor.current().unwrap().value(),
-            format!("value{}", ORDER)
-        ); // Should cross to next leaf
+        assert_eq!(*cursor.current().unwrap().value(), format!("value{ORDER}")); // Should cross to next leaf
 
         cursor.seek(&ORDER); // Should be at start of second leaf
         cursor.move_prev();
@@ -1072,7 +1066,7 @@ mod tests {
         // Insert enough elements to ensure multiple leaves
         let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
             tree.check_invariants();
         }
 
@@ -1096,7 +1090,7 @@ mod tests {
                     loop {
                         assert_eq!(
                             *cursor_mut.current().unwrap().value(),
-                            format!("value{}", expected)
+                            format!("value{expected}")
                         );
                         if !cursor_mut.move_prev() {
                             break;
@@ -1125,7 +1119,7 @@ mod tests {
                     loop {
                         assert_eq!(
                             *cursor_shared.current().unwrap().value(),
-                            format!("value{}", expected)
+                            format!("value{expected}")
                         );
                         if !cursor_shared.move_next() {
                             break;
@@ -1321,9 +1315,7 @@ mod tests {
         assert!(!cursor.seek(&gap_key));
         assert!(
             cursor.current().is_some(),
-            "seek to {} should point at next greater key {}, not None",
-            gap_key,
-            expected_next
+            "seek to {gap_key} should point at next greater key {expected_next}, not None"
         );
         assert_eq!(*cursor.current().unwrap().key(), expected_next);
 
@@ -1390,7 +1382,7 @@ mod tests {
 
         // Insert some test data
         for i in 0..10 {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test forward traversal
@@ -1398,19 +1390,19 @@ mod tests {
         cursor.seek_to_start();
         for i in 0..10 {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_next();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test backward traversal
         cursor.seek_to_end();
         for i in (0..10).rev() {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_prev();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test mixed traversal
         cursor.seek_to_start();
@@ -1440,7 +1432,7 @@ mod tests {
         // Insert enough elements to force leaf splits
         let n = ORDER * 2;
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
             tree.check_invariants();
         }
 
@@ -1449,19 +1441,19 @@ mod tests {
         cursor.seek_to_start();
         for i in 0..n {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_next();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test backward traversal across leaves
         cursor.seek_to_end();
         for i in (0..n).rev() {
             let entry = cursor.current().unwrap();
-            assert_eq!(*entry.value(), format!("value{}", i));
+            assert_eq!(*entry.value(), format!("value{i}"));
             cursor.move_prev();
         }
-        assert_eq!(cursor.current().is_none(), true);
+        assert!(cursor.current().is_none());
 
         // Test seeking across leaves
         cursor.seek(&(ORDER - 1));
@@ -1470,10 +1462,7 @@ mod tests {
             format!("value{}", ORDER - 1)
         );
         cursor.move_next();
-        assert_eq!(
-            *cursor.current().unwrap().value(),
-            format!("value{}", ORDER)
-        );
+        assert_eq!(*cursor.current().unwrap().value(), format!("value{ORDER}"));
 
         cursor.seek(&ORDER);
         cursor.move_prev();
@@ -1548,9 +1537,7 @@ mod tests {
         assert!(!cursor.seek(&gap_key));
         assert!(
             cursor.current().is_some(),
-            "seek to {} should point at next greater key {}, not None",
-            gap_key,
-            expected_next
+            "seek to {gap_key} should point at next greater key {expected_next}, not None"
         );
         assert_eq!(*cursor.current().unwrap().key(), expected_next);
 
@@ -1567,7 +1554,7 @@ mod tests {
         // Insert enough elements to ensure multiple leaves
         let n = ORDER * 3;
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
             tree.check_invariants();
         }
 
@@ -1591,7 +1578,7 @@ mod tests {
                     loop {
                         assert_eq!(
                             *cursor_mut.current().unwrap().value(),
-                            format!("value{}", expected)
+                            format!("value{expected}")
                         );
                         if !cursor_mut.move_prev() {
                             break;
@@ -1620,7 +1607,7 @@ mod tests {
                     loop {
                         assert_eq!(
                             *cursor.current().unwrap().value(),
-                            format!("value{}", expected)
+                            format!("value{expected}")
                         );
                         if !cursor.move_next() {
                             break;

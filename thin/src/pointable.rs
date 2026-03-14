@@ -37,6 +37,8 @@ pub trait Pointable: Send + 'static {
 }
 
 pub trait PointableClone: Pointable {
+    /// # Safety
+    /// Caller must ensure the pointer is valid.
     unsafe fn clone(ptr: *mut ()) -> *mut ();
 }
 

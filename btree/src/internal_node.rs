@@ -130,7 +130,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         self.storage.get_key(index - 1)
     }
     pub fn print_node_without_children(&self) {
-        println!("InternalNode: {:p}", self);
+        println!("InternalNode: {self:p}");
         println!("+----------------------+");
         println!("| Keys and Children:   |");
         for i in 0..self.num_keys() {
@@ -203,8 +203,8 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         debug_println!(
             "InternalNode get_neighboring_internal_node on parent node {:?} for child {:?} found neighbor {:?}",
             self as *const _,
-            child.node_ptr(),
-            neighbor_ref.node_ptr()
+            child,
+            neighbor_ref
         );
         (neighbor_ref.assume_unlocked().assert_internal(), direction)
     }
@@ -305,7 +305,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
             "InternalNode {:?} update_split_key of {:?} to {:?} at key index {:?}",
             self as *const _,
             node,
-            unsafe { &*new_split_key },
+            &*new_split_key,
             child_index - 1
         );
 

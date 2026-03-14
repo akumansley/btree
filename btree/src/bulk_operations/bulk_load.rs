@@ -10,6 +10,9 @@ use rand::Rng;
 use rayon::prelude::*;
 use thin::{QsArc, QsOwned};
 
+type LeafWithSplitKey<K, V> = Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)>;
+type InternalWithSplitKey<K, V> = Vec<(QsOwned<InternalNode<K, V>>, QsArc<K>)>;
+
 fn calculate_chunk_size(
     target_utilization: f64,
     jitter_range: f64,
@@ -41,8 +44,8 @@ fn construct_leaf_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     pairs_iter: impl ExactSizeIterator<Item = (QsArc<K>, QsOwned<V>)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)> {
-    let mut leaves: Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)> = Vec::new();
+) -> LeafWithSplitKey<K, V> {
+    let mut leaves: LeafWithSplitKey<K, V> = Vec::new();
     let mut pairs_iter = pairs_iter.peekable();
 
     while pairs_iter.peek().is_some() {
@@ -70,7 +73,7 @@ fn construct_leaf_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
                 .prev_leaf
                 .store(prev_leaf.share(), Ordering::Release);
             unsafe {
-                (*(*prev_leaf).inner.get())
+                (*prev_leaf.inner.get())
                     .next_leaf
                     .store(leaf.share(), Ordering::Release);
             }
@@ -86,7 +89,7 @@ fn construct_internal_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     children_with_split_keys: Vec<(QsOwned<NodeHeader>, QsArc<K>)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> Vec<(QsOwned<InternalNode<K, V>>, QsArc<K>)> {
+) -> InternalWithSplitKey<K, V> {
     let mut internal_nodes = Vec::new();
     let mut children_iter = children_with_split_keys.into_iter().peekable();
 
@@ -129,7 +132,7 @@ fn construct_internal_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 }
 
 fn construct_tree_from_leaves<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    mut leaves: Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)>,
+    mut leaves: LeafWithSplitKey<K, V>,
     target_utilization: f64,
     jitter_range: f64,
 ) -> QsOwned<NodeHeader> {
@@ -209,31 +212,28 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeVal
     let num_pairs = sorted_kv_pairs.len();
 
     let pool = qsbr_pool();
-    let leaves: Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)> = pool.install(|| {
+    let leaves: LeafWithSplitKey<K, V> = pool.install(|| {
         let chunks = sorted_kv_pairs.into_par_iter().chunks(ORDER * 8);
         chunks
             .map(|chunk| construct_leaf_level(chunk.into_iter(), target_utilization, jitter_range))
-            .reduce(
-                || Vec::new(),
-                |mut acc, mut leaves| {
-                    if let Some((last_leaf, _)) = acc.last_mut() {
-                        if let Some((first_leaf, _)) = leaves.first_mut() {
-                            unsafe {
-                                last_leaf
-                                    .get_inner()
-                                    .next_leaf
-                                    .store(first_leaf.share(), Ordering::Relaxed);
-                                first_leaf
-                                    .get_inner()
-                                    .prev_leaf
-                                    .store(last_leaf.share(), Ordering::Relaxed);
-                            }
+            .reduce(Vec::new, |mut acc, mut leaves| {
+                if let Some((last_leaf, _)) = acc.last_mut() {
+                    if let Some((first_leaf, _)) = leaves.first_mut() {
+                        unsafe {
+                            last_leaf
+                                .get_inner()
+                                .next_leaf
+                                .store(first_leaf.share(), Ordering::Relaxed);
+                            first_leaf
+                                .get_inner()
+                                .prev_leaf
+                                .store(last_leaf.share(), Ordering::Relaxed);
                         }
                     }
-                    acc.extend(leaves);
-                    acc
-                },
-            )
+                }
+                acc.extend(leaves);
+                acc
+            })
     });
 
     let root_node = construct_tree_from_leaves(leaves, target_utilization, jitter_range);
@@ -268,8 +268,8 @@ mod tests {
         for i in 0..10_000 {
             use thin::QsArc;
 
-            pairs.push((QsArc::new(i), QsOwned::new(format!("value{}", i))));
-            pairs_for_comparison.push((i, format!("value{}", i)));
+            pairs.push((QsArc::new(i), QsOwned::new(format!("value{i}"))));
+            pairs_for_comparison.push((i, format!("value{i}")));
         }
 
         // Bulk load the tree
@@ -281,8 +281,8 @@ mod tests {
 
         for (i, (key, value)) in pairs_for_comparison.iter().enumerate() {
             let entry_from_get = tree
-                .get(&key)
-                .expect(format!("key not found: {}", key).as_str());
+                .get(key)
+                .unwrap_or_else(|| panic!("key not found: {key}"));
             let entry = cursor.current().unwrap();
             assert_eq!(key, entry.key());
             assert_eq!(value, entry.value());

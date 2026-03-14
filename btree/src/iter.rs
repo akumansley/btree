@@ -86,10 +86,7 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
             D::advance(cursor);
             cursor
         };
-        match cursor.current() {
-            Some(entry) => Some(entry.into_value()),
-            None => None,
-        }
+        cursor.current().map(|entry| entry.into_value())
     }
 }
 
@@ -136,14 +133,15 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
             cursor.current()
         };
         if let Some(entry) = entry {
-            if self.end.is_some()
-                && D::compare_key(entry.key(), self.end.unwrap()) != Ordering::Less
-            {
-                return None;
+            if let Some(end) = self.end {
+                if D::compare_key(entry.key(), end) != Ordering::Less {
+                    return None;
+                }
             }
-            return Some(entry.into_value());
+            Some(entry.into_value())
+        } else {
+            None
         }
-        None
     }
 }
 
@@ -165,14 +163,14 @@ mod tests {
         // Insert test data
         let n = ORDER * 3; // Multiple leaves
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test forward iteration
         let mut iter = tree.iter();
         for i in 0..n {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
     }
@@ -184,14 +182,14 @@ mod tests {
         // Insert test data
         let n = ORDER * 3; // Multiple leaves
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test backward iteration
         let mut iter = tree.iter_rev();
         for i in (0..n).rev() {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
     }
@@ -203,7 +201,7 @@ mod tests {
         // Insert test data
         let n = ORDER * 3;
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test various range scenarios
@@ -218,7 +216,7 @@ mod tests {
         );
         for i in start..end {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
 
@@ -227,7 +225,7 @@ mod tests {
             RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&start), None);
         for i in start..n {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
 
@@ -236,7 +234,7 @@ mod tests {
             RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, None, Some(&end));
         for i in 0..end {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
     }
@@ -248,7 +246,7 @@ mod tests {
         // Insert test data
         let n = ORDER * 3;
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test various range scenarios
@@ -263,7 +261,7 @@ mod tests {
         );
         for i in (start + 1..=end).rev() {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
 
@@ -272,7 +270,7 @@ mod tests {
             RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(&tree, Some(&start), None);
         for i in (0..=start).rev() {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
 
@@ -281,7 +279,7 @@ mod tests {
             RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(&tree, None, Some(&end));
         for i in (end + 1..n).rev() {
             let value = iter.next().unwrap();
-            assert_eq!(*value, format!("value{}", i));
+            assert_eq!(*value, format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
     }
@@ -338,22 +336,22 @@ mod tests {
         // Test with a single leaf
         let tree = BTree::<usize, String>::new();
         for i in 0..ORDER {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
         let mut iter = tree.iter();
         for i in 0..ORDER {
-            assert_eq!(*iter.next().unwrap(), format!("value{}", i));
+            assert_eq!(*iter.next().unwrap(), format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
 
         // Test with multiple leaves
         let tree = BTree::<usize, String>::new();
         for i in 0..ORDER * 3 {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
         let mut iter = tree.iter();
         for i in 0..ORDER * 3 {
-            assert_eq!(*iter.next().unwrap(), format!("value{}", i));
+            assert_eq!(*iter.next().unwrap(), format!("value{i}"));
         }
         assert_eq!(iter.next(), None);
     }
@@ -365,7 +363,7 @@ mod tests {
 
         // Insert test data
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         let barrier = Barrier::new(2);
@@ -380,7 +378,7 @@ mod tests {
                     let mut iter = tree_ref.iter();
                     barrier_ref.wait();
                     for i in 0..n {
-                        assert_eq!(*iter.next().unwrap(), format!("value{}", i));
+                        assert_eq!(*iter.next().unwrap(), format!("value{i}"));
                         std::thread::yield_now();
                     }
                     assert_eq!(iter.next(), None);
@@ -394,7 +392,7 @@ mod tests {
                     let mut iter = tree_ref.iter_rev();
                     barrier_ref.wait();
                     for i in (0..n).rev() {
-                        assert_eq!(*iter.next().unwrap(), format!("value{}", i));
+                        assert_eq!(*iter.next().unwrap(), format!("value{i}"));
                         std::thread::yield_now();
                     }
                     assert_eq!(iter.next(), None);
@@ -410,7 +408,7 @@ mod tests {
 
         // Insert test data
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test range with start > end

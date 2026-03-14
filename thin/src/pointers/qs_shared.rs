@@ -20,10 +20,7 @@ impl_thin_ptr_traits!(QsShared);
 
 impl<T: Pointable + ?Sized> Clone for QsShared<T> {
     fn clone(&self) -> Self {
-        QsShared {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        }
+        *self
     }
 }
 

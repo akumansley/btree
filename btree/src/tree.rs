@@ -36,7 +36,6 @@ pub trait BTreeValue: Debug + Send + 'static + Pointable + 'static {}
 impl<K: PartialOrd + Ord + Debug + Send + Sync + ?Sized + Arcable + 'static> BTreeKey for K {}
 impl<V: Debug + Send + Pointable + ?Sized + 'static> BTreeValue for V {}
 
-/// Concurrent B+Tree
 // Todo
 // - exp w interval guard for borrowed gets
 // Perf ideas:
@@ -51,8 +50,15 @@ impl<V: Debug + Send + Pointable + ?Sized + 'static> BTreeValue for V {}
 // Run benchmarks:
 //   cargo bench
 
+/// Concurrent B+Tree
 pub struct BTree<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
     pub root: RootNode<K, V>,
+}
+
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Default for BTree<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
@@ -86,15 +92,14 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         K: Borrow<Q>,
         Q: ?Sized + Ord,
     {
-        debug_println!("top-level get {:?}", search_key);
+        debug_println!("top-level get");
         let leaf_node_shared = get_leaf_shared_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
             search_key,
         );
-        let result = match leaf_node_shared.get(search_key) {
-            Some((_, v_ptr)) => Some(Ref::new(v_ptr)),
-            None => None,
-        };
+        let result = leaf_node_shared
+            .get(search_key)
+            .map(|(_, v_ptr)| Ref::new(v_ptr));
         leaf_node_shared.unlock_shared();
         result
     }
@@ -151,6 +156,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
     pub fn len(&self) -> usize {
         self.root.len.load(Ordering::Relaxed)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn insert(&self, key: QsArc<K>, value: impl Into<QsOwned<V>>) {
@@ -264,7 +273,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         // since we restarted our search, we need to see if the key exists again before we split
         let mut leaf_node = search_stack.peek_lowest().assert_leaf().assert_exclusive();
         let index = leaf_node.binary_search_key(&key);
-        if index.is_ok() {
+        if let Ok(idx) = index {
             // someone has inserted the key while we were searching
             // pop off the leaf, unlock the rest, and then we're done
             search_stack.pop_lowest();
@@ -273,9 +282,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             });
 
             return (
-                EntryLocation::new(leaf_node, index.unwrap()),
+                EntryLocation::new(leaf_node, idx),
                 GetOrInsertResult::GotReturningExistingAndProposed(
-                    leaf_node.storage.get_value(index.unwrap()),
+                    leaf_node.storage.get_value(idx),
                     value,
                 ),
             );
@@ -317,7 +326,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             self.root.as_node_ref(),
             key,
         );
-        let index = match optimistic_leaf.binary_search_key(&key) {
+        let index = match optimistic_leaf.binary_search_key(key) {
             Ok(index) => index,
             Err(_) => {
                 optimistic_leaf.unlock_exclusive();
@@ -418,7 +427,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             self.root.as_node_ref(),
             key,
         );
-        let index = match optimistic_leaf.binary_search_key(&key) {
+        let index = match optimistic_leaf.binary_search_key(key) {
             Ok(index) => index,
             Err(_) => {
                 optimistic_leaf.unlock_exclusive();
@@ -433,7 +442,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         if optimistic_leaf.has_capacity_for_modification(ModificationType::Removal) {
             optimistic_leaf.remove_at_index(index);
             self.root.len.fetch_sub(1, Ordering::Relaxed);
-            debug_println!("top-level remove {:?} done - removed? {:?}", key, removed);
+            debug_println!("top-level remove {:?} done - removed", key);
             optimistic_leaf.unlock_exclusive();
             return true;
         }
@@ -449,7 +458,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         let mut leaf_node_exclusive = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
         // need to re-check the predicate since we released our locks to restart the search
-        let search_result = leaf_node_exclusive.binary_search_key(&key);
+        let search_result = leaf_node_exclusive.binary_search_key(key);
         let mut removed = false;
         match search_result {
             Ok(index) => {
@@ -649,7 +658,7 @@ mod tests {
         let tree = BTree::<usize, String>::new();
         let n = NUM_OPERATIONS;
         for i in 1..=n {
-            let value = format!("value{}", i);
+            let value = format!("value{i}");
             tree.insert(QsArc::new(i), QsOwned::new(value.clone()));
             tree.check_invariants();
             let result = tree.get(&i);
@@ -704,7 +713,7 @@ mod tests {
         // Test with 10 random seeds
         for _ in 0..10 {
             let random_seed: u64 = rand::rng().random();
-            println!("Using random seed: {}", random_seed);
+            println!("Using random seed: {random_seed}");
             run_random_operations_with_seed_single_threaded(random_seed);
         }
     }
@@ -717,7 +726,7 @@ mod tests {
             let tree = BTree::<usize, String>::new();
             println!("back from btree new");
             let mut reference_map = HashMap::new();
-            println!("Using seed: {}", seed);
+            println!("Using seed: {seed}");
 
             // Perform random operations for a while
             for _ in 0..NUM_OPERATIONS {
@@ -726,7 +735,7 @@ mod tests {
                     0 => {
                         // Random insert
                         let key = rng.random_range(0..1000);
-                        let value = format!("value{}", key);
+                        let value = format!("value{key}");
                         tree.insert(QsArc::new(key), QsOwned::new(value.clone()));
                         reference_map.insert(key, value);
                         tree.check_invariants();
@@ -737,16 +746,15 @@ mod tests {
                         let btree_result = tree.get(&key);
                         let hashmap_result = reference_map.get(&key);
                         if btree_result.as_deref() != hashmap_result {
-                            println!("Mismatch for key {}", key);
-                            println!("btree_result: {:?}", btree_result);
-                            println!("hashmap_result: {:?}", hashmap_result);
+                            println!("Mismatch for key {key}");
+                            println!("btree_result: {btree_result:?}");
+                            println!("hashmap_result: {hashmap_result:?}");
                             tree.check_invariants();
                         }
                         assert_eq!(
                             btree_result.as_deref(),
                             hashmap_result,
-                            "Mismatch for key {}",
-                            key
+                            "Mismatch for key {key}"
                         );
                     }
                     2 => {
@@ -768,8 +776,7 @@ mod tests {
                 assert_eq!(
                     tree.get(key).as_deref(),
                     reference_map.get(key),
-                    "Final verification failed for key {}",
-                    key
+                    "Final verification failed for key {key}"
                 );
             }
         }
@@ -784,7 +791,7 @@ mod tests {
 
         // also run with a random seed
         let random_seed: u64 = rand::rng().random();
-        println!("Using random seed: {}", random_seed);
+        println!("Using random seed: {random_seed}");
         run_random_operations_with_seed_multi_threaded(random_seed);
     }
 
@@ -813,7 +820,7 @@ mod tests {
                         match operation {
                             0 => {
                                 let key = rng.random_range(0..1000);
-                                let value = format!("value{}", key);
+                                let value = format!("value{key}");
                                 tree_ref.insert(QsArc::new(key), QsOwned::new(value));
                             }
                             1 => {
@@ -919,14 +926,14 @@ mod tests {
             let split_key = ORDER * 2;
             let mut cursor = tree.get_or_insert(
                 QsArc::new(split_key),
-                QsOwned::new_from_str(&format!("value{}", split_key)),
+                QsOwned::new_from_str(&format!("value{split_key}")),
             );
 
             // Verify cursor points to the correct entry after split
             assert_eq!(cursor.current().unwrap().key(), &split_key);
             assert_eq!(
                 cursor.current().unwrap().value(),
-                &format!("value{}", split_key)
+                &format!("value{split_key}")
             );
 
             // Verify we can still access entries before and after the split point
@@ -950,7 +957,7 @@ mod tests {
         // Insert enough elements to ensure multiple leaves
         let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
         for i in 0..n {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("{i}")));
         }
 
         // Test 1: Remove only even numbers
@@ -1011,11 +1018,8 @@ mod tests {
         // Remove elements to trigger coalescing/redistribution
         // Remove every other element to stress the structural modification path
         for i in (0..n).step_by(2) {
-            let result = tree.remove_or_modify_if::<_, ()>(
-                &i,
-                |_| RemoveOrModifyDecision::Remove,
-                |v| Ok(v),
-            );
+            let result =
+                tree.remove_or_modify_if::<_, ()>(&i, |_| RemoveOrModifyDecision::Remove, Ok);
             assert_eq!(result, RemoveOrModifyIfResult::Removed);
             tree.check_invariants();
 
@@ -1042,7 +1046,7 @@ mod tests {
 
         // Insert elements
         for i in 0..100 {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("v{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("v{i}")));
         }
 
         // Sequence of operations mixing all decision types
@@ -1055,7 +1059,7 @@ mod tests {
                     2 => RemoveOrModifyDecision::DoNothing,
                     _ => RemoveOrModifyDecision::Remove,
                 },
-                |_| Ok(QsOwned::new(format!("modified{}", i))),
+                |_| Ok(QsOwned::new(format!("modified{i}"))),
             );
 
             match i % 4 {
@@ -1071,8 +1075,8 @@ mod tests {
         for i in 0..100 {
             match i % 4 {
                 0 | 3 => assert!(tree.get(&i).is_none()),
-                1 => assert_eq!(tree.get(&i).as_deref(), Some(&format!("modified{}", i))),
-                2 => assert_eq!(tree.get(&i).as_deref(), Some(&format!("v{}", i))),
+                1 => assert_eq!(tree.get(&i).as_deref(), Some(&format!("modified{i}"))),
+                2 => assert_eq!(tree.get(&i).as_deref(), Some(&format!("v{i}"))),
                 _ => unreachable!(),
             }
         }
@@ -1085,16 +1089,14 @@ mod tests {
         qsbr_reclaimer().register_thread();
         let tree = BTree::<usize, usize>::new();
 
-        let result =
-            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Remove, |v| Ok(v));
+        let result = tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Remove, Ok);
+        assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
+
+        let result = tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Modify, Ok);
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
         let result =
-            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Modify, |v| Ok(v));
-        assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
-
-        let result =
-            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::DoNothing, |v| Ok(v));
+            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::DoNothing, Ok);
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
         // Tree should still be usable
@@ -1122,7 +1124,7 @@ mod tests {
                 for i in 0..50 {
                     tree.insert(
                         QsArc::new(i),
-                        QsOwned::new_from_str(&format!("initial-value-{}", i)),
+                        QsOwned::new_from_str(&format!("initial-value-{i}")),
                     );
                 }
 
@@ -1141,7 +1143,7 @@ mod tests {
                         for i in 0..10 {
                             // Use a unique key for each thread and insertion
                             let key = thread_id * 100 + i + 100; // Start at 100 to avoid overlap with pre-populated values
-                            let value = format!("insert-{}-{}", thread_id, i);
+                            let value = format!("insert-{thread_id}-{i}");
 
                             // Insert the key-value pair
                             tree_clone.insert(QsArc::new(key), QsOwned::new_from_str(&value));
@@ -1251,7 +1253,7 @@ mod tests {
 
             // Insert 10 elements
             for i in 0..10 {
-                tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+                tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
                 assert_eq!(
                     tree.len(),
                     i + 1,
@@ -1278,7 +1280,7 @@ mod tests {
         {
             let mut pairs = Vec::new();
             for i in 0..100 {
-                pairs.push((QsArc::new(i), QsOwned::new(format!("value{}", i))));
+                pairs.push((QsArc::new(i), QsOwned::new(format!("value{i}"))));
             }
             let tree = BTree::bulk_load(pairs);
             assert_eq!(tree.len(), 100, "Tree length should be 100 after bulk_load");
@@ -1290,7 +1292,7 @@ mod tests {
         {
             let mut pairs = Vec::new();
             for i in 0..100 {
-                pairs.push((QsArc::new(i), QsOwned::new(format!("value{}", i))));
+                pairs.push((QsArc::new(i), QsOwned::new(format!("value{i}"))));
             }
             let tree = BTree::bulk_load_parallel(pairs);
             assert_eq!(
@@ -1307,8 +1309,8 @@ mod tests {
 
             // Insert 10 elements using get_or_insert
             for i in 0..10 {
-                let cursor = tree
-                    .get_or_insert(QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i)));
+                let cursor =
+                    tree.get_or_insert(QsArc::new(i), QsOwned::new_from_str(&format!("value{i}")));
                 assert_eq!(
                     tree.len(),
                     i + 1,
@@ -1323,7 +1325,7 @@ mod tests {
             for i in 0..10 {
                 let cursor = tree.get_or_insert(
                     QsArc::new(i),
-                    QsOwned::new_from_str(&format!("new_value{}", i)),
+                    QsOwned::new_from_str(&format!("new_value{i}")),
                 );
                 assert_eq!(
                     tree.len(),
@@ -1332,7 +1334,7 @@ mod tests {
                 );
                 assert_eq!(cursor.current().unwrap().key(), &i);
                 // Value should not change
-                assert_eq!(cursor.current().unwrap().value(), &format!("value{}", i));
+                assert_eq!(cursor.current().unwrap().value(), &format!("value{i}"));
             }
         }
 
@@ -1343,7 +1345,7 @@ mod tests {
 
             // Insert initial elements
             for i in 0..20 {
-                tree.insert(QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i)));
+                tree.insert(QsArc::new(i), QsOwned::new_from_str(&format!("value{i}")));
             }
             assert_eq!(tree.len(), 20, "Tree length should be 20 after inserts");
 
@@ -1352,7 +1354,7 @@ mod tests {
                 .map(|i| {
                     (
                         QsArc::new(i),
-                        QsOwned::new_from_str(&format!("updated_value{}", i)),
+                        QsOwned::new_from_str(&format!("updated_value{i}")),
                     )
                 })
                 .collect();
@@ -1373,7 +1375,7 @@ mod tests {
             // Insert initial elements (even numbers)
             for i in 0..20 {
                 if i % 2 == 0 {
-                    tree.insert(QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i)));
+                    tree.insert(QsArc::new(i), QsOwned::new_from_str(&format!("value{i}")));
                 }
             }
             assert_eq!(
@@ -1388,10 +1390,10 @@ mod tests {
                     if i % 2 == 0 {
                         (
                             QsArc::new(i),
-                            QsOwned::new_from_str(&format!("updated_value{}", i)),
+                            QsOwned::new_from_str(&format!("updated_value{i}")),
                         )
                     } else {
-                        (QsArc::new(i), QsOwned::new_from_str(&format!("value{}", i)))
+                        (QsArc::new(i), QsOwned::new_from_str(&format!("value{i}")))
                     }
                 })
                 .collect();
@@ -1423,7 +1425,7 @@ mod tests {
 
         // Insert some test data
         for i in 0..10 {
-            tree.insert(QsArc::new(i), QsOwned::new(format!("value{}", i)));
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
         }
 
         // Test 1: Modify with predicate that returns Modify

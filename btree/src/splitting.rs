@@ -59,16 +59,18 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Unlocker<K, V> {
     }
 }
 
-fn split_leaf<K, V>(
-    left_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-    key_to_insert: QsArc<K>,
-    value_to_insert: QsOwned<V>,
-) -> (
+type SplitLeafResult<K, V> = (
     SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
     OwnedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
     QsArc<K>,
     EntryLocation<K, V>,
-)
+);
+
+fn split_leaf<K, V>(
+    left_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+    key_to_insert: QsArc<K>,
+    value_to_insert: QsOwned<V>,
+) -> SplitLeafResult<K, V>
 where
     K: crate::tree::BTreeKey + ?Sized,
     V: crate::tree::BTreeValue + ?Sized,
@@ -82,10 +84,10 @@ where
         let next_leaf = next_leaf.lock_exclusive_jittered();
         right_leaf
             .next_leaf
-            .store(next_leaf.to_shared_leaf_ptr(), Ordering::Release);
+            .store(next_leaf.as_shared_leaf_ptr(), Ordering::Release);
         next_leaf
             .prev_leaf
-            .store(right_leaf.to_shared_leaf_ptr(), Ordering::Release);
+            .store(right_leaf.as_shared_leaf_ptr(), Ordering::Release);
         next_leaf.unlock_exclusive();
     } else {
         right_leaf.next_leaf.clear(Ordering::Release);
@@ -93,10 +95,10 @@ where
     // the split nodes always point to one another
     left_leaf
         .next_leaf
-        .store(right_leaf.to_shared_leaf_ptr(), Ordering::Release);
+        .store(right_leaf.as_shared_leaf_ptr(), Ordering::Release);
     right_leaf
         .prev_leaf
-        .store(left_leaf.to_shared_leaf_ptr(), Ordering::Release);
+        .store(left_leaf.as_shared_leaf_ptr(), Ordering::Release);
 
     let mut temp_leaf_vec: SmallVec<LeafTempArray<(QsArc<K>, QsOwned<V>)>> = SmallVec::new();
 
@@ -117,7 +119,7 @@ where
         temp_leaf_vec.push((k, v));
     });
 
-    if let Some(_) = maybe_key_to_insert {
+    if maybe_key_to_insert.is_some() {
         temp_leaf_vec.push((
             maybe_key_to_insert.take().unwrap(),
             maybe_value_to_insert.take().unwrap(),
@@ -132,7 +134,7 @@ where
             unreachable!();
         }
     };
-    index_of_new_entry = index_of_new_entry % (KV_IDX_CENTER + 1);
+    index_of_new_entry %= KV_IDX_CENTER + 1;
     let entry_location = EntryLocation {
         leaf: leaf_containing_new_entry,
         index: index_of_new_entry,
@@ -219,9 +221,9 @@ fn insert_into_parent<K, V, N: marker::NodeType>(
         if parent.num_keys() < MAX_KEYS_PER_NODE {
             debug_println!(
                 "{:?} inserting split key {:?} for {:?} into existing parent",
-                parent.node_ptr(),
-                unsafe { &*split_key },
-                right.node_ptr()
+                parent,
+                &*split_key,
+                right
             );
             let right_shared = right.share();
             parent.insert(split_key, right.into_ptr());
@@ -406,11 +408,11 @@ mod tests {
             // Verify sibling pointers
             assert_eq!(
                 left.next_leaf.load_shared(Ordering::Relaxed).unwrap(),
-                right.to_shared_leaf_ptr(),
+                right.as_shared_leaf_ptr(),
             );
             assert_eq!(
                 right.prev_leaf.load_shared(Ordering::Relaxed).unwrap(),
-                left.to_shared_leaf_ptr(),
+                left.as_shared_leaf_ptr(),
             );
 
             left.unlock_exclusive();
@@ -423,7 +425,7 @@ mod tests {
             let mid_point = KV_IDX_CENTER;
             let mid_point_key = get_key_for_index(mid_point) - 1;
             let key_to_insert = QsArc::new(mid_point_key);
-            let value_to_insert = QsOwned::new_from_str(&format!("value{}", mid_point_key));
+            let value_to_insert = QsOwned::new_from_str(&format!("value{mid_point_key}"));
             let (left, right, split_key, entry_location) =
                 split_leaf(leaf.share(), key_to_insert, value_to_insert);
 
@@ -448,7 +450,7 @@ mod tests {
             let mid_point = KV_IDX_CENTER;
             let mid_point_key = get_key_for_index(mid_point) + 1;
             let key_to_insert = QsArc::new(mid_point_key);
-            let value_to_insert = QsOwned::new_from_str(&format!("value{}", mid_point_key));
+            let value_to_insert = QsOwned::new_from_str(&format!("value{mid_point_key}"));
             let (left, right, split_key, entry_location) =
                 split_leaf(leaf.share(), key_to_insert, value_to_insert);
 

@@ -31,6 +31,12 @@ impl<T: ?Sized + Arcable> ThinAtomicArc<T> {
     }
 }
 
+impl<T: ?Sized + Arcable> Default for ThinAtomicArc<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: ?Sized + Arcable> ThinAtomicArc<T> {
     pub fn new() -> Self {
         Self {
@@ -82,7 +88,7 @@ impl<T: Send + 'static + ?Sized + Arcable> AtomicPointerArrayValue<T> for ThinAt
         self.load(ordering)
     }
 
-    fn into_owned(&self, ordering: Ordering) -> Option<Self::OwnedPointer> {
+    fn load_owned(&self, ordering: Ordering) -> Option<Self::OwnedPointer> {
         let ptr = self.inner.load(ordering);
         if ptr.is_null() {
             None

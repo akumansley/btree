@@ -29,6 +29,8 @@ impl_thin_arc_traits!(QsArc);
 impl_thin_arc_strong!(QsArc, QsWeak);
 
 impl<T: ?Sized + Arcable> QsArc<T> {
+    /// # Safety
+    /// Caller must ensure no other threads hold references to this arc's pointee.
     pub unsafe fn drop_immediately(thin_arc: QsArc<T>) {
         let ptr = thin_arc.into_ptr();
         if T::decrement_ref_count(ptr) {
@@ -59,7 +61,6 @@ impl<T: ?Sized + Arcable + 'static> Drop for QsArc<T> {
 #[cfg(test)]
 mod tests {
     use btree_macros::qsbr_test;
-    use serde_json;
     use std::cmp::Ordering as CmpOrdering;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -83,7 +84,7 @@ mod tests {
         let mut thin_slice_uninitialized = QsArc::new_uninitialized(3);
         assert_eq!(thin_slice_uninitialized.len(), 3);
         for i in 0..3 {
-            thin_slice_uninitialized[i].write(i as usize);
+            thin_slice_uninitialized[i].write(i);
         }
         let thin_slice_init = unsafe { thin_slice_uninitialized.assume_init() };
 

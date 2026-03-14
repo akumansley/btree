@@ -39,7 +39,7 @@ where
     }
 }
 
-pub fn init_thin_slice<'a, T: Clone>(init: &'a [T]) -> *mut () {
+pub fn init_thin_slice<T: Clone>(init: &[T]) -> *mut () {
     let layout = Array::<T>::layout(init.len());
     unsafe {
         let ptr = alloc::alloc(layout).cast::<Array<T>>();
