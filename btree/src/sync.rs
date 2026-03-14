@@ -32,11 +32,15 @@ pub type RwLock = WrappedParkingLotRwLock;
 #[cfg(any(miri, feature = "shuttle"))]
 pub type RwLock = BasicSpinRwLock;
 
+#[cfg(all(not(miri), not(feature = "shuttle")))]
 use lock_api::RawRwLock as LockApiRawRwLock;
+#[cfg(all(not(miri), not(feature = "shuttle")))]
 use lock_api::RawRwLockTimed;
+#[cfg(all(not(miri), not(feature = "shuttle")))]
 pub struct WrappedParkingLotRwLock {
     inner: parking_lot::RawRwLock,
 }
+#[cfg(all(not(miri), not(feature = "shuttle")))]
 impl RawRwLock for WrappedParkingLotRwLock {
     fn new() -> Self {
         Self {
@@ -139,7 +143,7 @@ impl RawRwLock for BasicSpinRwLock {
         // Decrement reader count - this should always be an even number >= 2
         let prev = self.lock.fetch_sub(2, Ordering::Release);
         debug_assert!(
-            prev >= 2 && prev % 2 == 0,
+            prev >= 2 && prev.is_multiple_of(2),
             "unlock_shared: lock value was {prev}, which is invalid"
         );
     }

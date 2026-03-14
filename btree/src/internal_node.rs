@@ -345,10 +345,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
                     child,
                 )
                 .assume_unlocked();
-            if height.is_none() {
-                height = Some(child_ref.height());
+            if let Some(h) = height {
+                assert!(child_ref.height() == h)
             } else {
-                assert!(child_ref.height() == height.unwrap())
+                height = Some(child_ref.height());
             }
 
             match child_ref.force() {

@@ -278,7 +278,7 @@ impl MemoryReclaimer {
 
     /// Creates a new QSBR guard for this reclaimer.
     /// The guard will automatically register the current thread and handle cleanup when dropped.
-    pub fn guard(&self) -> QsbrGuard {
+    pub fn guard(&self) -> QsbrGuard<'_> {
         self.register_thread();
         QsbrGuard { reclaimer: self }
     }

@@ -222,7 +222,11 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         debug_println!("top-level insert done");
     }
 
-    pub fn get_or_insert(&self, key: QsArc<K>, value: impl Into<QsOwned<V>>) -> CursorMut<K, V> {
+    pub fn get_or_insert(
+        &self,
+        key: QsArc<K>,
+        value: impl Into<QsOwned<V>>,
+    ) -> CursorMut<'_, K, V> {
         let value: QsOwned<V> = value.into();
 
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
@@ -561,15 +565,15 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         root.unlock_shared();
     }
 
-    pub fn iter(&self) -> ForwardBTreeIterator<K, V> {
+    pub fn iter(&self) -> ForwardBTreeIterator<'_, K, V> {
         BTreeIterator::new(self)
     }
 
-    pub fn iter_rev(&self) -> BackwardBTreeIterator<K, V> {
+    pub fn iter_rev(&self) -> BackwardBTreeIterator<'_, K, V> {
         BTreeIterator::new(self)
     }
 
-    pub fn cursor(&self) -> Cursor<K, V> {
+    pub fn cursor(&self) -> Cursor<'_, K, V> {
         Cursor {
             tree: self,
             current_leaf: None,
@@ -578,11 +582,11 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         }
     }
 
-    pub fn cursor_mut(&self) -> CursorMut<K, V> {
+    pub fn cursor_mut(&self) -> CursorMut<'_, K, V> {
         CursorMut::new(self)
     }
 
-    pub fn non_locking_cursor(&self) -> NonLockingCursor<K, V> {
+    pub fn non_locking_cursor(&self) -> NonLockingCursor<'_, K, V> {
         NonLockingCursor::new(self)
     }
 }
