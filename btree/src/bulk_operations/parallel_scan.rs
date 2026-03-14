@@ -479,7 +479,7 @@ mod test {
         let results = scan_parallel(
             Some(QsArc::new(0).share()),
             Some(QsArc::new(100_000).share()),
-            |v: &usize| v % 100 == 0,
+            |v: &usize| v.is_multiple_of(100),
             &tree,
         );
 

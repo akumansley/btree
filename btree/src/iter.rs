@@ -76,20 +76,20 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
     type Item = ValueRef<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let cursor = if self.cursor.is_none() {
+        let cursor = if let Some(cursor) = &mut self.cursor {
+            D::advance(cursor);
+            cursor
+        } else {
             let mut cursor = self.tree.cursor();
             D::start(&mut cursor);
             self.cursor = Some(cursor);
             self.cursor.as_mut().unwrap()
-        } else {
-            let cursor = self.cursor.as_mut().unwrap();
-            D::advance(cursor);
-            cursor
         };
         cursor.current().map(|entry| entry.into_value())
     }
 }
 
+#[cfg(test)]
 pub struct RangeBTreeIterator<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> {
     start: Option<&'a K>,
     end: Option<&'a K>,
@@ -111,13 +111,17 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> RangeBTreeIterator<
     }
 }
 
+#[cfg(test)]
 impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
     for RangeBTreeIterator<'a, K, V, D>
 {
     type Item = ValueRef<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let entry = if self.cursor.is_none() {
+        let entry = if let Some(cursor) = &mut self.cursor {
+            D::advance(cursor);
+            cursor.current()
+        } else {
             let mut cursor = self.tree.cursor();
             match self.start {
                 Some(start) => {
@@ -127,10 +131,6 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
             }
             self.cursor = Some(cursor);
             self.cursor.as_ref().unwrap().current()
-        } else {
-            let cursor = self.cursor.as_mut().unwrap();
-            D::advance(cursor);
-            cursor.current()
         };
         if let Some(entry) = entry {
             if let Some(end) = self.end {
