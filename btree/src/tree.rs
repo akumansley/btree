@@ -793,16 +793,22 @@ mod tests {
             run_random_operations_with_seed_multi_threaded(seed);
         }
 
-        // also run with a random seed
-        let random_seed: u64 = rand::rng().random();
-        println!("Using random seed: {random_seed}");
-        run_random_operations_with_seed_multi_threaded(random_seed);
+        // also run with a random seed (skip under miri -- the deterministic seed above covers correctness)
+        #[cfg(not(miri))]
+        {
+            let random_seed: u64 = rand::rng().random();
+            println!("Using random seed: {random_seed}");
+            run_random_operations_with_seed_multi_threaded(random_seed);
+        }
     }
 
     fn run_random_operations_with_seed_multi_threaded(seed: u64) {
         qsbr_reclaimer().register_thread();
         let tree = BTree::<usize, String>::new();
+        #[cfg(not(miri))]
         let num_threads = 8;
+        #[cfg(miri)]
+        let num_threads = 2;
         #[cfg(not(miri))]
         let operations_per_thread = 25000;
         #[cfg(miri)]
@@ -844,22 +850,29 @@ mod tests {
                 });
             }
 
-            // Spawn invariant checking thread
-            let completed_threads = completed_threads.clone();
-            let tree_ref = &tree;
-            s.spawn(move || {
-                qsbr_reclaimer().register_thread();
-                let start_time = std::time::Instant::now();
-                while completed_threads.load(Ordering::Acquire) < num_threads {
-                    if start_time.elapsed() >= Duration::from_secs(10) {
-                        break;
+            // Spawn invariant checking thread (skip under miri -- the sleep dominates runtime)
+            #[cfg(not(miri))]
+            {
+                let completed_threads = completed_threads.clone();
+                let tree_ref = &tree;
+                s.spawn(move || {
+                    qsbr_reclaimer().register_thread();
+                    let start_time = std::time::Instant::now();
+                    while completed_threads.load(Ordering::Acquire) < num_threads {
+                        if start_time.elapsed() >= Duration::from_secs(10) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                        tree_ref.check_invariants();
                     }
-                    thread::sleep(Duration::from_secs(1));
-                    tree_ref.check_invariants();
-                }
-                unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
-            });
+                    unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+                });
+            }
         });
+
+        // Check invariants once at the end under miri
+        #[cfg(miri)]
+        tree.check_invariants();
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
