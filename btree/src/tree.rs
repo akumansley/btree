@@ -77,12 +77,12 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     pub fn bulk_update_parallel(&self, updates: Vec<(QsArc<K>, QsOwned<V>)>) {
         bulk_update_from_sorted_kv_pairs_parallel(updates, self)
     }
-    pub fn bulk_insert_or_update_parallel<E, F>(
+    pub fn bulk_insert_or_update_parallel<T, E, F>(
         &self,
         entries: Vec<(QsArc<K>, QsOwned<V>)>,
         update_fn: &F,
     ) where
-        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)> + Send + Sync,
+        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)> + Send + Sync,
     {
         bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
@@ -316,12 +316,12 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         (entry_location, GetOrInsertResult::Inserted)
     }
 
-    pub fn remove_or_modify_if<Q, E>(
+    pub fn remove_or_modify_if<Q, T, E>(
         &self,
         key: &Q,
         decider: impl Fn(QsShared<V>) -> RemoveOrModifyDecision<E>,
-        modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>,
-    ) -> RemoveOrModifyIfResult<E>
+        modify_fn: impl FnOnce(QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)>,
+    ) -> RemoveOrModifyIfResult<T, E>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -353,7 +353,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
                 let result = optimistic_leaf.modify_value(index, modify_fn);
                 optimistic_leaf.unlock_exclusive();
                 return match result {
-                    Ok(()) => RemoveOrModifyIfResult::Modified,
+                    Ok(t) => RemoveOrModifyIfResult::Modified(t),
                     Err(e) => RemoveOrModifyIfResult::Error(e),
                 };
             }
@@ -402,7 +402,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
                 let result = pessimistic_leaf.modify_value(index, modify_fn);
                 unlock_stack(search_stack);
                 match result {
-                    Ok(()) => RemoveOrModifyIfResult::Modified,
+                    Ok(t) => RemoveOrModifyIfResult::Modified(t),
                     Err(e) => RemoveOrModifyIfResult::Error(e),
                 }
             }
@@ -488,12 +488,12 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         removed
     }
 
-    pub fn modify_if<E>(
+    pub fn modify_if<T, E>(
         &self,
         key: &K,
         predicate: impl Fn(&V) -> ModifyDecision<E>,
-        modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>,
-    ) -> ModifyIfResult<E> {
+        modify_fn: impl FnOnce(QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)>,
+    ) -> ModifyIfResult<T, E> {
         debug_println!("top-level modify_if {:?}", key);
 
         let mut cursor = self.cursor_mut();
@@ -509,7 +509,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             ModifyDecision::Error(e) => return ModifyIfResult::Error(e),
         }
         match cursor.modify_value(modify_fn) {
-            Ok(()) => ModifyIfResult::Modified,
+            Ok(t) => ModifyIfResult::Modified(t),
             Err(e) => ModifyIfResult::Error(e),
         }
     }
@@ -612,16 +612,16 @@ pub enum ModifyDecision<E> {
     Error(E),
 }
 
-pub enum ModifyIfResult<E> {
-    Modified,
+pub enum ModifyIfResult<T, E> {
+    Modified(T),
     NotFound,
     DidNothing,
     Error(E),
 }
 
-pub enum InsertOrModifyIfResult<E> {
+pub enum InsertOrModifyIfResult<T, E> {
     Inserted,
-    Modified,
+    Modified(T),
     DidNothing,
     Error(E),
 }
@@ -634,9 +634,9 @@ pub enum RemoveOrModifyDecision<E> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum RemoveOrModifyIfResult<E> {
+pub enum RemoveOrModifyIfResult<T, E> {
     Removed,
-    Modified,
+    Modified(T),
     DidNothing,
     Error(E),
 }
@@ -1022,8 +1022,11 @@ mod tests {
         // Remove elements to trigger coalescing/redistribution
         // Remove every other element to stress the structural modification path
         for i in (0..n).step_by(2) {
-            let result =
-                tree.remove_or_modify_if::<_, ()>(&i, |_| RemoveOrModifyDecision::Remove, Ok);
+            let result = tree.remove_or_modify_if::<_, (), ()>(
+                &i,
+                |_| RemoveOrModifyDecision::Remove,
+                |v| Ok((v, ())),
+            );
             assert_eq!(result, RemoveOrModifyIfResult::Removed);
             tree.check_invariants();
 
@@ -1055,7 +1058,7 @@ mod tests {
 
         // Sequence of operations mixing all decision types
         for i in 0..100 {
-            let result = tree.remove_or_modify_if::<_, ()>(
+            let result = tree.remove_or_modify_if::<_, (), ()>(
                 &i,
                 |_| match i % 4 {
                     0 => RemoveOrModifyDecision::Remove,
@@ -1063,12 +1066,12 @@ mod tests {
                     2 => RemoveOrModifyDecision::DoNothing,
                     _ => RemoveOrModifyDecision::Remove,
                 },
-                |_| Ok(QsOwned::new(format!("modified{i}"))),
+                |_| Ok((QsOwned::new(format!("modified{i}")), ())),
             );
 
             match i % 4 {
                 0 | 3 => assert_eq!(result, RemoveOrModifyIfResult::Removed),
-                1 => assert_eq!(result, RemoveOrModifyIfResult::Modified),
+                1 => assert_eq!(result, RemoveOrModifyIfResult::Modified(())),
                 2 => assert_eq!(result, RemoveOrModifyIfResult::DidNothing),
                 _ => unreachable!(),
             }
@@ -1093,14 +1096,25 @@ mod tests {
         qsbr_reclaimer().register_thread();
         let tree = BTree::<usize, usize>::new();
 
-        let result = tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Remove, Ok);
+        let result = tree.remove_or_modify_if::<_, (), ()>(
+            &1,
+            |_| RemoveOrModifyDecision::Remove,
+            |v| Ok((v, ())),
+        );
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
-        let result = tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::Modify, Ok);
+        let result = tree.remove_or_modify_if::<_, (), ()>(
+            &1,
+            |_| RemoveOrModifyDecision::Modify,
+            |v| Ok((v, ())),
+        );
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
-        let result =
-            tree.remove_or_modify_if::<_, ()>(&1, |_| RemoveOrModifyDecision::DoNothing, Ok);
+        let result = tree.remove_or_modify_if::<_, (), ()>(
+            &1,
+            |_| RemoveOrModifyDecision::DoNothing,
+            |v| Ok((v, ())),
+        );
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
         // Tree should still be usable
@@ -1404,11 +1418,11 @@ mod tests {
 
             // Define update function
             let update_fn =
-                |old_value: QsOwned<str>, _| -> Result<QsOwned<str>, (QsOwned<str>, ())> {
-                    Ok(QsOwned::new_from_str(&format!(
-                        "updated_{}",
-                        old_value.deref()
-                    )))
+                |old_value: QsOwned<str>, _| -> Result<(QsOwned<str>, ()), (QsOwned<str>, ())> {
+                    Ok((
+                        QsOwned::new_from_str(&format!("updated_{}", old_value.deref())),
+                        (),
+                    ))
                 };
 
             tree.bulk_insert_or_update_parallel(entries, &update_fn);
@@ -1433,7 +1447,7 @@ mod tests {
         }
 
         // Test 1: Modify with predicate that returns Modify
-        let _ = tree.modify_if::<()>(
+        let _ = tree.modify_if::<(), ()>(
             &5,
             |v| {
                 if v.contains("value") {
@@ -1442,12 +1456,12 @@ mod tests {
                     ModifyDecision::DoNothing
                 }
             },
-            |_| Ok(QsOwned::new("modified5".to_string())),
+            |_| Ok((QsOwned::new("modified5".to_string()), ())),
         );
         assert_eq!(tree.get(&5).as_deref(), Some(&"modified5".to_string()));
 
         // Test 2: Try to modify with predicate that returns DoNothing (should not modify)
-        let _ = tree.modify_if::<()>(
+        let _ = tree.modify_if::<(), ()>(
             &5,
             |v| {
                 if v.contains("nonexistent") {
@@ -1456,7 +1470,7 @@ mod tests {
                     ModifyDecision::DoNothing
                 }
             },
-            |_| Ok(QsOwned::new("should_not_change".to_string())),
+            |_| Ok((QsOwned::new("should_not_change".to_string()), ())),
         );
         assert_eq!(
             tree.get(&5).as_deref(),
@@ -1465,24 +1479,24 @@ mod tests {
         );
 
         // Test 3: Modify based on existing value
-        let _ = tree.modify_if::<()>(
+        let _ = tree.modify_if::<(), ()>(
             &3,
             |_| ModifyDecision::Modify,
-            |old_val| Ok(QsOwned::new(format!("updated_{}", old_val.deref()))),
+            |old_val| Ok((QsOwned::new(format!("updated_{}", old_val.deref())), ())),
         );
         assert_eq!(tree.get(&3).as_deref(), Some(&"updated_value3".to_string()));
 
         // Test 4: Try to modify non-existent key (should do nothing)
-        let _ = tree.modify_if::<()>(
+        let _ = tree.modify_if::<(), ()>(
             &999,
             |_| ModifyDecision::Modify,
-            |_| Ok(QsOwned::new("should_not_insert".to_string())),
+            |_| Ok((QsOwned::new("should_not_insert".to_string()), ())),
         );
         assert_eq!(tree.get(&999), None, "Non-existent key should remain None");
 
         // Test 5: Modify with selective predicate
         for i in 0..10 {
-            let _ = tree.modify_if::<()>(
+            let _ = tree.modify_if::<(), ()>(
                 &i,
                 |v| {
                     if v.starts_with("value") {
@@ -1491,7 +1505,7 @@ mod tests {
                         ModifyDecision::DoNothing
                     }
                 },
-                |old_val| Ok(QsOwned::new(format!("prefix_{}", old_val.deref()))),
+                |old_val| Ok((QsOwned::new(format!("prefix_{}", old_val.deref())), ())),
             );
         }
         // Check that keys 0, 1, 2, 4, 6, 7, 8, 9 were modified (they still had "value" prefix)
