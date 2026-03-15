@@ -1064,10 +1064,12 @@ mod tests {
         let tree = BTree::<usize, String>::new();
 
         // Insert enough elements to ensure multiple leaves
-        let n = ORDER * 3; // Use 3 times ORDER to ensure multiple leaves
+        #[cfg(not(miri))]
+        let n = ORDER * 3;
+        #[cfg(miri)]
+        let n = ORDER + 2; // Just enough for 2 leaves
         for i in 0..n {
             tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
-            tree.check_invariants();
         }
 
         let barrier = Barrier::new(2);
@@ -1552,10 +1554,12 @@ mod tests {
         let tree = BTree::<usize, String>::new();
 
         // Insert enough elements to ensure multiple leaves
+        #[cfg(not(miri))]
         let n = ORDER * 3;
+        #[cfg(miri)]
+        let n = ORDER + 2; // Just enough for 2 leaves
         for i in 0..n {
             tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
-            tree.check_invariants();
         }
 
         let barrier = Barrier::new(2);

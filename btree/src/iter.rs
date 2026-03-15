@@ -359,7 +359,10 @@ mod tests {
     #[qsbr_test]
     fn test_concurrent_iteration() {
         let tree = BTree::<usize, String>::new();
+        #[cfg(not(miri))]
         let n = ORDER * 3;
+        #[cfg(miri)]
+        let n = ORDER + 2; // Just enough for 2 leaves
 
         // Insert test data
         for i in 0..n {
