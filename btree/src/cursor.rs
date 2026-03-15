@@ -320,25 +320,25 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         leaf.update(self.current_index, value);
     }
 
-    pub fn modify_value<E>(
+    pub fn modify_value<T, E>(
         &mut self,
-        modify_fn: impl FnOnce(QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>,
-    ) -> Result<(), E> {
+        modify_fn: impl FnOnce(QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)>,
+    ) -> Result<T, E> {
         let leaf = self.current_leaf.as_mut().unwrap();
         let index = self.current_index;
         leaf.modify_value(index, modify_fn)
     }
 
     /// update_fn is called with the new value and the existing old value
-    pub fn insert_or_modify_if<F, E>(
+    pub fn insert_or_modify_if<F, T, E>(
         &mut self,
         key: QsArc<K>,
         new_value: QsOwned<V>,
         predicate: impl Fn(QsShared<V>) -> ModifyDecision<E>,
         modify_fn: F,
-    ) -> InsertOrModifyIfResult<E>
+    ) -> InsertOrModifyIfResult<T, E>
     where
-        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<QsOwned<V>, (QsOwned<V>, E)>,
+        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)>,
     {
         // Search directly for the insertion leaf without using seek,
         // since seek has "points at element" semantics which may advance
@@ -360,7 +360,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
             match predicate(existing_value) {
                 ModifyDecision::Modify => {
                     match leaf.modify_value(index, |old_value| modify_fn(old_value, new_value)) {
-                        Ok(()) => InsertOrModifyIfResult::Modified,
+                        Ok(t) => InsertOrModifyIfResult::Modified(t),
                         Err(e) => InsertOrModifyIfResult::Error(e),
                     }
                 }
@@ -406,7 +406,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                             .modify_value(self.current_index, |old_value| {
                                 modify_fn(old_value, proposed_value)
                             }) {
-                            Ok(()) => InsertOrModifyIfResult::Modified,
+                            Ok(t) => InsertOrModifyIfResult::Modified(t),
                             Err(e) => InsertOrModifyIfResult::Error(e),
                         }
                     }
@@ -1161,11 +1161,11 @@ mod tests {
                         } else {
                             // Use cursor's insert_or_modify_if
                             let mut cursor = tree_ref.cursor_mut();
-                            cursor.insert_or_modify_if::<_, ()>(
+                            cursor.insert_or_modify_if::<_, (), ()>(
                                 QsArc::new(key),
                                 QsOwned::new(key),
                                 |_| ModifyDecision::Modify,
-                                |old_val, new_val| Ok(QsOwned::new(*old_val + *new_val)),
+                                |old_val, new_val| Ok((QsOwned::new(*old_val + *new_val), ())),
                             );
                             drop(cursor);
                         }
@@ -1200,11 +1200,11 @@ mod tests {
                     for op in 0..100 {
                         let key = thread_id * 100 + op;
                         let mut cursor = tree_ref.cursor_mut();
-                        cursor.insert_or_modify_if::<_, ()>(
+                        cursor.insert_or_modify_if::<_, (), ()>(
                             QsArc::new(key),
                             QsOwned::new(key),
                             |_| ModifyDecision::Modify,
-                            |old_val, new_val| Ok(QsOwned::new(*old_val + *new_val)),
+                            |old_val, new_val| Ok((QsOwned::new(*old_val + *new_val), ())),
                         );
                         drop(cursor);
                         std::thread::yield_now();
