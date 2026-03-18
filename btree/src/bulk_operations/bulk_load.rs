@@ -241,7 +241,14 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeVal
     let tree = BTree::new();
     unsafe {
         let root_inner = &mut *tree.root.inner.get();
-        root_inner.top_of_tree.store(root_node, Ordering::Release);
+        let old_leaf = root_inner
+            .top_of_tree
+            .swap(root_node, Ordering::Release)
+            .unwrap();
+        OwnedNodeRef::drop_immediately(
+            OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(old_leaf)
+                .assert_leaf(),
+        );
     }
 
     // Set the tree length to the number of pairs
@@ -298,6 +305,53 @@ mod tests {
 
         // Verify tree invariants
         tree.check_invariants();
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    /// Miri test: exercises the same root-replacement logic used by both
+    /// bulk_load (sequential) and bulk_load_parallel. The parallel version
+    /// previously used store() instead of swap(), leaking the initial leaf
+    /// that BTree::new() allocates. This test catches that under miri.
+    #[test]
+    fn test_bulk_load_no_root_leak() {
+        qsbr_reclaimer().register_thread();
+
+        let target_utilization = 0.69;
+        let jitter_range = 0.1;
+
+        let mut pairs = Vec::new();
+        for i in 0..50 {
+            pairs.push((QsArc::new(i), QsOwned::new(format!("v{i}"))));
+        }
+        let num_pairs = pairs.len();
+
+        let leaves = construct_leaf_level(pairs.into_iter(), target_utilization, jitter_range);
+        let root_node = construct_tree_from_leaves(leaves, target_utilization, jitter_range);
+
+        // This mirrors what both bulk_load functions do after constructing the tree.
+        // The parallel version previously used store() here, leaking the old leaf.
+        let tree = BTree::<i32, String>::new();
+        unsafe {
+            let root_inner = &mut *tree.root.inner.get();
+            let old_leaf = root_inner
+                .top_of_tree
+                .swap(root_node, Ordering::Release)
+                .unwrap();
+            OwnedNodeRef::drop_immediately(
+                OwnedNodeRef::<i32, String, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                    old_leaf,
+                )
+                .assert_leaf(),
+            );
+        }
+        tree.root.len.store(num_pairs, Ordering::Relaxed);
+
+        assert_eq!(tree.len(), 50);
+        assert_eq!(tree.get(&0).as_deref(), Some(&"v0".to_string()));
+        assert_eq!(tree.get(&49).as_deref(), Some(&"v49".to_string()));
+        tree.check_invariants();
+        drop(tree);
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
