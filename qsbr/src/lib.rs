@@ -77,7 +77,11 @@ struct ThreadState {
 }
 
 impl MemoryReclaimer {
-    fn new() -> Self {
+    /// Creates a reclaimer *without* a background garbage collection thread.
+    ///
+    /// This is really only useful in unit tests.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(MemoryReclaimerInner {
                 current_interval_callbacks: VecDeque::new(),
