@@ -6,7 +6,7 @@ use crate::{
     array_types::{LeafNodeStorageArray, MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE},
     node::{Height, NodeHeader},
     pointers::node_ref::marker,
-    tree::{BTreeKey, BTreeValue, ModificationType},
+    tree::{BTreeKey, BTreeSearchKey, BTreeValue, ModificationType},
 };
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
@@ -83,7 +83,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     pub fn binary_search_key<Q>(&self, search_key: &Q) -> Result<usize, usize>
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         self.storage.binary_search_keys(search_key)
     }
@@ -91,7 +91,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     pub fn get<Q>(&self, search_key: &Q) -> Option<(QsWeak<K>, QsShared<V>)>
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         debug_println!("LeafNode get");
         match self.binary_search_key(search_key) {

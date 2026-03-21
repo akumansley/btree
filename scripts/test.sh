@@ -11,4 +11,6 @@ MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test -p btree -- \
   cursor::tests::test_interaction_between_mut_cursor_and_non_locking_cursor \
   cursor::tests::test_interaction_between_mut_cursor_and_shared_cursor \
   tree::tests::test_random_inserts_gets_and_removes_with_seed_multi_threaded \
-  iter::tests::test_concurrent_iteration
+  iter::tests::test_concurrent_iteration \
+  tree::key_head_tests \
+  tree::tests::test_insert_and_get_str_keys

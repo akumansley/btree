@@ -30,10 +30,102 @@ use std::borrow::Borrow;
 use std::fmt::Debug;
 use thin::{QsOwned, QsShared};
 
-pub trait BTreeKey: PartialOrd + Ord + Debug + Send + Sync + Arcable + 'static {}
+/// A monotonic prefix of a key's sort order, packed into a u64.
+///
+/// # Safety contract
+/// Implementations **must** satisfy: if `a < b` then `a.key_head() <= b.key_head()`.
+/// Equivalently: `a.key_head() > b.key_head()` implies `a > b`.
+/// When `a.key_head() == b.key_head()`, the full key comparison is used as a tiebreaker.
+pub trait KeyHead {
+    fn key_head(&self) -> u64;
+}
+
+impl KeyHead for u8 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        *self as u64
+    }
+}
+impl KeyHead for u16 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        *self as u64
+    }
+}
+impl KeyHead for u32 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        *self as u64
+    }
+}
+impl KeyHead for u64 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        *self
+    }
+}
+impl KeyHead for usize {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        *self as u64
+    }
+}
+impl KeyHead for i8 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        (*self as u64) ^ (1 << 63)
+    }
+}
+impl KeyHead for i16 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        (*self as i64 as u64) ^ (1 << 63)
+    }
+}
+impl KeyHead for i32 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        (*self as i64 as u64) ^ (1 << 63)
+    }
+}
+impl KeyHead for i64 {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        (*self as u64) ^ (1 << 63)
+    }
+}
+impl KeyHead for str {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        let bytes = self.as_bytes();
+        let mut h = [0u8; 8];
+        let len = bytes.len().min(8);
+        h[..len].copy_from_slice(&bytes[..len]);
+        u64::from_be_bytes(h)
+    }
+}
+impl KeyHead for String {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        self.as_str().key_head()
+    }
+}
+impl<T: KeyHead> KeyHead for [T] {
+    #[inline]
+    fn key_head(&self) -> u64 {
+        self.first().map_or(0, |v| v.key_head())
+    }
+}
+
+pub trait BTreeKey: PartialOrd + Ord + Debug + Send + Sync + Arcable + KeyHead + 'static {}
+pub trait BTreeSearchKey: Ord + KeyHead {}
 pub trait BTreeValue: Debug + Send + 'static + Pointable + 'static {}
 
-impl<K: PartialOrd + Ord + Debug + Send + Sync + ?Sized + Arcable + 'static> BTreeKey for K {}
+impl<K: PartialOrd + Ord + Debug + Send + Sync + ?Sized + Arcable + KeyHead + 'static> BTreeKey
+    for K
+{
+}
+impl<Q: Ord + ?Sized + KeyHead> BTreeSearchKey for Q {}
 impl<V: Debug + Send + Pointable + ?Sized + 'static> BTreeValue for V {}
 
 // Todo
@@ -90,7 +182,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     pub fn get<Q>(&self, search_key: &Q) -> Option<Ref<V>>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Ord,
+        Q: ?Sized + Ord + KeyHead,
     {
         debug_println!("top-level get");
         let leaf_node_shared = get_leaf_shared_using_optimistic_search_with_fallback(
@@ -107,7 +199,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     pub fn get_with<Q, T>(&self, search_key: &Q, closure: impl Fn(QsShared<V>) -> T) -> Option<T>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Ord,
+        Q: ?Sized + Ord + KeyHead,
     {
         let leaf_node_shared = get_leaf_shared_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
@@ -128,7 +220,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     pub fn get_exclusively_and<Q>(&self, search_key: &Q, closure: impl Fn(QsShared<V>))
     where
         K: Borrow<Q>,
-        Q: ?Sized + Ord,
+        Q: ?Sized + Ord + KeyHead,
     {
         let leaf_node_exclusive = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
@@ -324,7 +416,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     ) -> RemoveOrModifyIfResult<T, E>
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
             self.root.as_node_ref(),
@@ -639,6 +731,82 @@ pub enum RemoveOrModifyIfResult<T, E> {
     Modified(T),
     DidNothing,
     Error(E),
+}
+
+#[cfg(test)]
+mod key_head_tests {
+    use super::KeyHead;
+
+    #[test]
+    fn test_key_head_unsigned_monotonicity() {
+        // key_head must be monotonic: a < b => a.key_head() <= b.key_head()
+        for a in 0u64..256 {
+            for b in (a + 1)..257 {
+                assert!(
+                    a.key_head() <= b.key_head(),
+                    "{a} < {b} but head({a}) > head({b})"
+                );
+            }
+        }
+        assert!(0u32.key_head() < u32::MAX.key_head());
+        assert!(0usize.key_head() < usize::MAX.key_head());
+    }
+
+    #[test]
+    fn test_key_head_signed_monotonicity() {
+        // Signed integers: negative < positive in key order
+        assert!((-1i64).key_head() < 0i64.key_head());
+        assert!(i64::MIN.key_head() < i64::MAX.key_head());
+        assert!((-1i32).key_head() < 0i32.key_head());
+        assert!(i32::MIN.key_head() < i32::MAX.key_head());
+        assert!((-1i8).key_head() < 0i8.key_head());
+
+        // Check full i8 range
+        for a in i8::MIN..i8::MAX {
+            assert!(
+                a.key_head() < (a + 1).key_head(),
+                "i8: {a}.key_head() >= {}.key_head()",
+                a + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_key_head_str_monotonicity() {
+        let mut strings = vec!["", "a", "aa", "ab", "b", "ba", "hello", "world", "zzz"];
+        // Verify str ordering matches head ordering (where heads differ)
+        strings.sort();
+        for w in strings.windows(2) {
+            let ha = w[0].key_head();
+            let hb = w[1].key_head();
+            assert!(ha <= hb, "{:?}.key_head() > {:?}.key_head()", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn test_key_head_str_prefix_encoding() {
+        // First 8 bytes packed big-endian
+        assert_eq!("".key_head(), 0);
+        assert_eq!("a".key_head(), u64::from_be_bytes(*b"a\0\0\0\0\0\0\0"));
+        // Strings differing past 8 bytes should have equal heads
+        assert_eq!("abcdefgh_one".key_head(), "abcdefgh_two".key_head(),);
+        // Strings differing within first 8 bytes should have different heads
+        assert_ne!("abcdefga".key_head(), "abcdefgb".key_head());
+    }
+
+    #[test]
+    fn test_key_head_u8_slice() {
+        // The blanket [T] impl delegates to the first element, so slices
+        // sharing the same first element have equal heads (which is valid —
+        // monotonicity only requires a < b => head(a) <= head(b)).
+        let a: &[u8] = &[1, 2, 3];
+        let b: &[u8] = &[1, 2, 4];
+        assert!(a.key_head() <= b.key_head());
+
+        // Different first elements still produce distinct heads.
+        let c: &[u8] = &[2, 0, 0];
+        assert!(a.key_head() < c.key_head());
+    }
 }
 
 #[cfg(test)]
@@ -1538,6 +1706,79 @@ mod tests {
         );
 
         tree.check_invariants();
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_insert_and_get_str_keys() {
+        #[cfg(not(miri))]
+        const N: usize = ORDER.pow(2);
+        #[cfg(miri)]
+        const N: usize = ORDER;
+
+        qsbr_reclaimer().register_thread();
+
+        let tree = BTree::<str, str>::new();
+        let keys: Vec<String> = (0..N).map(|i| format!("key_{i:06}")).collect();
+
+        for key in &keys {
+            tree.insert(
+                QsArc::new_from_str(key),
+                QsOwned::new_from_str(&format!("val_{key}")),
+            );
+        }
+        tree.check_invariants();
+
+        // Verify all present
+        for key in &keys {
+            let result = tree.get(key.as_str());
+            assert!(result.is_some(), "missing key: {key}");
+            let val: &str = &result.unwrap();
+            assert_eq!(val, format!("val_{key}").as_str());
+        }
+
+        // Verify miss
+        assert!(tree.get("nonexistent").is_none());
+
+        // Remove half and verify
+        for key in keys.iter().step_by(2) {
+            tree.remove(key.as_str());
+        }
+        tree.check_invariants();
+
+        for (i, key) in keys.iter().enumerate() {
+            if i % 2 == 0 {
+                assert!(tree.get(key.as_str()).is_none(), "should be removed: {key}");
+            } else {
+                assert!(tree.get(key.as_str()).is_some(), "should be present: {key}");
+            }
+        }
+
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
+
+    #[test]
+    fn test_bulk_load_str_keys() {
+        qsbr_reclaimer().register_thread();
+
+        let mut pairs: Vec<(QsArc<str>, QsOwned<str>)> = (0..1000)
+            .map(|i| {
+                (
+                    QsArc::new_from_str(&format!("key_{i:06}")),
+                    QsOwned::new_from_str(&format!("val_{i}")),
+                )
+            })
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let tree: BTree<str, str> = BTree::bulk_load(pairs);
+        tree.check_invariants();
+
+        assert!(tree.get("key_000000").is_some());
+        assert!(tree.get("key_000500").is_some());
+        assert!(tree.get("key_000999").is_some());
+        assert!(tree.get("key_001000").is_none());
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }

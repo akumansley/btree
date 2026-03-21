@@ -7,7 +7,7 @@ use crate::{
     },
     node::{Height, NodeHeader},
     pointers::node_ref::marker::{self, LockState},
-    tree::{BTreeKey, BTreeValue, ModificationType},
+    tree::{BTreeKey, BTreeValue, KeyHead, ModificationType},
     util::UnwrapEither,
 };
 use std::borrow::Borrow;
@@ -101,7 +101,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     pub fn index_of_child_containing_key<Q>(&self, key: &Q) -> usize
     where
         K: Borrow<Q>,
-        Q: ?Sized + Ord,
+        Q: ?Sized + Ord + KeyHead,
     {
         match self.storage.binary_search_keys(key) {
             Ok(index) => index + 1,
@@ -112,12 +112,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     pub fn find_child<Q>(&self, search_key: &Q) -> QsShared<NodeHeader>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Ord,
+        Q: ?Sized + Ord + KeyHead,
     {
-        let index = self.index_of_child_containing_key(search_key);
-        // SAFETY: This may be an optimistic read, so we might be reading an index that exceeds the current number of children
-        // but because node drops are protected by qsbr, that's okay -- we'll find a retired node.
-        unsafe { self.storage.get_child_unchecked(index) }
+        self.storage.find_child(search_key)
     }
 
     pub fn get_key_for_non_leftmost_child(&self, child: QsShared<NodeHeader>) -> QsWeak<K> {
