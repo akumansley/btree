@@ -39,6 +39,10 @@ harness = false
 name = "bulk_ops"
 harness = false
 
+[[bench]]
+name = "point_lookup"
+harness = false
+
 [profile.test]
 opt-level = 0
 debug = true

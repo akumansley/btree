@@ -1,3 +1,47 @@
+/// Prefetch a node's memory into L1 cache, targeting the regions
+/// accessed during binary search.
+///
+/// Node layout (storage starts shortly after the node pointer):
+///   NodeHeader (height + lock) — needed for lock_optimistic
+///   num_keys — checked first during search
+///   heads array — primary search target, placed early for cache efficiency
+///   keys array — touched on head-match fallback
+///
+/// We prefetch the first 1024 bytes (16 cache lines) which covers header,
+/// num_keys, heads, and the start of the keys array.
+#[inline(always)]
+pub fn prefetch_node(ptr: *const u8) {
+    #[cfg(not(miri))]
+    unsafe {
+        let mut off = 0;
+        while off < 1024 {
+            prefetch_line(ptr.add(off));
+            off += 64;
+        }
+    }
+    #[cfg(miri)]
+    {
+        let _ = ptr;
+    }
+}
+
+#[cfg(not(miri))]
+#[inline(always)]
+unsafe fn prefetch_line(ptr: *const u8) {
+    #[cfg(target_arch = "aarch64")]
+    std::arch::asm!(
+        "prfm pldl1keep, [{ptr}]",
+        ptr = in(reg) ptr,
+        options(readonly, nostack, preserves_flags)
+    );
+    #[cfg(target_arch = "x86_64")]
+    std::arch::asm!(
+        "prefetcht0 [{}]",
+        in(reg) ptr,
+        options(readonly, nostack, preserves_flags)
+    );
+}
+
 pub trait UnwrapEither {
     type Item;
     fn unwrap_either(self) -> Self::Item;

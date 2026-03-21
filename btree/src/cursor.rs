@@ -14,8 +14,8 @@ use crate::search::{
 };
 use crate::splitting::EntryLocation;
 use crate::tree::{
-    BTree, BTreeKey, BTreeValue, GetOrInsertResult, InsertOrModifyIfResult, ModificationType,
-    ModifyDecision,
+    BTree, BTreeKey, BTreeSearchKey, BTreeValue, GetOrInsertResult, InsertOrModifyIfResult,
+    ModificationType, ModifyDecision,
 };
 use crate::util::UnwrapEither;
 use thin::{QsArc, QsOwned, QsShared, QsWeak};
@@ -71,7 +71,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
     pub fn seek<Q>(&mut self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         // optimistically try the current leaf, but quickly give up and search from the top
         if let Some(leaf) = self.current_leaf.as_ref() {
@@ -91,7 +91,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
     fn seek_from_top<Q>(&mut self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         loop {
             if self.current_leaf.is_some() {
@@ -298,7 +298,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     pub fn seek<Q>(&mut self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         // optimistically try the current leaf, but quickly give up and search from the top
         if let Some(leaf) = self.current_leaf.as_ref() {
@@ -420,7 +420,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     fn seek_from_top<Q>(&mut self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         loop {
             if self.current_leaf.is_some() {
@@ -658,7 +658,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
     pub fn seek<Q>(&mut self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         // Optimistically try the current leaf
         if let Some(unlocked_leaf) = self.unlocked_leaf {
@@ -682,7 +682,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
     fn seek_from_top<Q>(&mut self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: ?Sized + BTreeSearchKey,
     {
         loop {
             let leaf = get_leaf_shared_using_optimistic_search_with_fallback(

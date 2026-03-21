@@ -1,10 +1,13 @@
+use std::cmp::Ordering as CmpOrdering;
 use std::{borrow::Borrow, marker::PhantomData, mem::MaybeUninit, ops::Deref};
 
 use crate::{
     pointers::{
         marker, AtomicPointerArrayValue, OwnedAtomicThinArc, OwnedNodeRef, OwnedThinAtomicPtr,
     },
-    sync::{AtomicUsize, Ordering},
+    sync::{AtomicU64, AtomicUsize, Ordering},
+    tree::KeyHead,
+    util::prefetch_node,
 };
 use smallvec::Array;
 use thin::{Arcable, QsArc, QsOwned, QsShared, QsWeak};
@@ -202,17 +205,224 @@ impl<const CAPACITY: usize, T: Send + 'static + ?Sized + Arcable>
     }
 }
 
+// Stores keys alongside their head prefixes (first 8 bytes as u64).
+// Heads enable a branchless binary search that resolves most comparisons
+// without loading the full key.
+// Layout ordered for cache efficiency: heads are accessed first during
+// binary search, so they're placed at the start of the struct.
+#[repr(C)]
+struct KeysWithHeads<const CAPACITY: usize, K: BTreeKey + ?Sized> {
+    heads: [AtomicU64; CAPACITY],
+    keys: NodeStorageArray<CAPACITY, K, OwnedAtomicThinArc<K>>,
+}
+
+impl<const CAPACITY: usize, K: BTreeKey + ?Sized> KeysWithHeads<CAPACITY, K> {
+    fn new() -> Self {
+        Self {
+            heads: [const { AtomicU64::new(0) }; CAPACITY],
+            keys: NodeStorageArray::new(),
+        }
+    }
+
+    fn shift_heads_right(&self, index: usize, num_elements: usize) {
+        debug_assert!(num_elements < CAPACITY);
+        for i in (index..num_elements).rev() {
+            // SAFETY: i < num_elements < CAPACITY, and i+1 <= num_elements < CAPACITY
+            let val = unsafe { self.heads.get_unchecked(i) }.load(Ordering::Relaxed);
+            unsafe { self.heads.get_unchecked(i + 1) }.store(val, Ordering::Relaxed);
+        }
+    }
+
+    fn shift_heads_left(&self, index: usize, num_elements: usize) {
+        debug_assert!(num_elements <= CAPACITY);
+        for i in index..(num_elements - 1) {
+            // SAFETY: i+1 < num_elements <= CAPACITY, and i < num_elements - 1 < CAPACITY
+            let val = unsafe { self.heads.get_unchecked(i + 1) }.load(Ordering::Relaxed);
+            unsafe { self.heads.get_unchecked(i) }.store(val, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn store_head(&self, index: usize, head: u64) {
+        // SAFETY: callers ensure index < CAPACITY
+        unsafe { self.heads.get_unchecked(index) }.store(head, Ordering::Relaxed);
+    }
+
+    /// Branchless binary search on heads only. Returns the lower bound index
+    /// where `head >= search_head`. This is an approximation of the full search
+    /// result, useful for prefetching before the expensive key comparisons.
+    #[inline]
+    fn head_lower_bound(&self, search_head: u64, num_keys: usize) -> usize {
+        debug_assert!(num_keys > 0 && num_keys <= CAPACITY);
+        // SAFETY: mid is always < num_keys <= CAPACITY throughout the loop because
+        // mid = base + half where base < len and half = len/2, so mid < len <= num_keys
+        let mut base = 0usize;
+        let mut len = num_keys;
+        while len > 1 {
+            let half = len / 2;
+            let mid = base + half;
+            let mid_head = unsafe { self.heads.get_unchecked(mid) }.load(Ordering::Relaxed);
+            base = if mid_head < search_head { mid } else { base };
+            len -= half;
+        }
+        // SAFETY: base < num_keys <= CAPACITY (loop invariant: base < len, and len >= 1 at exit)
+        let base_head = unsafe { self.heads.get_unchecked(base) }.load(Ordering::Relaxed);
+        if base_head < search_head {
+            base + 1
+        } else {
+            base
+        }
+    }
+
+    /// Full key comparison scan starting from a head lower bound.
+    /// `base` should be the result of `head_lower_bound`.
+    #[inline]
+    fn key_scan<Q>(
+        &self,
+        key: &Q,
+        search_head: u64,
+        mut base: usize,
+        num_keys: usize,
+    ) -> Result<usize, usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + KeyHead + ?Sized,
+    {
+        let keys_slice = self.keys.as_slice(num_keys);
+        // SAFETY: base <= num_keys is checked by the while condition; num_keys <= CAPACITY
+        while base < num_keys {
+            let stored_head = unsafe { self.heads.get_unchecked(base) }.load(Ordering::Relaxed);
+            if stored_head > search_head {
+                break;
+            }
+            let cmp = unsafe { keys_slice.get_unchecked(base) }
+                .load(Ordering::Relaxed)
+                .unwrap()
+                .deref()
+                .borrow()
+                .cmp(key);
+            match cmp {
+                CmpOrdering::Less => base += 1,
+                CmpOrdering::Equal => return Ok(base),
+                CmpOrdering::Greater => return Err(base),
+            }
+        }
+        Err(base)
+    }
+
+    #[inline]
+    pub fn binary_search<Q>(&self, key: &Q, num_keys: usize) -> Result<usize, usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + KeyHead + ?Sized,
+    {
+        if num_keys == 0 {
+            return Err(0);
+        }
+        let search_head = key.key_head();
+        let base = self.head_lower_bound(search_head, num_keys);
+        self.key_scan(key, search_head, base, num_keys)
+    }
+
+    #[inline]
+    fn get(&self, index: usize, num_keys: usize) -> QsWeak<K> {
+        self.keys.get(index, num_keys)
+    }
+
+    #[inline]
+    fn get_cloned(&self, index: usize, num_keys: usize) -> QsArc<K> {
+        self.keys.get_cloned(index, num_keys)
+    }
+
+    #[inline]
+    fn insert(&self, key: QsArc<K>, index: usize, num_keys: usize) {
+        self.shift_heads_right(index, num_keys);
+        self.store_head(index, key.key_head());
+        self.keys.insert(key, index, num_keys);
+    }
+
+    #[inline]
+    fn remove(&self, index: usize, num_keys: usize) -> QsArc<K> {
+        let key = self.keys.remove(index, num_keys);
+        self.shift_heads_left(index, num_keys);
+        key
+    }
+
+    #[inline]
+    fn replace(&self, index: usize, key: QsArc<K>) -> QsArc<K> {
+        self.store_head(index, key.key_head());
+        self.keys.replace(index, key)
+    }
+
+    #[inline]
+    fn set(&self, index: usize, key: QsArc<K>) {
+        self.store_head(index, key.key_head());
+        self.keys.set(index, key);
+    }
+
+    #[inline]
+    fn push(&self, key: QsArc<K>, num_keys: usize) {
+        self.store_head(num_keys, key.key_head());
+        self.keys.push(key, num_keys);
+    }
+
+    #[inline]
+    fn as_slice(&self, num_keys: usize) -> &[OwnedAtomicThinArc<K>] {
+        self.keys.as_slice(num_keys)
+    }
+
+    #[inline]
+    fn iter<'a>(&'a self, num_keys: usize) -> impl Iterator<Item = QsWeak<K>> + 'a {
+        self.keys.iter(num_keys)
+    }
+
+    #[inline]
+    fn iter_owned<'a>(&'a self, num_keys: usize) -> impl Iterator<Item = QsArc<K>> + 'a {
+        self.keys.iter_owned(num_keys)
+    }
+
+    /// SAFETY: the caller must ensure exclusive access to the value at the given index
+    #[inline]
+    unsafe fn load_owned(&self, index: usize, num_keys: usize) -> QsArc<K> {
+        unsafe { self.keys.load_owned(index, num_keys) }
+    }
+
+    fn extend(&self, iter: impl Iterator<Item = QsArc<K>>, num_keys: usize) -> usize {
+        let mut added = 0;
+        for key in iter {
+            self.store_head(num_keys + added, key.key_head());
+            self.keys.push(key, num_keys + added);
+            added += 1;
+        }
+        added
+    }
+
+    fn check_invariants(&self, num_keys: usize) {
+        assert!(num_keys <= CAPACITY);
+        let keys = self.as_slice(num_keys);
+        for (key1, key2) in keys.iter().zip(keys.iter().skip(1)) {
+            assert!(
+                *key1.load(Ordering::Relaxed).unwrap() < *key2.load(Ordering::Relaxed).unwrap(),
+                "key1: {:?} key2: {:?}",
+                &*key1.load(Ordering::Relaxed).unwrap(),
+                &*key2.load(Ordering::Relaxed).unwrap()
+            );
+        }
+    }
+}
+
 // two generic parameters to work around missing const generic expressions
 // does not drop keys or children when dropped
+#[repr(C)]
 pub struct InternalNodeStorage<
     const CAPACITY: usize,
     const CAPACITY_PLUS_ONE: usize,
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
 > {
-    keys: NodeStorageArray<CAPACITY, K, OwnedAtomicThinArc<K>>,
-    children: NodeStorageArray<CAPACITY_PLUS_ONE, NodeHeader, OwnedThinAtomicPtr<NodeHeader>>,
     num_keys: AtomicUsize,
+    keys: KeysWithHeads<CAPACITY, K>,
+    children: NodeStorageArray<CAPACITY_PLUS_ONE, NodeHeader, OwnedThinAtomicPtr<NodeHeader>>,
     phantom: PhantomData<V>,
 }
 
@@ -262,9 +472,9 @@ impl<
 {
     pub fn new() -> Self {
         Self {
-            keys: NodeStorageArray::new(),
-            children: NodeStorageArray::new(),
             num_keys: AtomicUsize::new(0),
+            keys: KeysWithHeads::new(),
+            children: NodeStorageArray::new(),
             phantom: PhantomData,
         }
     }
@@ -301,12 +511,46 @@ impl<
     pub fn binary_search_keys<Q>(&self, key: &Q) -> Result<usize, usize>
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Ord + KeyHead + ?Sized,
+    {
+        self.keys.binary_search(key, self.num_keys())
+    }
+
+    /// Find the child for a given key, prefetching the child node's memory
+    /// between the fast head-only narrowing and the slower full key comparisons.
+    pub fn find_child<Q>(&self, key: &Q) -> QsShared<NodeHeader>
+    where
+        K: Borrow<Q>,
+        Q: Ord + KeyHead + ?Sized,
     {
         let num_keys = self.num_keys();
-        self.keys
-            .as_slice(num_keys)
-            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().borrow().cmp(key))
+        if num_keys == 0 {
+            // SAFETY: internal node always has at least one child
+            return unsafe { self.children.get_unchecked(0) };
+        }
+
+        // Phase 1: branchless search on heads to get approximate child index
+        let search_head = key.key_head();
+        let approx_index = self.keys.head_lower_bound(search_head, num_keys);
+
+        // Prefetch the likely child before doing expensive key comparisons
+        // SAFETY: approx_index <= num_keys, so it's a valid child index
+        let approx_child = unsafe { self.children.get_unchecked(approx_index) };
+        prefetch_node(&*approx_child as *const NodeHeader as *const u8);
+
+        // Phase 2: full key comparison starting from head lower bound (no repeated head search)
+        let exact_index = match self.keys.key_scan(key, search_head, approx_index, num_keys) {
+            Ok(index) => index + 1,
+            Err(index) => index,
+        };
+
+        if exact_index == approx_index {
+            approx_child
+        } else {
+            // SAFETY: may be an optimistic read with out-of-bounds index,
+            // but node drops are protected by qsbr
+            unsafe { self.children.get_unchecked(exact_index) }
+        }
     }
 
     pub fn get_child(&self, index: usize) -> QsShared<NodeHeader> {
@@ -362,6 +606,7 @@ impl<
         self.children.push(child, num_children);
         self.num_keys.fetch_add(1, Ordering::Release);
     }
+
     pub fn push_key(&self, key: QsArc<K>) {
         let num_keys = self.num_keys();
         self.keys.push(key, num_keys);
@@ -415,7 +660,7 @@ impl<
         let mut added = 0;
 
         for (key, child) in other {
-            self.keys.insert(key, num_keys + added, num_keys + added);
+            self.keys.push(key, num_keys + added);
             self.children
                 .insert(child, num_keys + added + 1, num_keys + added + 1);
             added += 1;
@@ -432,11 +677,7 @@ impl<
 
     pub fn extend_keys(&self, other: impl Iterator<Item = QsArc<K>>) {
         let num_keys = self.num_keys();
-        let mut added = 0;
-        for key in other {
-            self.keys.push(key, num_keys + added);
-            added += 1;
-        }
+        let added = self.keys.extend(other, num_keys);
         self.num_keys.fetch_add(added, Ordering::Release);
     }
 
@@ -453,15 +694,7 @@ impl<
     }
 
     pub fn check_invariants(&self) {
-        assert!(self.num_keys() <= CAPACITY);
-        for (key1, key2) in self.keys().iter().zip(self.keys().iter().skip(1)) {
-            assert!(
-                *key1.load(Ordering::Relaxed).unwrap() < *key2.load(Ordering::Relaxed).unwrap(),
-                "key1: {:?} key2: {:?}",
-                &*key1.load(Ordering::Relaxed).unwrap(),
-                &*key2.load(Ordering::Relaxed).unwrap()
-            );
-        }
+        self.keys.check_invariants(self.num_keys());
         for child in self.children() {
             assert!(child.load_shared(Ordering::Relaxed).is_some());
         }
@@ -470,10 +703,11 @@ impl<
 
 // drops keys and values when dropped
 pub type LeafNodeStorageArray<K, V> = LeafNodeStorage<MAX_KEYS_PER_NODE, K, V>;
+#[repr(C)]
 pub struct LeafNodeStorage<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    keys: NodeStorageArray<CAPACITY, K, OwnedAtomicThinArc<K>>,
-    values: NodeStorageArray<CAPACITY, V, OwnedThinAtomicPtr<V>>,
     num_keys: AtomicUsize,
+    keys: KeysWithHeads<CAPACITY, K>,
+    values: NodeStorageArray<CAPACITY, V, OwnedThinAtomicPtr<V>>,
 }
 
 impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop
@@ -504,9 +738,9 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 {
     pub fn new() -> Self {
         Self {
-            keys: NodeStorageArray::new(),
-            values: NodeStorageArray::new(),
             num_keys: AtomicUsize::new(0),
+            keys: KeysWithHeads::new(),
+            values: NodeStorageArray::new(),
         }
     }
 }
@@ -533,6 +767,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     pub fn iter_values<'a>(&'a self) -> impl Iterator<Item = QsShared<V>> + 'a {
         self.values.iter(self.num_keys())
     }
+
     pub fn push(&self, key: QsArc<K>, value: QsOwned<V>) {
         let num_keys = self.num_keys();
         self.keys.push(key, num_keys);
@@ -576,12 +811,9 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     pub fn binary_search_keys<Q>(&self, key: &Q) -> Result<usize, usize>
     where
         K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Ord + KeyHead + ?Sized,
     {
-        let num_keys = self.num_keys();
-        self.keys
-            .as_slice(num_keys)
-            .binary_search_by(|k| k.load(Ordering::Acquire).unwrap().deref().borrow().cmp(key))
+        self.keys.binary_search(key, self.num_keys())
     }
 
     pub fn drain<'a>(&'a self) -> impl Iterator<Item = (QsArc<K>, QsOwned<V>)> + 'a {
@@ -602,6 +834,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 
     pub fn insert(&self, key: QsArc<K>, value: QsOwned<V>, index: usize) {
         let num_keys = self.num_keys();
+        debug_assert!(index <= num_keys && num_keys < CAPACITY);
         self.keys.insert(key, index, num_keys);
         self.values.insert(value, index, num_keys);
         self.num_keys.fetch_add(1, Ordering::Release);
@@ -609,6 +842,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
 
     pub fn remove(&self, index: usize) -> (QsArc<K>, QsOwned<V>) {
         let num_keys = self.num_keys();
+        debug_assert!(index < num_keys && num_keys <= CAPACITY);
         let key = self.keys.remove(index, num_keys);
         let value = self.values.remove(index, num_keys);
         self.num_keys.fetch_sub(1, Ordering::Release);
@@ -616,15 +850,7 @@ impl<const CAPACITY: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     }
 
     pub fn check_invariants(&self) {
-        assert!(self.num_keys() <= CAPACITY);
-        for (key1, key2) in self.keys().iter().zip(self.keys().iter().skip(1)) {
-            assert!(
-                *key1.load(Ordering::Relaxed).unwrap() < *key2.load(Ordering::Relaxed).unwrap(),
-                "key1: {:?} key2: {:?}",
-                &*key1.load(Ordering::Relaxed).unwrap(),
-                &*key2.load(Ordering::Relaxed).unwrap()
-            );
-        }
+        self.keys.check_invariants(self.num_keys());
     }
 }
 

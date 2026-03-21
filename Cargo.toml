@@ -1,3 +1,6 @@
 [workspace]
 members = ["btree", "btree-macros", "qsbr", "thin"]
 resolver = "3"
+
+[profile.bench]
+debug = true
