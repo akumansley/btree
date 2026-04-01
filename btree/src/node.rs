@@ -57,11 +57,11 @@ impl NodeHeader {
     pub fn lock_exclusive_if_not_retired(&self) -> Result<(), LockError> {
         self.lock.lock_exclusive_if_not_retired()
     }
-    pub fn lock_exclusive_jittered(&self) {
-        self.lock.lock_exclusive_jittered();
+    pub fn lock_exclusive_with_backoff(&self) {
+        self.lock.lock_exclusive_with_backoff();
     }
-    pub fn lock_exclusive_if_not_retired_jittered(&self) -> Result<(), LockError> {
-        self.lock.lock_exclusive_if_not_retired_jittered()
+    pub fn lock_exclusive_if_not_retired_with_backoff(&self) -> Result<(), LockError> {
+        self.lock.lock_exclusive_if_not_retired_with_backoff()
     }
     pub fn is_locked_exclusive(&self) -> bool {
         self.lock.is_locked_exclusive()

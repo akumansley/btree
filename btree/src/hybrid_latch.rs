@@ -165,15 +165,15 @@ impl HybridLatch {
         self.version.load(Ordering::Acquire)
     }
 
-    pub fn lock_exclusive_jittered(&self) {
+    pub fn lock_exclusive_with_backoff(&self) {
         debug_assert!(!self.is_retired());
         if self.rw_lock.try_lock_exclusive() {
             return;
         }
-        jittered_retry(&self.rw_lock);
+        retry_with_backoff(&self.rw_lock);
     }
 
-    pub fn lock_exclusive_if_not_retired_jittered(&self) -> Result<(), LockError> {
+    pub fn lock_exclusive_if_not_retired_with_backoff(&self) -> Result<(), LockError> {
         if self.rw_lock.try_lock_exclusive() {
             if self.is_retired() {
                 self.rw_lock.unlock_exclusive();
@@ -181,7 +181,7 @@ impl HybridLatch {
             }
             return Ok(());
         }
-        jittered_retry(&self.rw_lock);
+        retry_with_backoff(&self.rw_lock);
         if self.is_retired() {
             self.rw_lock.unlock_exclusive();
             return Err(LockError::Retired);
@@ -210,7 +210,7 @@ impl HybridLatch {
 
 /// Timed lock attempts with yields between retries to break deadlocks.
 /// Timeout escalates from 1us to 1ms to avoid starvation.
-fn jittered_retry(lock: &RwLock) {
+fn retry_with_backoff(lock: &RwLock) {
     let mut timeout_us: u64 = 10;
     loop {
         if lock.try_lock_exclusive_for(Duration::from_micros(timeout_us)) {
