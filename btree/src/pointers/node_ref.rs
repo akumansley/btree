@@ -186,10 +186,44 @@ macro_rules! impl_node_ref_traits {
             }
 
             #[allow(unused)]
+            pub fn lock_exclusive_with_backoff(
+                self,
+            ) -> $struct_name<K, V, marker::LockedExclusive, N> {
+                debug_println!(
+                    "locking {:?} {:?} exclusive backoff",
+                    self,
+                    self.header().height()
+                );
+                self.header().lock_exclusive_with_backoff();
+                debug_println!(
+                    "locked {:?} {:?} exclusive backoff",
+                    self,
+                    self.header().height()
+                );
+                $struct_name {
+                    node: ManuallyDrop::new(self.into_ptr()),
+                    lock_info: LockInfo::exclusive(),
+                    phantom: PhantomData,
+                }
+            }
+
+            #[allow(unused)]
             pub fn lock_exclusive_if_not_retired(
                 self,
             ) -> Result<$struct_name<K, V, marker::LockedExclusive, N>, LockError> {
                 self.header().lock_exclusive_if_not_retired()?;
+                Ok($struct_name {
+                    node: ManuallyDrop::new(self.into_ptr()),
+                    lock_info: LockInfo::exclusive(),
+                    phantom: PhantomData,
+                })
+            }
+
+            #[allow(unused)]
+            pub fn lock_exclusive_if_not_retired_with_backoff(
+                self,
+            ) -> Result<$struct_name<K, V, marker::LockedExclusive, N>, LockError> {
+                self.header().lock_exclusive_if_not_retired_with_backoff()?;
                 Ok($struct_name {
                     node: ManuallyDrop::new(self.into_ptr()),
                     lock_info: LockInfo::exclusive(),
@@ -472,51 +506,6 @@ impl_all_derefs_for_node_ref!(
     as_shared_internal_ptr,
     SharedNodeRef
 );
-
-// Leaf-specific jittered exclusive lock methods.
-// These use a timed try-lock with jittered ~10ms timeout, retrying indefinitely,
-// to avoid deadlocks when acquiring exclusive locks on leaf nodes.
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
-    SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>
-{
-    pub fn lock_exclusive_with_backoff(
-        self,
-    ) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
-        self.header().lock_exclusive_with_backoff();
-        SharedNodeRef {
-            node: ManuallyDrop::new(self.into_ptr()),
-            lock_info: LockInfo::exclusive(),
-            phantom: PhantomData,
-        }
-    }
-
-    pub fn lock_exclusive_if_not_retired_with_backoff(
-        self,
-    ) -> Result<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>, LockError> {
-        self.header().lock_exclusive_if_not_retired_with_backoff()?;
-        Ok(SharedNodeRef {
-            node: ManuallyDrop::new(self.into_ptr()),
-            lock_info: LockInfo::exclusive(),
-            phantom: PhantomData,
-        })
-    }
-}
-
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
-    OwnedNodeRef<K, V, marker::Unlocked, marker::Leaf>
-{
-    #[allow(dead_code)]
-    pub fn lock_exclusive_with_backoff(
-        self,
-    ) -> OwnedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
-        self.header().lock_exclusive_with_backoff();
-        OwnedNodeRef {
-            node: ManuallyDrop::new(self.into_ptr()),
-            lock_info: LockInfo::exclusive(),
-            phantom: PhantomData,
-        }
-    }
-}
 
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Clone
     for SharedNodeRef<K, V, L, N>
