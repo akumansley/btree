@@ -479,10 +479,10 @@ impl_all_derefs_for_node_ref!(
 impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>
 {
-    pub fn lock_exclusive_jittered(
+    pub fn lock_exclusive_with_backoff(
         self,
     ) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
-        self.header().lock_exclusive_jittered();
+        self.header().lock_exclusive_with_backoff();
         SharedNodeRef {
             node: ManuallyDrop::new(self.into_ptr()),
             lock_info: LockInfo::exclusive(),
@@ -490,10 +490,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
         }
     }
 
-    pub fn lock_exclusive_if_not_retired_jittered(
+    pub fn lock_exclusive_if_not_retired_with_backoff(
         self,
     ) -> Result<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>, LockError> {
-        self.header().lock_exclusive_if_not_retired_jittered()?;
+        self.header().lock_exclusive_if_not_retired_with_backoff()?;
         Ok(SharedNodeRef {
             node: ManuallyDrop::new(self.into_ptr()),
             lock_info: LockInfo::exclusive(),
@@ -506,10 +506,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
     OwnedNodeRef<K, V, marker::Unlocked, marker::Leaf>
 {
     #[allow(dead_code)]
-    pub fn lock_exclusive_jittered(
+    pub fn lock_exclusive_with_backoff(
         self,
     ) -> OwnedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
-        self.header().lock_exclusive_jittered();
+        self.header().lock_exclusive_with_backoff();
         OwnedNodeRef {
             node: ManuallyDrop::new(self.into_ptr()),
             lock_info: LockInfo::exclusive(),
