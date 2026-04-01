@@ -105,7 +105,7 @@ pub fn coalesce_or_redistribute_internal_node<K: BTreeKey + ?Sized, V: BTreeValu
 
     let (full_internal, node_position) = parent.get_neighboring_internal_node(underfull_internal);
 
-    let full_internal = full_internal.lock_exclusive();
+    let full_internal = full_internal.lock_exclusive_with_backoff();
     if full_internal.num_keys() + underfull_internal.num_keys() < MAX_KEYS_PER_NODE {
         match node_position {
             UnderfullNodePosition::Other => {

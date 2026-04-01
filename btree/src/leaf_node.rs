@@ -210,7 +210,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     ) {
         // update sibling pointers
         if let Some(right_neighbor_next_leaf) = from.next_leaf() {
-            let right_neighbor_next_leaf = right_neighbor_next_leaf.lock_exclusive();
+            let right_neighbor_next_leaf = right_neighbor_next_leaf.lock_exclusive_with_backoff();
 
             right_neighbor_next_leaf
                 .prev_leaf

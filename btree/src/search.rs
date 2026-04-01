@@ -229,7 +229,7 @@ pub fn get_leaf_exclusively_using_exclusive_search<
             .lock_exclusive_with_backoff()
             .erase_node_type()
     } else {
-        top_of_tree.lock_exclusive()
+        top_of_tree.lock_exclusive_with_backoff()
     };
     search.push_node_on_bottom(top_of_tree);
     match top_of_tree.force() {
@@ -267,7 +267,7 @@ pub fn get_leaf_exclusively_using_exclusive_search<
                 .lock_exclusive_with_backoff()
                 .erase_node_type()
         } else {
-            found_child.lock_exclusive()
+            found_child.lock_exclusive_with_backoff()
         };
         search.push_node_on_bottom(found_child);
         match found_child.force() {
