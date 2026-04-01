@@ -1782,4 +1782,92 @@ mod tests {
 
         unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
     }
+
+    /// Stress test targeting deadlocks from write-lock backoff.
+    ///
+    /// Multiple writer threads rapidly insert and remove keys in a narrow
+    /// range, forcing frequent splits and coalesces on neighboring leaves.
+    /// The deadlock scenario: writer A splits leaf L and tries to exclusive-
+    /// lock L's sibling S to update pointers, while writer B simultaneously
+    /// splits S and tries to lock L. Without backoff (timed try_lock +
+    /// yield), both writers spin forever — classic ABBA deadlock.
+    ///
+    /// Reader threads add further lock contention on the same leaves via
+    /// shared-lock searches and cursor traversals.
+    #[test]
+    fn test_no_deadlock_under_concurrent_rebalancing() {
+        qsbr_reclaimer().register_thread();
+
+        let tree = BTree::<usize, String>::new();
+        // Pre-populate so structural modifications happen immediately.
+        for i in 0..ORDER * 4 {
+            tree.insert(QsArc::new(i), QsOwned::new(format!("v{i}")));
+        }
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        #[cfg(not(miri))]
+        let duration = Duration::from_secs(3);
+        #[cfg(miri)]
+        let duration = Duration::from_millis(50);
+
+        std::thread::scope(|s| {
+            // Writer threads: insert and remove in a tight range to force
+            // concurrent splits, coalesces, and node retirement on
+            // neighboring leaves.
+            for writer_id in 0..3u64 {
+                let tree_ref = &tree;
+                let stop_ref = &stop;
+                s.spawn(move || {
+                    qsbr_reclaimer().register_thread();
+                    let mut rng = StdRng::seed_from_u64(writer_id);
+                    let key_range = ORDER * 4;
+                    while !stop_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                        let key = rng.random_range(0..key_range);
+                        if rng.random_bool(0.5) {
+                            tree_ref.insert(QsArc::new(key), QsOwned::new(format!("w{key}")));
+                        } else {
+                            tree_ref.remove(&key);
+                        }
+                    }
+                    unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+                });
+            }
+
+            // Reader threads: point reads and cursor traversals that
+            // acquire shared locks on the same leaves the writers are
+            // splitting and coalescing.
+            for reader_id in 0..2u64 {
+                let tree_ref = &tree;
+                let stop_ref = &stop;
+                s.spawn(move || {
+                    qsbr_reclaimer().register_thread();
+                    let mut rng = StdRng::seed_from_u64(100 + reader_id);
+                    let key_range = ORDER * 4;
+                    while !stop_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                        let key = rng.random_range(0..key_range);
+                        let _ = tree_ref.get(&key);
+
+                        // Cursor traversal across leaf boundaries.
+                        let mut cursor = tree_ref.cursor();
+                        cursor.seek(&key);
+                        for _ in 0..4 {
+                            if !cursor.move_next() {
+                                break;
+                            }
+                        }
+                    }
+                    unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+                });
+            }
+
+            // Let the threads race for the configured duration.
+            thread::sleep(duration);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        // If we reach here, no deadlock occurred.
+        tree.check_invariants();
+        unsafe { qsbr_reclaimer().deregister_current_thread_and_mark_quiescent() };
+    }
 }
