@@ -276,7 +276,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
         // we need structural modifications, so fall back to exclusive search
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
-            self.root.as_node_ref().lock_exclusive(),
+            self.root.as_node_ref().lock_exclusive_with_backoff(),
             &key,
             ModificationType::Insertion,
         );
@@ -362,7 +362,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         value: QsOwned<V>,
     ) -> (EntryLocation<K, V>, GetOrInsertResult<V>) {
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
-            self.root.as_node_ref().lock_exclusive(),
+            self.root.as_node_ref().lock_exclusive_with_backoff(),
             &key,
             ModificationType::Insertion,
         );
@@ -462,7 +462,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         // we don't -- we may need to do structural modifications, so fall back to exclusive search
         optimistic_leaf.unlock_exclusive();
         let search_stack = get_leaf_exclusively_using_exclusive_search(
-            self.root.as_node_ref().lock_exclusive(),
+            self.root.as_node_ref().lock_exclusive_with_backoff(),
             key,
             ModificationType::Removal,
         );
@@ -546,7 +546,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
         // we may need structural modifications, so fall back to exclusive search
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
-            self.root.as_node_ref().lock_exclusive(),
+            self.root.as_node_ref().lock_exclusive_with_backoff(),
             key,
             ModificationType::Removal,
         );
