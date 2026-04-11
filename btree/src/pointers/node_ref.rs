@@ -243,6 +243,21 @@ macro_rules! impl_node_ref_traits {
                 })
             }
 
+            /// Treat this node as optimistically locked with the given version,
+            /// without performing any checks. The caller must validate the version
+            /// after reading to confirm the data was consistent.
+            #[allow(unused)]
+            pub fn assume_optimistic(
+                self,
+                version: LockInfo,
+            ) -> $struct_name<K, V, marker::Optimistic, N> {
+                $struct_name {
+                    node: ManuallyDrop::new(self.into_ptr()),
+                    lock_info: version,
+                    phantom: PhantomData,
+                }
+            }
+
             #[allow(unused)]
             pub fn lock_shared(self) -> $struct_name<K, V, marker::LockedShared, N> {
                 debug_println!("locking {:?} {:?} shared", self, self.header().height());
@@ -351,8 +366,20 @@ macro_rules! impl_node_ref_traits {
             }
 
             #[allow(unused)]
+            pub fn unlock_without_validating(mut self) -> $struct_name<K, V, marker::Unlocked, N> {
+                unsafe { self.cast::<marker::Unlocked, N>() }
+            }
+
+            #[allow(unused)]
             pub fn validate_lock(&self) -> Result<(), ()> {
                 self.header().validate_optimistic(self.lock_info)
+            }
+
+            /// Validate the optimistic read. On failure, returns the new version
+            /// if the node is not exclusively locked, or `None` if it is.
+            #[allow(unused)]
+            pub fn validate_or_reacquire(&self) -> Result<(), Option<LockInfo>> {
+                self.header().validate_or_reacquire(self.lock_info)
             }
         }
         unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType> Send

@@ -10,6 +10,8 @@ use crate::coalescing::coalesce_or_redistribute_leaf_node;
 use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
 use crate::cursor::NonLockingCursor;
+use crate::cursor::OptimisticCursor;
+use crate::hybrid_latch::LockInfo;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
 use crate::pointers::node_ref::{marker, SharedDiscriminatedNode};
 use crate::pointers::SharedNodeRef;
@@ -18,6 +20,7 @@ use crate::root_node::RootNode;
 use crate::search::{
     get_leaf_exclusively_using_exclusive_search,
     get_leaf_exclusively_using_optimistic_search_with_fallback,
+    get_leaf_optimistic_using_optimistic_search,
     get_leaf_shared_using_optimistic_search_with_fallback,
 };
 use crate::search_dequeue::SearchDequeue;
@@ -28,6 +31,7 @@ use crate::splitting::{
 use crate::sync::Ordering;
 use std::borrow::Borrow;
 use std::fmt::Debug;
+use std::ops::Deref;
 use thin::{QsOwned, QsShared};
 
 /// A monotonic prefix of a key's sort order, packed into a u64.
@@ -215,6 +219,74 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         let result = closure(value);
         leaf_node_shared.unlock_shared();
         Some(result)
+    }
+
+    pub fn get_optimistic_and<Q, T>(
+        &self,
+        search_key: &Q,
+        closure: impl Fn(QsShared<V>) -> T,
+    ) -> Option<T>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Ord + KeyHead,
+    {
+        let mut unlocked: Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>> = None;
+        let mut version = LockInfo::from_version(0);
+        let mut hint: Option<usize> = None;
+
+        loop {
+            let leaf = match unlocked {
+                Some(ul) => ul.assume_optimistic(version),
+                None => {
+                    hint = None;
+                    let leaf = match get_leaf_optimistic_using_optimistic_search(
+                        self.root.as_node_ref(),
+                        search_key,
+                    ) {
+                        Ok(leaf) => leaf,
+                        Err(()) => continue,
+                    };
+                    unlocked = Some(leaf.unlock_without_validating());
+                    version = leaf.lock_info();
+                    leaf
+                }
+            };
+
+            let n = leaf.num_keys();
+
+            // Fast path: check the hinted slot (catches in-place value updates)
+            let found =
+                hint.filter(|&i| i < n && leaf.storage.get_key(i).deref().borrow() == search_key);
+
+            // Slow path: binary search, with bounds check
+            let (found, in_range) = match found {
+                Some(i) => (Some(i), true),
+                None => match leaf.binary_search_key(search_key) {
+                    Ok(i) => (Some(i), true),
+                    Err(i) if i > 0 && i < n => (None, true),
+                    Err(_) => (None, false),
+                },
+            };
+
+            let value = found.map(|i| leaf.storage.get_value(i));
+
+            match leaf.validate_or_reacquire() {
+                Ok(()) => {
+                    if !in_range {
+                        unlocked = None;
+                        continue;
+                    }
+                    return value.map(&closure);
+                }
+                Err(Some(new_version)) if !new_version.is_retired() => {
+                    version = new_version;
+                    hint = found;
+                }
+                Err(_) => {
+                    unlocked = None;
+                }
+            }
+        }
     }
 
     pub fn get_exclusively_and<Q>(&self, search_key: &Q, closure: impl Fn(QsShared<V>))
@@ -680,6 +752,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
     pub fn non_locking_cursor(&self) -> NonLockingCursor<'_, K, V> {
         NonLockingCursor::new(self)
+    }
+
+    pub fn optimistic_cursor(&self) -> OptimisticCursor<'_, K, V> {
+        OptimisticCursor::new(self)
     }
 }
 
