@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     marker::PhantomData,
     ptr::{self},
 };
@@ -29,6 +30,9 @@ macro_rules! impl_thin_atomic_ptr_traits {
                 }
             }
 
+            /// # Safety
+            /// The pointer must be non-null and exclusively owned by the caller.
+            /// No other references to the pointee may exist.
             pub unsafe fn must_load_for_move(&self, order: Ordering) -> $thin_ptr_type<T> {
                 let ptr = self.ptr.load(order);
                 unsafe { $thin_ptr_type::from_ptr(ptr) }
@@ -70,6 +74,26 @@ macro_rules! impl_thin_atomic_ptr_traits {
 impl_thin_atomic_ptr_traits!(OwnedThinAtomicPtr, QsOwned);
 impl_thin_atomic_ptr_traits!(SharedThinAtomicPtr, QsShared);
 
+impl<T: ?Sized + Pointable> fmt::Debug for OwnedThinAtomicPtr<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedThinAtomicPtr")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
+
+impl<T: ?Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
+    /// Atomically replaces the stored pointer with null, returning the previous value.
+    pub fn take(&self, order: Ordering) -> Option<QsOwned<T>> {
+        let old_ptr = self.ptr.swap(ptr::null_mut(), order);
+        if old_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { QsOwned::from_ptr(old_ptr) })
+        }
+    }
+}
+
 impl<T: Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
     pub fn new(ptr: QsOwned<T>) -> Self {
         Self {
@@ -78,6 +102,9 @@ impl<T: Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
         }
     }
 
+    /// # Safety
+    /// The caller must ensure exclusive ownership of the pointee.
+    /// No other owned references to the same allocation may exist.
     pub unsafe fn load_owned(&self, order: Ordering) -> Option<QsOwned<T>> {
         let ptr = self.ptr.load(order);
         if ptr.is_null() {
@@ -87,6 +114,9 @@ impl<T: Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
         }
     }
 
+    /// # Safety
+    /// The pointer must be non-null and the caller must ensure exclusive
+    /// ownership of the pointee. Panics if the pointer is null.
     pub unsafe fn must_load_owned(&self, order: Ordering) -> QsOwned<T> {
         let ptr = self.ptr.load(order);
         if ptr.is_null() {
