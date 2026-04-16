@@ -18,10 +18,15 @@ pub enum DescriminatedNode {
     Root,
     Internal,
 }
-pub enum SharedDiscriminatedNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState> {
-    Leaf(SharedNodeRef<K, V, L, marker::Leaf>),
-    Root(SharedNodeRef<K, V, L, marker::Root>),
-    Internal(SharedNodeRef<K, V, L, marker::Internal>),
+pub enum SharedDiscriminatedNode<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    L: LockState,
+> {
+    Leaf(SharedNodeRef<K, V, M, L, marker::Leaf>),
+    Root(SharedNodeRef<K, V, M, L, marker::Root>),
+    Internal(SharedNodeRef<K, V, M, L, marker::Internal>),
 }
 
 macro_rules! impl_node_ref_traits {
@@ -29,8 +34,13 @@ macro_rules! impl_node_ref_traits {
         /// Shared trait impls for Owned and Shared NodeRefs:
         /// - Debug
         /// - PartialEq
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Debug
-            for $struct_name<K, V, L, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                L: LockState,
+                N: NodeType,
+            > Debug for $struct_name<K, V, M, L, N>
         {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(
@@ -43,32 +53,38 @@ macro_rules! impl_node_ref_traits {
         impl<
                 K: BTreeKey + ?Sized,
                 V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
                 L1: LockState,
                 L2: LockState,
                 N1: NodeType,
                 N2: NodeType,
-            > PartialEq<$struct_name<K, V, L2, N2>> for $struct_name<K, V, L1, N1>
+            > PartialEq<$struct_name<K, V, M, L2, N2>> for $struct_name<K, V, M, L1, N1>
         {
-            fn eq(&self, other: &$struct_name<K, V, L2, N2>) -> bool {
+            fn eq(&self, other: &$struct_name<K, V, M, L2, N2>) -> bool {
                 self.node == other.node
             }
         }
 
         /// Shared impl for Owned and Shared NodeRefs
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
-            $struct_name<K, V, L, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                L: LockState,
+                N: NodeType,
+            > $struct_name<K, V, M, L, N>
         {
             #[allow(unused)]
-            pub fn erase(self) -> $struct_name<K, V, marker::Unknown, marker::Unknown> {
+            pub fn erase(self) -> $struct_name<K, V, M, marker::Unknown, marker::Unknown> {
                 unsafe { self.cast::<marker::Unknown, marker::Unknown>() }
             }
 
             #[allow(unused)]
-            pub fn erase_node_type(self) -> $struct_name<K, V, L, marker::Unknown> {
+            pub fn erase_node_type(self) -> $struct_name<K, V, M, L, marker::Unknown> {
                 unsafe { self.cast::<L, marker::Unknown>() }
             }
 
-            unsafe fn cast<L2: LockState, N2: NodeType>(self) -> $struct_name<K, V, L2, N2> {
+            unsafe fn cast<L2: LockState, N2: NodeType>(self) -> $struct_name<K, V, M, L2, N2> {
                 let lock_info = self.lock_info;
                 let ptr = self.into_ptr();
                 $struct_name {
@@ -80,22 +96,26 @@ macro_rules! impl_node_ref_traits {
         }
 
         // Assert lock state for Unknown lock state
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType>
-            $struct_name<K, V, marker::Unknown, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                N: NodeType,
+            > $struct_name<K, V, M, marker::Unknown, N>
         {
             #[allow(unused)]
-            pub fn assert_exclusive(mut self) -> $struct_name<K, V, marker::LockedExclusive, N> {
+            pub fn assert_exclusive(mut self) -> $struct_name<K, V, M, marker::LockedExclusive, N> {
                 debug_assert!(self.header().is_locked_exclusive());
                 self.lock_info = LockInfo::exclusive();
                 unsafe { self.cast::<marker::LockedExclusive, N>() }
             }
             #[allow(unused)]
-            pub fn assume_unlocked(mut self) -> $struct_name<K, V, marker::Unlocked, N> {
+            pub fn assume_unlocked(mut self) -> $struct_name<K, V, M, marker::Unlocked, N> {
                 self.lock_info = LockInfo::unlocked();
                 unsafe { self.cast::<marker::Unlocked, N>() }
             }
             #[allow(unused)]
-            pub fn assert_shared(mut self) -> $struct_name<K, V, marker::LockedShared, N> {
+            pub fn assert_shared(mut self) -> $struct_name<K, V, M, marker::LockedShared, N> {
                 debug_assert!(self.header().is_locked_shared());
                 self.lock_info = LockInfo::shared();
                 unsafe { self.cast::<marker::LockedShared, N>() }
@@ -103,8 +123,13 @@ macro_rules! impl_node_ref_traits {
         }
 
         // this is the impl for all NodePtrs
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
-            $struct_name<K, V, L, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                L: LockState,
+                N: NodeType,
+            > $struct_name<K, V, M, L, N>
         {
             pub fn header(&self) -> &NodeHeader {
                 self.node.deref()
@@ -149,21 +174,25 @@ macro_rules! impl_node_ref_traits {
         }
 
         // Unknown type, any lock state
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
-            $struct_name<K, V, L, marker::Unknown>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                L: LockState,
+            > $struct_name<K, V, M, L, marker::Unknown>
         {
-            pub fn assert_leaf(self) -> $struct_name<K, V, L, marker::Leaf> {
+            pub fn assert_leaf(self) -> $struct_name<K, V, M, L, marker::Leaf> {
                 debug_assert!(self.is_leaf());
                 unsafe { self.cast::<L, marker::Leaf>() }
             }
 
-            pub fn assert_internal(self) -> $struct_name<K, V, L, marker::Internal> {
+            pub fn assert_internal(self) -> $struct_name<K, V, M, L, marker::Internal> {
                 debug_assert!(self.is_internal());
                 unsafe { self.cast::<L, marker::Internal>() }
             }
 
             #[allow(unused)]
-            pub fn assert_root(self) -> $struct_name<K, V, L, marker::Root> {
+            pub fn assert_root(self) -> $struct_name<K, V, M, L, marker::Root> {
                 debug_assert!(self.is_root());
                 unsafe { self.cast::<L, marker::Root>() }
             }
@@ -171,10 +200,14 @@ macro_rules! impl_node_ref_traits {
 
         // Any node, unlocked
 
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType>
-            $struct_name<K, V, marker::Unlocked, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                N: NodeType,
+            > $struct_name<K, V, M, marker::Unlocked, N>
         {
-            pub fn lock_exclusive(self) -> $struct_name<K, V, marker::LockedExclusive, N> {
+            pub fn lock_exclusive(self) -> $struct_name<K, V, M, marker::LockedExclusive, N> {
                 debug_println!("locking {:?} {:?} exclusive", self, self.header().height());
                 self.header().lock_exclusive();
                 debug_println!("locked {:?} {:?} exclusive", self, self.header().height());
@@ -188,7 +221,7 @@ macro_rules! impl_node_ref_traits {
             #[allow(unused)]
             pub fn lock_exclusive_with_backoff(
                 self,
-            ) -> $struct_name<K, V, marker::LockedExclusive, N> {
+            ) -> $struct_name<K, V, M, marker::LockedExclusive, N> {
                 debug_println!(
                     "locking {:?} {:?} exclusive backoff",
                     self,
@@ -210,7 +243,7 @@ macro_rules! impl_node_ref_traits {
             #[allow(unused)]
             pub fn lock_exclusive_if_not_retired(
                 self,
-            ) -> Result<$struct_name<K, V, marker::LockedExclusive, N>, LockError> {
+            ) -> Result<$struct_name<K, V, M, marker::LockedExclusive, N>, LockError> {
                 self.header().lock_exclusive_if_not_retired()?;
                 Ok($struct_name {
                     node: ManuallyDrop::new(self.into_ptr()),
@@ -222,7 +255,7 @@ macro_rules! impl_node_ref_traits {
             #[allow(unused)]
             pub fn lock_exclusive_if_not_retired_with_backoff(
                 self,
-            ) -> Result<$struct_name<K, V, marker::LockedExclusive, N>, LockError> {
+            ) -> Result<$struct_name<K, V, M, marker::LockedExclusive, N>, LockError> {
                 self.header().lock_exclusive_if_not_retired_with_backoff()?;
                 Ok($struct_name {
                     node: ManuallyDrop::new(self.into_ptr()),
@@ -232,7 +265,9 @@ macro_rules! impl_node_ref_traits {
             }
 
             #[allow(unused)]
-            pub fn lock_optimistic(self) -> Result<$struct_name<K, V, marker::Optimistic, N>, ()> {
+            pub fn lock_optimistic(
+                self,
+            ) -> Result<$struct_name<K, V, M, marker::Optimistic, N>, ()> {
                 debug_println!("locking {:?} {:?} optimistic", self, self.header().height());
                 let lock_info = self.header().lock_optimistic()?;
                 debug_println!("locked {:?} {:?} optimistic", self, self.header().height());
@@ -244,7 +279,7 @@ macro_rules! impl_node_ref_traits {
             }
 
             #[allow(unused)]
-            pub fn lock_shared(self) -> $struct_name<K, V, marker::LockedShared, N> {
+            pub fn lock_shared(self) -> $struct_name<K, V, M, marker::LockedShared, N> {
                 debug_println!("locking {:?} {:?} shared", self, self.header().height());
                 self.header().lock_shared();
                 debug_println!("locked {:?} {:?} shared", self, self.header().height());
@@ -258,7 +293,7 @@ macro_rules! impl_node_ref_traits {
             #[allow(unused)]
             pub fn lock_shared_if_not_retired(
                 self,
-            ) -> Result<$struct_name<K, V, marker::LockedShared, N>, LockError> {
+            ) -> Result<$struct_name<K, V, M, marker::LockedShared, N>, LockError> {
                 self.header().lock_shared_if_not_retired()?;
                 Ok($struct_name {
                     node: ManuallyDrop::new(self.into_ptr()),
@@ -271,8 +306,8 @@ macro_rules! impl_node_ref_traits {
             pub fn try_lock_shared(
                 mut self,
             ) -> Result<
-                $struct_name<K, V, marker::LockedShared, N>,
-                $struct_name<K, V, marker::Unlocked, N>,
+                $struct_name<K, V, M, marker::LockedShared, N>,
+                $struct_name<K, V, M, marker::Unlocked, N>,
             > {
                 match self.header().try_lock_shared() {
                     Ok(_) => {
@@ -287,8 +322,8 @@ macro_rules! impl_node_ref_traits {
             pub fn try_lock_exclusive(
                 mut self,
             ) -> Result<
-                $struct_name<K, V, marker::LockedExclusive, N>,
-                $struct_name<K, V, marker::Unlocked, N>,
+                $struct_name<K, V, M, marker::LockedExclusive, N>,
+                $struct_name<K, V, M, marker::Unlocked, N>,
             > {
                 match self.header().try_lock_exclusive() {
                     Ok(_) => {
@@ -301,11 +336,15 @@ macro_rules! impl_node_ref_traits {
         }
 
         // Any node, exclusive
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType>
-            $struct_name<K, V, marker::LockedExclusive, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                N: NodeType,
+            > $struct_name<K, V, M, marker::LockedExclusive, N>
         {
             #[allow(unused)]
-            pub fn unlock_exclusive(mut self) -> $struct_name<K, V, marker::Unlocked, N> {
+            pub fn unlock_exclusive(mut self) -> $struct_name<K, V, M, marker::Unlocked, N> {
                 debug_println!(
                     "unlocking {:?} {:?} exclusive",
                     self,
@@ -323,11 +362,15 @@ macro_rules! impl_node_ref_traits {
         }
 
         // Any node, shared
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType>
-            $struct_name<K, V, marker::LockedShared, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                N: NodeType,
+            > $struct_name<K, V, M, marker::LockedShared, N>
         {
             #[allow(unused)]
-            pub fn unlock_shared(mut self) -> $struct_name<K, V, marker::Unlocked, N> {
+            pub fn unlock_shared(mut self) -> $struct_name<K, V, M, marker::Unlocked, N> {
                 debug_println!("unlocking {:?} {:?} shared", self, self.header().height());
                 self.header().unlock_shared();
                 debug_println!("unlocked {:?} {:?} shared", self, self.header().height());
@@ -337,13 +380,17 @@ macro_rules! impl_node_ref_traits {
         }
 
         // Any node, optimistic
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType>
-            $struct_name<K, V, marker::Optimistic, N>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                N: NodeType,
+            > $struct_name<K, V, M, marker::Optimistic, N>
         {
             #[allow(unused)]
             pub fn unlock_optimistic(
                 mut self,
-            ) -> Result<$struct_name<K, V, marker::Unlocked, N>, ()> {
+            ) -> Result<$struct_name<K, V, M, marker::Unlocked, N>, ()> {
                 self.header().validate_optimistic(self.lock_info).map(|_| {
                     self.lock_info = LockInfo::unlocked();
                     unsafe { self.cast::<marker::Unlocked, N>() }
@@ -355,12 +402,20 @@ macro_rules! impl_node_ref_traits {
                 self.header().validate_optimistic(self.lock_info)
             }
         }
-        unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType> Send
-            for $struct_name<K, V, marker::LockedExclusive, N>
+        unsafe impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                N: NodeType,
+            > Send for $struct_name<K, V, M, marker::LockedExclusive, N>
         {
         }
-        unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, N: NodeType> Sync
-            for $struct_name<K, V, marker::LockedExclusive, N>
+        unsafe impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                N: NodeType,
+            > Sync for $struct_name<K, V, M, marker::LockedExclusive, N>
         {
         }
     };
@@ -388,19 +443,36 @@ pub mod marker {
     impl LockState for Unknown {}
 }
 
-pub struct OwnedNodeRef<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> {
+pub struct OwnedNodeRef<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    L: LockState,
+    N: NodeType,
+> {
     node: ManuallyDrop<QsOwned<NodeHeader>>,
     lock_info: LockInfo,
-    phantom: PhantomData<(*const K, *const V, L, N)>,
+    phantom: PhantomData<(*const K, *const V, M, L, N)>,
 }
-pub struct SharedNodeRef<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> {
+pub struct SharedNodeRef<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    L: LockState,
+    N: NodeType,
+> {
     node: ManuallyDrop<QsShared<NodeHeader>>,
     lock_info: LockInfo,
-    phantom: PhantomData<(*const K, *const V, L, N)>,
+    phantom: PhantomData<(*const K, *const V, M, L, N)>,
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
-    OwnedNodeRef<K, V, L, N>
+impl<
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+        M: Send + Sync + 'static,
+        L: LockState,
+        N: NodeType,
+    > OwnedNodeRef<K, V, M, L, N>
 {
     pub fn into_ptr(mut self) -> QsOwned<NodeHeader> {
         let ptr = unsafe { ManuallyDrop::take(&mut self.node) };
@@ -409,8 +481,13 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
-    SharedNodeRef<K, V, L, N>
+impl<
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+        M: Send + Sync + 'static,
+        L: LockState,
+        N: NodeType,
+    > SharedNodeRef<K, V, M, L, N>
 {
     pub fn into_ptr(mut self) -> QsShared<NodeHeader> {
         unsafe { ManuallyDrop::take(&mut self.node) }
@@ -422,10 +499,10 @@ impl_node_ref_traits!(SharedNodeRef, SharedDiscriminatedNode, QsShared);
 
 macro_rules! impl_deref_for_node_ref {
     ($node_type:ident, $inner_type:ident, $to_shared_fn:ident, $node_ref_type:ident, $lock_state:path) => {
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Deref
-            for $node_ref_type<K, V, $lock_state, marker::$node_type>
+        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Deref
+            for $node_ref_type<K, V, M, $lock_state, marker::$node_type>
         {
-            type Target = $inner_type<K, V>;
+            type Target = $inner_type<K, V, M>;
 
             fn deref(&self) -> &Self::Target {
                 let raw_ptr = self.$to_shared_fn();
@@ -437,8 +514,8 @@ macro_rules! impl_deref_for_node_ref {
 
 macro_rules! impl_deref_mut_for_node_ref {
     ($node_type:ident, $inner_type:ident, $to_shared_fn:ident, $node_ref_type:ident) => {
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> DerefMut
-            for $node_ref_type<K, V, marker::LockedExclusive, marker::$node_type>
+        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> DerefMut
+            for $node_ref_type<K, V, M, marker::LockedExclusive, marker::$node_type>
         {
             fn deref_mut(&mut self) -> &mut Self::Target {
                 let raw_ptr = self.$to_shared_fn();
@@ -507,23 +584,33 @@ impl_all_derefs_for_node_ref!(
     SharedNodeRef
 );
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Clone
-    for SharedNodeRef<K, V, L, N>
+impl<
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+        M: Send + Sync + 'static,
+        L: LockState,
+        N: NodeType,
+    > Clone for SharedNodeRef<K, V, M, L, N>
 {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Copy
-    for SharedNodeRef<K, V, L, N>
+impl<
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+        M: Send + Sync + 'static,
+        L: LockState,
+        N: NodeType,
+    > Copy for SharedNodeRef<K, V, M, L, N>
 {
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
-    SharedNodeRef<K, V, L, marker::Unknown>
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static, L: LockState>
+    SharedNodeRef<K, V, M, L, marker::Unknown>
 {
-    pub fn force(self) -> SharedDiscriminatedNode<K, V, L> {
+    pub fn force(self) -> SharedDiscriminatedNode<K, V, M, L> {
         debug_assert!(self.is_leaf() || self.is_internal() || self.is_root());
         let height = self.header().height();
         match height {
@@ -534,10 +621,15 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
-    OwnedNodeRef<K, V, L, N>
+impl<
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+        M: Send + Sync + 'static,
+        L: LockState,
+        N: NodeType,
+    > OwnedNodeRef<K, V, M, L, N>
 {
-    pub fn share(&self) -> SharedNodeRef<K, V, L, N> {
+    pub fn share(&self) -> SharedNodeRef<K, V, M, L, N> {
         SharedNodeRef {
             node: ManuallyDrop::new(self.node.share()),
             lock_info: self.lock_info,
@@ -549,17 +641,17 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
         match self.node_type() {
             DescriminatedNode::Leaf => unsafe {
                 QsOwned::drop_immediately(
-                    ManuallyDrop::take(&mut self.node).cast::<LeafNode<K, V>>(),
+                    ManuallyDrop::take(&mut self.node).cast::<LeafNode<K, V, M>>(),
                 );
             },
             DescriminatedNode::Root => unsafe {
                 QsOwned::drop_immediately(
-                    ManuallyDrop::take(&mut self.node).cast::<RootNode<K, V>>(),
+                    ManuallyDrop::take(&mut self.node).cast::<RootNode<K, V, M>>(),
                 );
             },
             DescriminatedNode::Internal => unsafe {
                 QsOwned::drop_immediately(
-                    ManuallyDrop::take(&mut self.node).cast::<InternalNode<K, V>>(),
+                    ManuallyDrop::take(&mut self.node).cast::<InternalNode<K, V, M>>(),
                 );
             },
         }
@@ -567,20 +659,25 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType>
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Drop
-    for OwnedNodeRef<K, V, L, N>
+impl<
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+        M: Send + Sync + 'static,
+        L: LockState,
+        N: NodeType,
+    > Drop for OwnedNodeRef<K, V, M, L, N>
 {
     fn drop(&mut self) {
         // these are QsOwned, so they'll drop using QSBR
         match self.node_type() {
             DescriminatedNode::Leaf => unsafe {
-                drop(ManuallyDrop::take(&mut self.node).cast::<LeafNode<K, V>>())
+                drop(ManuallyDrop::take(&mut self.node).cast::<LeafNode<K, V, M>>())
             },
             DescriminatedNode::Root => unsafe {
-                drop(ManuallyDrop::take(&mut self.node).cast::<RootNode<K, V>>())
+                drop(ManuallyDrop::take(&mut self.node).cast::<RootNode<K, V, M>>())
             },
             DescriminatedNode::Internal => unsafe {
-                drop(ManuallyDrop::take(&mut self.node).cast::<InternalNode<K, V>>())
+                drop(ManuallyDrop::take(&mut self.node).cast::<InternalNode<K, V, M>>())
             },
         }
     }
@@ -589,28 +686,37 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState, N: NodeType> Dr
 // Get back raw node pointers
 macro_rules! impl_node_ptr_conversions {
     ($node_type:ident, $node_marker:path, $shared_fn_name:ident, $into_fn_name:ident) => {
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
-            OwnedNodeRef<K, V, L, $node_marker>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                L: LockState,
+            > OwnedNodeRef<K, V, M, L, $node_marker>
         {
-            pub fn $shared_fn_name(&self) -> QsShared<$node_type<K, V>> {
+            pub fn $shared_fn_name(&self) -> QsShared<$node_type<K, V, M>> {
                 let shared = self.node.share();
-                unsafe { shared.cast::<$node_type<K, V>>() }
+                unsafe { shared.cast::<$node_type<K, V, M>>() }
             }
 
             #[allow(unused)]
-            pub fn $into_fn_name(mut self) -> QsOwned<$node_type<K, V>> {
-                let ptr = unsafe { ManuallyDrop::take(&mut self.node).cast::<$node_type<K, V>>() };
+            pub fn $into_fn_name(mut self) -> QsOwned<$node_type<K, V, M>> {
+                let ptr =
+                    unsafe { ManuallyDrop::take(&mut self.node).cast::<$node_type<K, V, M>>() };
                 mem::forget(self);
                 ptr
             }
         }
 
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, L: LockState>
-            SharedNodeRef<K, V, L, $node_marker>
+        impl<
+                K: BTreeKey + ?Sized,
+                V: BTreeValue + ?Sized,
+                M: Send + Sync + 'static,
+                L: LockState,
+            > SharedNodeRef<K, V, M, L, $node_marker>
         {
-            pub fn $shared_fn_name(&self) -> QsShared<$node_type<K, V>> {
+            pub fn $shared_fn_name(&self) -> QsShared<$node_type<K, V, M>> {
                 let shared = self.node.share();
-                unsafe { shared.cast::<$node_type<K, V>>() }
+                unsafe { shared.cast::<$node_type<K, V, M>>() }
             }
         }
     };
@@ -629,8 +735,8 @@ impl_node_ptr_conversions!(
 
 macro_rules! impl_from_unknown_node_ptr {
     ($struct_name:ident, $method_name:ident, $node_marker:path, $input_type:ty) => {
-        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>
-            $struct_name<K, V, marker::Unknown, $node_marker>
+        impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static>
+            $struct_name<K, V, M, marker::Unknown, $node_marker>
         {
             pub fn $method_name(node: $input_type) -> Self {
                 $struct_name {
@@ -661,30 +767,30 @@ impl_from_unknown_node_ptr!(
     OwnedNodeRef,
     from_internal_ptr,
     marker::Internal,
-    QsOwned<InternalNode<K, V>>
+    QsOwned<InternalNode<K, V, M>>
 );
 impl_from_unknown_node_ptr!(
     OwnedNodeRef,
     from_leaf_ptr,
     marker::Leaf,
-    QsOwned<LeafNode<K, V>>
+    QsOwned<LeafNode<K, V, M>>
 );
 
 impl_from_unknown_node_ptr!(
     SharedNodeRef,
     from_internal_ptr,
     marker::Internal,
-    QsShared<InternalNode<K, V>>
+    QsShared<InternalNode<K, V, M>>
 );
 impl_from_unknown_node_ptr!(
     SharedNodeRef,
     from_leaf_ptr,
     marker::Leaf,
-    QsShared<LeafNode<K, V>>
+    QsShared<LeafNode<K, V, M>>
 );
 impl_from_unknown_node_ptr!(
     SharedNodeRef,
     from_root_ptr,
     marker::Root,
-    QsShared<RootNode<K, V>>
+    QsShared<RootNode<K, V, M>>
 );

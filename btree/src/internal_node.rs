@@ -17,37 +17,48 @@ use std::ops::Deref;
 use thin::{QsArc, QsOwned, QsShared, QsWeak};
 
 // this is the shared node data
-pub struct InternalNodeInner<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+pub struct InternalNodeInner<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static = (),
+> {
     pub storage: InternalNodeStorage<MAX_KEYS_PER_NODE, MAX_CHILDREN_PER_NODE, K, V>,
     pub phantom: PhantomData<V>,
+    _m: PhantomData<fn() -> M>,
 }
 
 #[repr(C)]
-pub struct InternalNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+pub struct InternalNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static = ()>
+{
     pub header: NodeHeader,
-    pub inner: UnsafeCell<InternalNodeInner<K, V>>,
+    pub inner: UnsafeCell<InternalNodeInner<K, V, M>>,
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for InternalNode<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Drop
+    for InternalNode<K, V, M>
+{
     fn drop(&mut self) {
         assert!(matches!(self.header.height(), Height::Internal(_)));
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNode<K, V> {
-    pub fn new(height: Height) -> InternalNode<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> InternalNode<K, V, M> {
+    pub fn new(height: Height) -> InternalNode<K, V, M> {
         InternalNode {
             header: NodeHeader::new(height),
             inner: UnsafeCell::new(InternalNodeInner {
                 storage: InternalNodeStorage::<MAX_KEYS_PER_NODE, MAX_CHILDREN_PER_NODE, K, V>::new(
                 ),
                 phantom: PhantomData,
+                _m: PhantomData,
             }),
         }
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static>
+    InternalNodeInner<K, V, M>
+{
     pub fn num_keys(&self) -> usize {
         self.storage.num_keys()
     }
@@ -149,7 +160,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     pub fn print_node(&self) {
         for child in self.storage.iter_children() {
             let child_ref =
-                SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                SharedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                     child,
                 )
                 .assume_unlocked();
@@ -186,15 +197,15 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
 
     pub(crate) fn get_neighboring_internal_node<L: LockState>(
         &self,
-        child: SharedNodeRef<K, V, L, marker::Internal>,
+        child: SharedNodeRef<K, V, M, L, marker::Internal>,
     ) -> (
-        SharedNodeRef<K, V, marker::Unlocked, marker::Internal>,
+        SharedNodeRef<K, V, M, marker::Unlocked, marker::Internal>,
         UnderfullNodePosition,
     ) {
         debug_assert!(child.is_internal());
         let (neighbor, direction) = self.get_neighbor(child.into_ptr());
         let neighbor_ref =
-            SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+            SharedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                 neighbor,
             );
         debug_println!(
@@ -208,14 +219,14 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
 
     pub(crate) fn get_neighbor_of_underfull_leaf<L: LockState>(
         &self,
-        child: SharedNodeRef<K, V, L, marker::Leaf>,
+        child: SharedNodeRef<K, V, M, L, marker::Leaf>,
     ) -> (
-        SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>,
+        SharedNodeRef<K, V, M, marker::Unlocked, marker::Leaf>,
         UnderfullNodePosition,
     ) {
         let (neighbor, direction) = self.get_neighbor(child.into_ptr());
         let neighbor_ref =
-            SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+            SharedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                 neighbor,
             );
         (neighbor_ref.assert_leaf().assume_unlocked(), direction)
@@ -243,15 +254,15 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     }
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
-        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-        from: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-        to: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+        mut parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+        from: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+        to: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
     ) {
         debug_println!("InternalNode move_from_right_neighbor_into_left_node");
 
         let (key, from_owned) = parent.remove_child(from.into_ptr());
         let from_owned =
-            OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+            OwnedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                 from_owned,
             )
             .assert_internal()
@@ -264,9 +275,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     }
 
     pub fn move_last_to_front_of(
-        left: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-        right: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+        left: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+        right: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+        mut parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
     ) {
         debug_println!("InternalNode move_last_to_front_of");
         let (last_key, last_child) = left.storage.pop();
@@ -312,9 +323,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
     }
 
     pub fn move_first_to_end_of(
-        right: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-        left: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+        right: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+        left: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+        mut parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
     ) {
         debug_println!(
             "InternalNode move_first_to_end_of from first of right: {:?} to left:{:?} to parent:{:?}",
@@ -338,7 +349,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> InternalNodeInner<K, V> {
         // Check invariants for each child
         for (child_index, child) in self.storage.iter_children().enumerate() {
             let child_ref =
-                SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                SharedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                     child,
                 )
                 .assume_unlocked();

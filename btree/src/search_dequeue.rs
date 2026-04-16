@@ -8,13 +8,20 @@ use crate::{
 use std::mem::MaybeUninit;
 
 const MAX_STACK_SIZE: usize = 16;
-pub struct SearchDequeue<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    stack: [MaybeUninit<SharedNodeRef<K, V, marker::Unknown, marker::Unknown>>; MAX_STACK_SIZE],
+type ErasedNodeRef<K, V, M> = SharedNodeRef<K, V, M, marker::Unknown, marker::Unknown>;
+pub struct SearchDequeue<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static = (),
+> {
+    stack: [MaybeUninit<ErasedNodeRef<K, V, M>>; MAX_STACK_SIZE],
     index_of_highest_node: usize,
     index_after_lowest_node: usize,
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> SearchDequeue<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static>
+    SearchDequeue<K, V, M>
+{
     pub fn new() -> Self {
         SearchDequeue {
             stack: [const { MaybeUninit::uninit() }; MAX_STACK_SIZE],
@@ -23,7 +30,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> SearchDequeue<K, V> {
         }
     }
 
-    pub fn pop_highest(&mut self) -> SharedNodeRef<K, V, marker::Unknown, marker::Unknown> {
+    pub fn pop_highest(&mut self) -> SharedNodeRef<K, V, M, marker::Unknown, marker::Unknown> {
         debug_assert!(self.index_of_highest_node < self.index_after_lowest_node);
 
         unsafe {
@@ -35,8 +42,8 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> SearchDequeue<K, V> {
 
     pub fn pop_highest_until<'a, L: LockState + 'a, N: NodeType + 'a>(
         &'a mut self,
-        node_ref: SharedNodeRef<K, V, L, N>,
-    ) -> impl Iterator<Item = SharedNodeRef<K, V, marker::Unknown, marker::Unknown>> + 'a {
+        node_ref: SharedNodeRef<K, V, M, L, N>,
+    ) -> impl Iterator<Item = SharedNodeRef<K, V, M, marker::Unknown, marker::Unknown>> + 'a {
         std::iter::from_fn(move || {
             if self.peek_highest() != node_ref {
                 Some(self.pop_highest())
@@ -48,7 +55,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> SearchDequeue<K, V> {
 
     pub fn drain<'a>(
         &'a mut self,
-    ) -> impl Iterator<Item = SharedNodeRef<K, V, marker::Unknown, marker::Unknown>> + 'a {
+    ) -> impl Iterator<Item = SharedNodeRef<K, V, M, marker::Unknown, marker::Unknown>> + 'a {
         std::iter::from_fn(move || {
             if !self.is_empty() {
                 Some(self.pop_highest())
@@ -58,21 +65,21 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> SearchDequeue<K, V> {
         })
     }
 
-    pub fn peek_highest(&self) -> SharedNodeRef<K, V, marker::Unknown, marker::Unknown> {
+    pub fn peek_highest(&self) -> SharedNodeRef<K, V, M, marker::Unknown, marker::Unknown> {
         debug_assert!(self.index_of_highest_node < self.index_after_lowest_node);
         unsafe { self.stack[self.index_of_highest_node].assume_init() }
     }
 
     pub fn push_node_on_bottom<L: LockState, N: NodeType>(
         &mut self,
-        value: SharedNodeRef<K, V, L, N>,
+        value: SharedNodeRef<K, V, M, L, N>,
     ) {
         debug_assert!(self.index_after_lowest_node < MAX_STACK_SIZE);
         self.stack[self.index_after_lowest_node].write(value.erase());
         self.index_after_lowest_node += 1;
     }
 
-    pub fn pop_lowest(&mut self) -> SharedNodeRef<K, V, marker::Unknown, marker::Unknown> {
+    pub fn pop_lowest(&mut self) -> SharedNodeRef<K, V, M, marker::Unknown, marker::Unknown> {
         debug_assert!(self.index_after_lowest_node > 0);
         debug_assert!(self.index_after_lowest_node > self.index_of_highest_node);
         unsafe {
@@ -81,7 +88,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> SearchDequeue<K, V> {
         }
     }
 
-    pub fn peek_lowest(&self) -> SharedNodeRef<K, V, marker::Unknown, marker::Unknown> {
+    pub fn peek_lowest(&self) -> SharedNodeRef<K, V, M, marker::Unknown, marker::Unknown> {
         unsafe { self.stack[self.index_after_lowest_node - 1].assume_init() }
     }
 
@@ -108,7 +115,7 @@ mod tests {
 
     fn create_dummy_leaf_node_ptr<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     ) -> QsOwned<LeafNode<K, V>> {
-        QsOwned::new(LeafNode::<K, V>::new())
+        QsOwned::new(LeafNode::<K, V>::new(()))
     }
 
     #[test]

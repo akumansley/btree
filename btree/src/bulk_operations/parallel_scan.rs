@@ -1,4 +1,5 @@
 use crate::{
+    leaf_metadata::LeafMetadata,
     node::Height,
     pointers::{
         marker::{Internal, LockedShared, Root, Unknown, Unlocked},
@@ -13,11 +14,11 @@ use thin::{QsShared, QsWeak};
 // maybe avoid allocating into a vec
 // test the subranges to see if they're any good
 
-pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata>(
     start_key: Option<QsWeak<K>>,
     end_key: Option<QsWeak<K>>,
     predicate: impl Fn(&V) -> bool + Sync,
-    tree: &BTree<K, V>,
+    tree: &BTree<K, V, LM>,
 ) -> Vec<QsShared<V>> {
     let root = tree.root.as_node_ref();
     let (lca, start_child_index, end_child_index) =
@@ -35,7 +36,7 @@ pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
         result
     } else {
         let internal = lca.assert_internal();
-        let separator_keys = try_to_find_n_subranges::<8, K, V>(
+        let separator_keys = try_to_find_n_subranges::<8, K, V, LM::M>(
             start_key,
             end_key,
             internal,
@@ -90,10 +91,15 @@ pub fn scan_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 }
 
 // returns N+1 keys, which can be used to split the range [start_key, end_key) into N subranges
-fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+fn try_to_find_n_subranges<
+    const N: usize,
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
     start_key: Option<QsWeak<K>>,
     end_key: Option<QsWeak<K>>,
-    lca: SharedNodeRef<K, V, LockedShared, Internal>,
+    lca: SharedNodeRef<K, V, M, LockedShared, Internal>,
     mut start_child_index: usize,
     mut end_child_index: usize,
 ) -> Vec<Option<QsWeak<K>>> {
@@ -147,7 +153,7 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
                 node.storage.num_children()
             };
             for i in start_index..end_index + 1 {
-                let child: SharedNodeRef<K, V, Unlocked, Unknown> =
+                let child: SharedNodeRef<K, V, M, Unlocked, Unknown> =
                     SharedNodeRef::from_unknown_node_ptr(node.storage.get_child(i))
                         .assume_unlocked();
                 new_nodes_under_consideration.push(child.assert_internal().lock_shared());
@@ -200,12 +206,16 @@ fn try_to_find_n_subranges<const N: usize, K: BTreeKey + ?Sized, V: BTreeValue +
     selected_split_keys
 }
 
-fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+fn find_least_common_ancestor<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
     start_key: Option<QsWeak<K>>,
     end_key: Option<QsWeak<K>>,
-    root: SharedNodeRef<K, V, LockedShared, Root>,
-) -> (SharedNodeRef<K, V, LockedShared, Unknown>, usize, usize) {
-    let top_of_tree: SharedNodeRef<K, V, LockedShared, Unknown> =
+    root: SharedNodeRef<K, V, M, LockedShared, Root>,
+) -> (SharedNodeRef<K, V, M, LockedShared, Unknown>, usize, usize) {
+    let top_of_tree: SharedNodeRef<K, V, M, LockedShared, Unknown> =
         SharedNodeRef::from_unknown_node_ptr(root.top_of_tree())
             .assume_unlocked()
             .lock_shared();
@@ -238,8 +248,8 @@ fn find_least_common_ancestor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
 }
 
 #[cfg(test)]
-fn leaves_between<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    tree: &BTree<K, V>,
+fn leaves_between<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata>(
+    tree: &BTree<K, V, LM>,
     start_key: Option<QsWeak<K>>,
     end_key: Option<QsWeak<K>>,
 ) -> Vec<*mut ()> {
@@ -389,7 +399,7 @@ mod test {
 
             let lca_internal = lca_locked_unknown.assert_internal();
 
-            let result = try_to_find_n_subranges::<N, usize, usize>(
+            let result = try_to_find_n_subranges::<N, usize, usize, ()>(
                 Some(start_key.share()),
                 Some(end_key.share()),
                 lca_internal,
@@ -421,7 +431,7 @@ mod test {
 
             let lca_internal = lca_locked_unknown.assert_internal();
 
-            let result = try_to_find_n_subranges::<N, usize, usize>(
+            let result = try_to_find_n_subranges::<N, usize, usize, ()>(
                 Some(start_key.share()),
                 Some(end_key.share()),
                 lca_internal,
@@ -448,11 +458,11 @@ mod test {
 
         let locked_root = tree.root.as_node_ref().lock_shared();
         let (lca_locked_unknown, start_idx, end_idx) =
-            find_least_common_ancestor::<usize, usize>(None, None, locked_root);
+            find_least_common_ancestor::<usize, usize, ()>(None, None, locked_root);
 
         let lca_internal = lca_locked_unknown.assert_internal();
 
-        let separators = try_to_find_n_subranges::<N, usize, usize>(
+        let separators = try_to_find_n_subranges::<N, usize, usize, ()>(
             None,
             None,
             lca_internal,

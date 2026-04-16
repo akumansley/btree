@@ -1,6 +1,7 @@
 use std::borrow::Borrow;
 use std::ops::Deref;
 
+use crate::leaf_metadata::{LeafMetadata, NoMetadata};
 use crate::pointers::node_ref::{marker, SharedNodeRef};
 use crate::reference::Entry;
 use crate::search::get_leaf_exclusively_using_optimistic_search_with_fallback;
@@ -20,15 +21,18 @@ use crate::tree::{
 use crate::util::UnwrapEither;
 use thin::{QsArc, QsOwned, QsShared, QsWeak};
 
-pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    pub tree: &'a BTree<K, V>,
-    pub current_leaf: Option<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>>,
+pub struct Cursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata = NoMetadata> {
+    pub tree: &'a BTree<K, V, LM>,
+    pub current_leaf: Option<SharedNodeRef<K, V, LM::M, marker::LockedShared, marker::Leaf>>,
     pub current_index: usize,
     pub current_leaf_num_keys: Option<u16>,
 }
 
-impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
-    fn set_current_leaf(&mut self, leaf: SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>) {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> Cursor<'a, K, V, LM> {
+    fn set_current_leaf(
+        &mut self,
+        leaf: SharedNodeRef<K, V, LM::M, marker::LockedShared, marker::Leaf>,
+    ) {
         self.current_leaf = Some(leaf);
         self.current_leaf_num_keys = Some(leaf.num_keys_relaxed().try_into().unwrap());
     }
@@ -40,6 +44,10 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
 
     fn current_leaf_num_keys(&self) -> usize {
         self.current_leaf_num_keys.unwrap() as usize
+    }
+
+    pub fn leaf_metadata(&self) -> Option<&LM::M> {
+        self.current_leaf.as_ref().map(|leaf| &leaf.metadata)
     }
 
     pub fn seek_to_start(&mut self) {
@@ -227,7 +235,9 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Cursor<'a, K, V> {
     }
 }
 
-impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for Cursor<'a, K, V> {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> Drop
+    for Cursor<'a, K, V, LM>
+{
     fn drop(&mut self) {
         if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_shared();
@@ -235,14 +245,19 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for Cursor<'a, K, V>
     }
 }
 
-pub struct CursorMut<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    tree: &'a BTree<K, V>,
-    current_leaf: Option<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>>,
+pub struct CursorMut<
+    'a,
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata = NoMetadata,
+> {
+    tree: &'a BTree<K, V, LM>,
+    current_leaf: Option<SharedNodeRef<K, V, LM::M, marker::LockedExclusive, marker::Leaf>>,
     current_index: usize,
 }
 
-impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
-    pub(crate) fn new(tree: &'a BTree<K, V>) -> Self {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> CursorMut<'a, K, V, LM> {
+    pub(crate) fn new(tree: &'a BTree<K, V, LM>) -> Self {
         Self {
             tree,
             current_leaf: None,
@@ -250,14 +265,14 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         }
     }
     pub(crate) fn new_from_location(
-        tree: &'a BTree<K, V>,
-        entry_location: EntryLocation<K, V>,
+        tree: &'a BTree<K, V, LM>,
+        entry_location: EntryLocation<K, V, LM::M>,
     ) -> Self {
         Self::new_from_leaf_and_index(tree, entry_location.leaf, entry_location.index)
     }
     pub(crate) fn new_from_leaf_and_index(
-        tree: &'a BTree<K, V>,
-        leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        tree: &'a BTree<K, V, LM>,
+        leaf: SharedNodeRef<K, V, LM::M, marker::LockedExclusive, marker::Leaf>,
         index: usize,
     ) -> Self {
         CursorMut {
@@ -266,6 +281,11 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
             current_index: index,
         }
     }
+
+    pub fn leaf_metadata(&self) -> Option<&LM::M> {
+        self.current_leaf.as_ref().map(|leaf| &leaf.metadata)
+    }
+
     pub fn seek_to_start(&mut self) {
         if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_exclusive();
@@ -334,7 +354,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         &mut self,
         key: QsArc<K>,
         new_value: QsOwned<V>,
-        predicate: impl Fn(QsShared<V>) -> ModifyDecision<E>,
+        predicate: impl Fn(QsShared<V>, &LM::M) -> ModifyDecision<E>,
         modify_fn: F,
     ) -> InsertOrModifyIfResult<T, E>
     where
@@ -357,7 +377,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
         let leaf = self.current_leaf.as_mut().unwrap();
         if let Ok(index) = search_result {
             let existing_value = leaf.storage.get_value(index);
-            match predicate(existing_value) {
+            match predicate(existing_value, &leaf.metadata) {
                 ModifyDecision::Modify => {
                     match leaf.modify_value(index, |old_value| modify_fn(old_value, new_value)) {
                         Ok(t) => InsertOrModifyIfResult::Modified(t),
@@ -397,7 +417,10 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
                 GetOrInsertResult::GotReturningExistingAndProposed(
                     existing_value,
                     proposed_value,
-                ) => match predicate(existing_value) {
+                ) => match predicate(
+                    existing_value,
+                    &self.current_leaf.as_ref().unwrap().metadata,
+                ) {
                     ModifyDecision::Modify => {
                         match self
                             .current_leaf
@@ -541,7 +564,9 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> CursorMut<'a, K, V> {
     }
 }
 
-impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for CursorMut<'a, K, V> {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> Drop
+    for CursorMut<'a, K, V, LM>
+{
     fn drop(&mut self) {
         if let Some(leaf) = self.current_leaf.take() {
             leaf.unlock_exclusive();
@@ -549,16 +574,23 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for CursorMut<'a, K,
     }
 }
 
-pub struct NonLockingCursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    pub tree: &'a BTree<K, V>,
-    unlocked_leaf: Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>>,
+pub struct NonLockingCursor<
+    'a,
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata = NoMetadata,
+> {
+    pub tree: &'a BTree<K, V, LM>,
+    unlocked_leaf: Option<SharedNodeRef<K, V, LM::M, marker::Unlocked, marker::Leaf>>,
     current_index: usize,
     remembered_key: Option<QsWeak<K>>,
     remembered_version: u64,
 }
 
-impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V> {
-    pub(crate) fn new(tree: &'a BTree<K, V>) -> Self {
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata>
+    NonLockingCursor<'a, K, V, LM>
+{
+    pub(crate) fn new(tree: &'a BTree<K, V, LM>) -> Self {
         Self {
             tree,
             unlocked_leaf: None,
@@ -577,7 +609,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
 
     fn remember_and_unlock(
         &mut self,
-        leaf: SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>,
+        leaf: SharedNodeRef<K, V, LM::M, marker::LockedShared, marker::Leaf>,
         index: usize,
     ) {
         self.current_index = index;
@@ -592,7 +624,7 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
 
     fn lock_at_remembered_position(
         &mut self,
-    ) -> Option<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>> {
+    ) -> Option<SharedNodeRef<K, V, LM::M, marker::LockedShared, marker::Leaf>> {
         let unlocked_leaf = self.unlocked_leaf?;
 
         let remembered_key = match self.remembered_key {
@@ -1166,7 +1198,7 @@ mod tests {
                             cursor.insert_or_modify_if::<_, (), ()>(
                                 QsArc::new(key),
                                 QsOwned::new(key),
-                                |_| ModifyDecision::Modify,
+                                |_, _| ModifyDecision::Modify,
                                 |old_val, new_val| Ok((QsOwned::new(*old_val + *new_val), ())),
                             );
                             drop(cursor);
@@ -1205,7 +1237,7 @@ mod tests {
                         cursor.insert_or_modify_if::<_, (), ()>(
                             QsArc::new(key),
                             QsOwned::new(key),
-                            |_| ModifyDecision::Modify,
+                            |_, _| ModifyDecision::Modify,
                             |old_val, new_val| Ok((QsOwned::new(*old_val + *new_val), ())),
                         );
                         drop(cursor);

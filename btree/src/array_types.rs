@@ -441,11 +441,13 @@ impl<
 
         if self.num_keys() > 0 {
             for child in self.children.iter_owned(self.num_children()) {
-                OwnedNodeRef::drop_immediately(
-                    OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
-                        child,
-                    ),
-                )
+                OwnedNodeRef::drop_immediately(OwnedNodeRef::<
+                    K,
+                    V,
+                    (),
+                    marker::Unknown,
+                    marker::Unknown,
+                >::from_unknown_node_ptr(child))
             }
         }
     }
@@ -870,11 +872,11 @@ mod tests {
         let key1 = QsArc::new(1u32);
         let key2 = QsArc::new(2u32);
 
-        let node1 = unsafe { QsOwned::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+        let node1 = unsafe { QsOwned::new(LeafNode::<u32, String>::new(())).cast::<NodeHeader>() };
         let node1_shared = node1.share();
-        let node2 = unsafe { QsOwned::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+        let node2 = unsafe { QsOwned::new(LeafNode::<u32, String>::new(())).cast::<NodeHeader>() };
         let node2_shared = node2.share();
-        let node3 = unsafe { QsOwned::new(LeafNode::<u32, String>::new()).cast::<NodeHeader>() };
+        let node3 = unsafe { QsOwned::new(LeafNode::<u32, String>::new(())).cast::<NodeHeader>() };
         let node3_shared = node3.share();
 
         // Test insert
@@ -900,11 +902,13 @@ mod tests {
 
         // Test remove
         let (_, child) = array.remove(0);
-        OwnedNodeRef::drop_immediately(
-            OwnedNodeRef::<u32, String, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
-                child,
-            ),
-        );
+        OwnedNodeRef::drop_immediately(OwnedNodeRef::<
+            u32,
+            String,
+            (),
+            marker::Unknown,
+            marker::Unknown,
+        >::from_unknown_node_ptr(child));
         // removes node1 and 1u32
         assert_eq!(array.num_keys(), 1);
 
@@ -921,11 +925,13 @@ mod tests {
             node2_shared
         );
         let child = array.remove_only_child();
-        OwnedNodeRef::drop_immediately(
-            OwnedNodeRef::<u32, String, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
-                child,
-            ),
-        );
+        OwnedNodeRef::drop_immediately(OwnedNodeRef::<
+            u32,
+            String,
+            (),
+            marker::Unknown,
+            marker::Unknown,
+        >::from_unknown_node_ptr(child));
     }
 
     #[qsbr_test]

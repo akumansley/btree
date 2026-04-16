@@ -2,6 +2,7 @@ use crate::array_types::{
     InternalChildTempArray, InternalKeyTempArray, LeafTempArray, KV_IDX_CENTER, MAX_KEYS_PER_NODE,
 };
 use crate::internal_node::InternalNode;
+use crate::leaf_metadata::LeafMetadata;
 use crate::leaf_node::LeafNode;
 use crate::node::NodeHeader;
 use crate::pointers::node_ref::{marker, OwnedNodeRef};
@@ -14,20 +15,24 @@ use smallvec::SmallVec;
 use std::ops::Deref;
 use thin::{QsArc, QsOwned};
 
-pub struct EntryLocation<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    pub leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+pub struct EntryLocation<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> {
+    pub leaf: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
     pub index: usize,
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> EntryLocation<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static>
+    EntryLocation<K, V, M>
+{
     pub fn new(
-        leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        leaf: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
         index: usize,
     ) -> Self {
         Self { leaf, index }
     }
 }
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Clone for EntryLocation<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Clone
+    for EntryLocation<K, V, M>
+{
     fn clone(&self) -> Self {
         Self {
             leaf: self.leaf,
@@ -36,15 +41,15 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Clone for EntryLocation<K, V>
     }
 }
 
-enum Unlocker<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+enum Unlocker<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> {
     UnlockAll,
-    RetainLock(SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>),
+    RetainLock(SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>),
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Unlocker<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Unlocker<K, V, M> {
     fn unlock<N: marker::NodeType>(
         &self,
-        node_ref: SharedNodeRef<K, V, marker::LockedExclusive, N>,
+        node_ref: SharedNodeRef<K, V, M, marker::LockedExclusive, N>,
     ) {
         match self {
             Unlocker::UnlockAll => {
@@ -59,23 +64,26 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Unlocker<K, V> {
     }
 }
 
-type SplitLeafResult<K, V> = (
-    SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-    OwnedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+type SplitLeafResult<K, V, M> = (
+    SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+    OwnedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
     QsArc<K>,
-    EntryLocation<K, V>,
+    EntryLocation<K, V, M>,
 );
 
-fn split_leaf<K, V>(
-    left_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+fn split_leaf<K, V, M, LM>(
+    left_leaf: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
     key_to_insert: QsArc<K>,
     value_to_insert: QsOwned<V>,
-) -> SplitLeafResult<K, V>
+) -> SplitLeafResult<K, V, M>
 where
     K: crate::tree::BTreeKey + ?Sized,
     V: crate::tree::BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    LM: LeafMetadata<M = M>,
 {
-    let right_leaf: QsOwned<LeafNode<K, V>> = QsOwned::new(LeafNode::<K, V>::new());
+    let right_meta = LM::on_split(&left_leaf.metadata);
+    let right_leaf: QsOwned<LeafNode<K, V, M>> = QsOwned::new(LeafNode::<K, V, M>::new(right_meta));
     let right_leaf = OwnedNodeRef::from_leaf_ptr(right_leaf).assume_unlocked();
     let right_leaf = right_leaf.lock_exclusive();
     // update sibling pointers
@@ -152,35 +160,40 @@ where
     (left_leaf, right_leaf, split_key, entry_location)
 }
 
-pub fn insert_into_leaf_after_splitting<K, V>(
-    mut search_stack: SearchDequeue<K, V>,
+pub fn insert_into_leaf_after_splitting<K, V, M, LM>(
+    mut search_stack: SearchDequeue<K, V, M>,
     key_to_insert: QsArc<K>,
     value_to_insert: QsOwned<V>,
 ) where
     K: crate::tree::BTreeKey + ?Sized,
     V: crate::tree::BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    LM: LeafMetadata<M = M>,
 {
     debug_println!("insert_into_leaf_after_splitting");
     let left_leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
     debug_assert!(left_leaf.num_keys() == MAX_KEYS_PER_NODE);
-    let (left, right, split_key, _) = split_leaf(left_leaf, key_to_insert, value_to_insert);
+    let (left, right, split_key, _) =
+        split_leaf::<K, V, M, LM>(left_leaf, key_to_insert, value_to_insert);
     debug_assert!(left.num_keys() + right.num_keys() == MAX_KEYS_PER_NODE + 1);
 
     insert_into_parent(search_stack, left, split_key, right, Unlocker::UnlockAll);
 }
 
-pub fn insert_into_leaf_after_splitting_returning_leaf_with_new_entry<K, V>(
-    mut search_stack: SearchDequeue<K, V>,
+pub fn insert_into_leaf_after_splitting_returning_leaf_with_new_entry<K, V, M, LM>(
+    mut search_stack: SearchDequeue<K, V, M>,
     key_to_insert: QsArc<K>,
     value_to_insert: QsOwned<V>,
-) -> EntryLocation<K, V>
+) -> EntryLocation<K, V, M>
 where
     K: crate::tree::BTreeKey + ?Sized,
     V: crate::tree::BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    LM: LeafMetadata<M = M>,
 {
     let left_leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
     let (left, right, split_key, entry_location) =
-        split_leaf(left_leaf, key_to_insert, value_to_insert);
+        split_leaf::<K, V, M, LM>(left_leaf, key_to_insert, value_to_insert);
     insert_into_parent(
         search_stack,
         left,
@@ -191,15 +204,16 @@ where
     entry_location
 }
 
-fn insert_into_parent<K, V, N: marker::NodeType>(
-    mut search_stack: SearchDequeue<K, V>,
-    left: SharedNodeRef<K, V, marker::LockedExclusive, N>,
+fn insert_into_parent<K, V, M, N: marker::NodeType>(
+    mut search_stack: SearchDequeue<K, V, M>,
+    left: SharedNodeRef<K, V, M, marker::LockedExclusive, N>,
     split_key: QsArc<K>,
-    right: OwnedNodeRef<K, V, marker::LockedExclusive, N>,
-    unlocker: Unlocker<K, V>,
+    right: OwnedNodeRef<K, V, M, marker::LockedExclusive, N>,
+    unlocker: Unlocker<K, V, M>,
 ) where
     K: crate::tree::BTreeKey + ?Sized,
     V: crate::tree::BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 {
     debug_println!("insert_into_parent");
     // if the parent is the root, we need to create a top of tree
@@ -246,20 +260,21 @@ fn insert_into_parent<K, V, N: marker::NodeType>(
     }
 }
 
-fn insert_into_internal_node_after_splitting<K, V, ChildType: marker::NodeType>(
-    parent_stack: SearchDequeue<K, V>,
-    old_internal_node: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+fn insert_into_internal_node_after_splitting<K, V, M, ChildType: marker::NodeType>(
+    parent_stack: SearchDequeue<K, V, M>,
+    old_internal_node: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
     split_key: QsArc<K>,
-    new_child: OwnedNodeRef<K, V, marker::LockedExclusive, ChildType>,
-    unlocker: Unlocker<K, V>,
+    new_child: OwnedNodeRef<K, V, M, marker::LockedExclusive, ChildType>,
+    unlocker: Unlocker<K, V, M>,
 ) where
     K: crate::tree::BTreeKey + ?Sized,
     V: crate::tree::BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 {
     let new_child_shared = new_child.share();
     debug_println!("insert_into_internal_node_after_splitting");
     let new_internal_node = OwnedNodeRef::from_internal_ptr(QsOwned::new(
-        InternalNode::<K, V>::new(old_internal_node.height()),
+        InternalNode::<K, V, M>::new(old_internal_node.height()),
     ))
     .assume_unlocked()
     .lock_exclusive();
@@ -326,20 +341,21 @@ fn insert_into_internal_node_after_splitting<K, V, ChildType: marker::NodeType>(
     );
 }
 
-fn insert_into_new_top_of_tree<K, V, N: marker::NodeType>(
-    root: SharedNodeRef<K, V, marker::LockedExclusive, marker::Root>,
-    left: SharedNodeRef<K, V, marker::LockedExclusive, N>,
+fn insert_into_new_top_of_tree<K, V, M, N: marker::NodeType>(
+    root: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Root>,
+    left: SharedNodeRef<K, V, M, marker::LockedExclusive, N>,
     split_key: QsArc<K>,
-    right: OwnedNodeRef<K, V, marker::LockedExclusive, N>,
-    unlocker: Unlocker<K, V>,
+    right: OwnedNodeRef<K, V, M, marker::LockedExclusive, N>,
+    unlocker: Unlocker<K, V, M>,
 ) where
     K: crate::tree::BTreeKey + ?Sized,
     V: crate::tree::BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 {
     debug_println!("insert_into_new_top_of_tree");
-    let new_top_of_tree = OwnedNodeRef::from_internal_ptr(QsOwned::new(InternalNode::<K, V>::new(
-        left.height().one_level_higher(),
-    )))
+    let new_top_of_tree = OwnedNodeRef::from_internal_ptr(QsOwned::new(
+        InternalNode::<K, V, M>::new(left.height().one_level_higher()),
+    ))
     .assume_unlocked()
     .lock_exclusive();
     let new_top_of_tree_shared = new_top_of_tree.share();
@@ -366,11 +382,12 @@ fn insert_into_new_top_of_tree<K, V, N: marker::NodeType>(
 mod tests {
     use super::*;
     use crate::array_types::ORDER;
+    use crate::leaf_metadata::NoMetadata;
     use qsbr::qsbr_reclaimer;
     use thin::QsOwned;
 
-    fn create_full_leaf() -> OwnedNodeRef<usize, str, marker::LockedExclusive, marker::Leaf> {
-        let leaf = OwnedNodeRef::from_leaf_ptr(QsOwned::new(LeafNode::<usize, str>::new()))
+    fn create_full_leaf() -> OwnedNodeRef<usize, str, (), marker::LockedExclusive, marker::Leaf> {
+        let leaf = OwnedNodeRef::from_leaf_ptr(QsOwned::new(LeafNode::<usize, str>::new(())))
             .assume_unlocked()
             .lock_exclusive();
         for i in 1..ORDER {
@@ -394,8 +411,11 @@ mod tests {
             let leaf = create_full_leaf();
             let key_to_insert = QsArc::new(1);
             let value_to_insert = QsOwned::new_from_str("value1");
-            let (left, right, split_key, entry_location) =
-                split_leaf(leaf.share(), key_to_insert, value_to_insert);
+            let (left, right, split_key, entry_location) = split_leaf::<usize, str, (), NoMetadata>(
+                leaf.share(),
+                key_to_insert,
+                value_to_insert,
+            );
 
             // Verify entry location
             assert_eq!(entry_location.leaf.into_ptr(), left.into_ptr());
@@ -426,8 +446,11 @@ mod tests {
             let mid_point_key = get_key_for_index(mid_point) - 1;
             let key_to_insert = QsArc::new(mid_point_key);
             let value_to_insert = QsOwned::new_from_str(&format!("value{mid_point_key}"));
-            let (left, right, split_key, entry_location) =
-                split_leaf(leaf.share(), key_to_insert, value_to_insert);
+            let (left, right, split_key, entry_location) = split_leaf::<usize, str, (), NoMetadata>(
+                leaf.share(),
+                key_to_insert,
+                value_to_insert,
+            );
 
             // Verify entry location
             assert_eq!(entry_location.leaf.into_ptr(), left.into_ptr());
@@ -451,8 +474,11 @@ mod tests {
             let mid_point_key = get_key_for_index(mid_point) + 1;
             let key_to_insert = QsArc::new(mid_point_key);
             let value_to_insert = QsOwned::new_from_str(&format!("value{mid_point_key}"));
-            let (left, right, split_key, entry_location) =
-                split_leaf(leaf.share(), key_to_insert, value_to_insert);
+            let (left, right, split_key, entry_location) = split_leaf::<usize, str, (), NoMetadata>(
+                leaf.share(),
+                key_to_insert,
+                value_to_insert,
+            );
 
             // Verify entry location
             assert_eq!(entry_location.leaf.into_ptr(), right.share().into_ptr());
@@ -474,8 +500,11 @@ mod tests {
             let leaf = create_full_leaf();
             let key_to_insert = QsArc::new(ORDER * 2);
             let value_to_insert = QsOwned::new_from_str(&format!("value{}", ORDER * 2));
-            let (left, right, split_key, entry_location) =
-                split_leaf(leaf.share(), key_to_insert, value_to_insert);
+            let (left, right, split_key, entry_location) = split_leaf::<usize, str, (), NoMetadata>(
+                leaf.share(),
+                key_to_insert,
+                value_to_insert,
+            );
 
             // Verify entry location
             assert_eq!(entry_location.leaf.into_ptr(), right.share().into_ptr());

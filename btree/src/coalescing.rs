@@ -1,5 +1,6 @@
 use crate::array_types::{MAX_KEYS_PER_NODE, MIN_KEYS_PER_NODE};
 use crate::internal_node::InternalNodeInner;
+use crate::leaf_metadata::LeafMetadata;
 use crate::leaf_node::LeafNodeInner;
 use crate::pointers::node_ref::{marker, SharedNodeRef};
 use crate::pointers::OwnedNodeRef;
@@ -12,8 +13,13 @@ pub enum UnderfullNodePosition {
     Leftmost,
     Other,
 }
-pub fn coalesce_or_redistribute_leaf_node<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    mut search_stack: SearchDequeue<K, V>,
+pub fn coalesce_or_redistribute_leaf_node<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    LM: LeafMetadata<M = M>,
+>(
+    mut search_stack: SearchDequeue<K, V, M>,
 ) {
     debug_println!("coalesce_or_redistribute_leaf_node");
     let locked_underfull_leaf = search_stack.pop_lowest().assert_leaf().assert_exclusive();
@@ -38,7 +44,7 @@ pub fn coalesce_or_redistribute_leaf_node<K: BTreeKey + ?Sized, V: BTreeValue + 
     if locked_underfull_leaf.num_keys() + locked_full_leaf.num_keys() <= MAX_KEYS_PER_NODE {
         match node_position {
             UnderfullNodePosition::Other => {
-                coalesce_into_left_leaf_from_right_neighbor(
+                coalesce_into_left_leaf_from_right_neighbor::<K, V, M, LM>(
                     locked_full_leaf,
                     locked_underfull_leaf,
                     locked_parent,
@@ -46,7 +52,7 @@ pub fn coalesce_or_redistribute_leaf_node<K: BTreeKey + ?Sized, V: BTreeValue + 
                 );
             }
             UnderfullNodePosition::Leftmost => {
-                coalesce_into_left_leaf_from_right_neighbor(
+                coalesce_into_left_leaf_from_right_neighbor::<K, V, M, LM>(
                     locked_underfull_leaf,
                     locked_full_leaf,
                     locked_parent,
@@ -58,7 +64,7 @@ pub fn coalesce_or_redistribute_leaf_node<K: BTreeKey + ?Sized, V: BTreeValue + 
         search_stack.pop_highest_until(locked_parent).for_each(|n| {
             n.assert_exclusive().unlock_exclusive();
         });
-        redistribute_into_underfull_leaf_from_neighbor(
+        redistribute_into_underfull_leaf_from_neighbor::<K, V, M, LM>(
             locked_underfull_leaf,
             locked_full_leaf,
             node_position,
@@ -67,15 +73,21 @@ pub fn coalesce_or_redistribute_leaf_node<K: BTreeKey + ?Sized, V: BTreeValue + 
     }
 }
 
-pub fn coalesce_into_left_leaf_from_right_neighbor<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    left_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-    right_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-    parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-    search_stack: SearchDequeue<K, V>,
+pub fn coalesce_into_left_leaf_from_right_neighbor<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    LM: LeafMetadata<M = M>,
+>(
+    left_leaf: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+    right_leaf: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+    parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+    search_stack: SearchDequeue<K, V, M>,
 ) {
     debug_println!("coalesce_into_left_leaf_from_right_neighbor");
     debug_assert!(search_stack.peek_lowest() == parent);
 
+    LM::on_merge(&left_leaf.metadata, &right_leaf.metadata);
     LeafNodeInner::move_from_right_neighbor_into_left_node(parent, right_leaf, left_leaf);
     left_leaf.unlock_exclusive();
     if parent.num_keys() < MIN_KEYS_PER_NODE {
@@ -85,8 +97,12 @@ pub fn coalesce_into_left_leaf_from_right_neighbor<K: BTreeKey + ?Sized, V: BTre
     }
 }
 
-pub fn coalesce_or_redistribute_internal_node<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    mut search_stack: SearchDequeue<K, V>,
+pub fn coalesce_or_redistribute_internal_node<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
+    mut search_stack: SearchDequeue<K, V, M>,
 ) {
     debug_println!("coalesce_or_redistribute_internal_node");
     let underfull_internal = search_stack
@@ -141,11 +157,12 @@ pub fn coalesce_or_redistribute_internal_node<K: BTreeKey + ?Sized, V: BTreeValu
 pub fn coalesce_into_left_internal_from_right_neighbor<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    left_internal: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-    right_internal: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-    parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-    search_stack: SearchDequeue<K, V>,
+    left_internal: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+    right_internal: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+    parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+    search_stack: SearchDequeue<K, V, M>,
 ) {
     debug_println!("coalesce_into_left_internal_from_right_neighbor");
     InternalNodeInner::move_from_right_neighbor_into_left_node(
@@ -164,11 +181,12 @@ pub fn coalesce_into_left_internal_from_right_neighbor<
 pub fn redistribute_into_underfull_internal_from_neighbor<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    underfull_internal: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-    full_internal: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+    underfull_internal: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+    full_internal: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
     node_position: UnderfullNodePosition,
-    parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+    parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
 ) {
     debug_println!("redistribute_into_underfull_internal_from_neighbor");
     match node_position {
@@ -187,13 +205,16 @@ pub fn redistribute_into_underfull_internal_from_neighbor<
 pub fn redistribute_into_underfull_leaf_from_neighbor<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    LM: LeafMetadata<M = M>,
 >(
-    underfull_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-    full_leaf: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+    underfull_leaf: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+    full_leaf: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
     node_position: UnderfullNodePosition,
-    parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+    parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
 ) {
     debug_println!("redistribute_into_underfull_leaf_from_neighbor");
+    LM::on_redistribute(&full_leaf.metadata, &underfull_leaf.metadata);
     match node_position {
         UnderfullNodePosition::Other => {
             LeafNodeInner::move_last_to_front_of(full_leaf, underfull_leaf, parent);
@@ -207,9 +228,13 @@ pub fn redistribute_into_underfull_leaf_from_neighbor<
     underfull_leaf.unlock_exclusive();
 }
 
-pub fn adjust_top_of_tree<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    mut search_stack: SearchDequeue<K, V>,
-    top_of_tree: SharedNodeRef<K, V, marker::LockedExclusive, marker::Unknown>,
+pub fn adjust_top_of_tree<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
+    mut search_stack: SearchDequeue<K, V, M>,
+    top_of_tree: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Unknown>,
 ) {
     debug_println!("adjust_top_of_tree");
     if top_of_tree.is_internal() {
@@ -226,7 +251,7 @@ pub fn adjust_top_of_tree<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
                 .unwrap();
 
             let old_top_of_tree =
-                OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                OwnedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                     old_top_of_tree,
                 )
                 .assert_exclusive()

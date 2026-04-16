@@ -1,5 +1,6 @@
 use crate::array_types::{MIN_KEYS_PER_NODE, ORDER};
 use crate::internal_node::InternalNode;
+use crate::leaf_metadata::LeafMetadata;
 use crate::leaf_node::LeafNode;
 use crate::node::NodeHeader;
 use crate::pointers::{marker, OwnedNodeRef};
@@ -10,8 +11,8 @@ use rand::Rng;
 use rayon::prelude::*;
 use thin::{QsArc, QsOwned};
 
-type LeafWithSplitKey<K, V> = Vec<(QsOwned<LeafNode<K, V>>, QsArc<K>)>;
-type InternalWithSplitKey<K, V> = Vec<(QsOwned<InternalNode<K, V>>, QsArc<K>)>;
+type LeafWithSplitKey<K, V, M> = Vec<(QsOwned<LeafNode<K, V, M>>, QsArc<K>)>;
+type InternalWithSplitKey<K, V, M> = Vec<(QsOwned<InternalNode<K, V, M>>, QsArc<K>)>;
 
 fn calculate_chunk_size(
     target_utilization: f64,
@@ -40,19 +41,20 @@ fn calculate_chunk_size(
     }
 }
 
-fn construct_leaf_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+fn construct_leaf_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static>(
     pairs_iter: impl ExactSizeIterator<Item = (QsArc<K>, QsOwned<V>)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> LeafWithSplitKey<K, V> {
-    let mut leaves: LeafWithSplitKey<K, V> = Vec::new();
+    new_leaf_metadata: impl Fn() -> M,
+) -> LeafWithSplitKey<K, V, M> {
+    let mut leaves: LeafWithSplitKey<K, V, M> = Vec::new();
     let mut pairs_iter = pairs_iter.peekable();
 
     while pairs_iter.peek().is_some() {
         let chunk_size = calculate_chunk_size(target_utilization, jitter_range, pairs_iter.len());
 
         // Create a new leaf node
-        let leaf = QsOwned::new(LeafNode::new());
+        let leaf = QsOwned::new(LeafNode::new(new_leaf_metadata()));
         let leaf_inner = unsafe { &mut *leaf.inner.get() };
 
         // Add pairs for this chunk
@@ -85,11 +87,15 @@ fn construct_leaf_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     leaves
 }
 
-fn construct_internal_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+fn construct_internal_level<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
     children_with_split_keys: Vec<(QsOwned<NodeHeader>, QsArc<K>)>,
     target_utilization: f64,
     jitter_range: f64,
-) -> InternalWithSplitKey<K, V> {
+) -> InternalWithSplitKey<K, V, M> {
     let mut internal_nodes = Vec::new();
     let mut children_iter = children_with_split_keys.into_iter().peekable();
 
@@ -99,7 +105,7 @@ fn construct_internal_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
             calculate_chunk_size(target_utilization, jitter_range, children_iter.len());
         let (first_child, _) = children_iter.peek().unwrap();
         let height = (*first_child).height().one_level_higher();
-        let node_ptr = QsOwned::new(InternalNode::<K, V>::new(height));
+        let node_ptr = QsOwned::new(InternalNode::<K, V, M>::new(height));
         let node_inner = unsafe { &mut *node_ptr.inner.get() };
 
         // Get the first child and its split key
@@ -131,8 +137,12 @@ fn construct_internal_level<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     internal_nodes
 }
 
-fn construct_tree_from_leaves<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    mut leaves: LeafWithSplitKey<K, V>,
+fn construct_tree_from_leaves<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
+    mut leaves: LeafWithSplitKey<K, V, M>,
     target_utilization: f64,
     jitter_range: f64,
 ) -> QsOwned<NodeHeader> {
@@ -150,7 +160,7 @@ fn construct_tree_from_leaves<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     // Keep building levels until we have a single node
     while current_level.len() > 1 {
         let internal_nodes =
-            construct_internal_level::<K, V>(current_level, target_utilization, jitter_range);
+            construct_internal_level::<K, V, M>(current_level, target_utilization, jitter_range);
 
         current_level = internal_nodes
             .into_iter()
@@ -163,9 +173,13 @@ fn construct_tree_from_leaves<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
     top_of_tree
 }
 
-pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+pub fn bulk_load_from_sorted_kv_pairs<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata,
+>(
     sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
-) -> BTree<K, V> {
+) -> BTree<K, V, LM> {
     let target_utilization = 0.69;
     let jitter_range = 0.1;
 
@@ -177,6 +191,7 @@ pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey + ?Sized, V: BTreeValue + ?Siz
         sorted_kv_pairs.into_iter(),
         target_utilization,
         jitter_range,
+        LM::new_leaf,
     );
 
     // Build the tree from leaves up
@@ -191,8 +206,10 @@ pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey + ?Sized, V: BTreeValue + ?Siz
             .swap(root_node, Ordering::Release)
             .unwrap();
         OwnedNodeRef::drop_immediately(
-            OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(old_leaf)
-                .assert_leaf(),
+            OwnedNodeRef::<K, V, LM::M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                old_leaf,
+            )
+            .assert_leaf(),
         );
     }
 
@@ -202,9 +219,13 @@ pub fn bulk_load_from_sorted_kv_pairs<K: BTreeKey + ?Sized, V: BTreeValue + ?Siz
     tree
 }
 
-pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+pub fn bulk_load_from_sorted_kv_pairs_parallel<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata,
+>(
     sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
-) -> BTree<K, V> {
+) -> BTree<K, V, LM> {
     let target_utilization = 0.69;
     let jitter_range = 0.1;
 
@@ -212,10 +233,17 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeVal
     let num_pairs = sorted_kv_pairs.len();
 
     let pool = qsbr_pool();
-    let leaves: LeafWithSplitKey<K, V> = pool.install(|| {
+    let leaves: LeafWithSplitKey<K, V, LM::M> = pool.install(|| {
         let chunks = sorted_kv_pairs.into_par_iter().chunks(ORDER * 8);
         chunks
-            .map(|chunk| construct_leaf_level(chunk.into_iter(), target_utilization, jitter_range))
+            .map(|chunk| {
+                construct_leaf_level(
+                    chunk.into_iter(),
+                    target_utilization,
+                    jitter_range,
+                    LM::new_leaf,
+                )
+            })
             .reduce(Vec::new, |mut acc, mut leaves| {
                 if let Some((last_leaf, _)) = acc.last_mut() {
                     if let Some((first_leaf, _)) = leaves.first_mut() {
@@ -246,8 +274,10 @@ pub fn bulk_load_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeVal
             .swap(root_node, Ordering::Release)
             .unwrap();
         OwnedNodeRef::drop_immediately(
-            OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(old_leaf)
-                .assert_leaf(),
+            OwnedNodeRef::<K, V, LM::M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                old_leaf,
+            )
+            .assert_leaf(),
         );
     }
 
@@ -326,7 +356,8 @@ mod tests {
         }
         let num_pairs = pairs.len();
 
-        let leaves = construct_leaf_level(pairs.into_iter(), target_utilization, jitter_range);
+        let leaves =
+            construct_leaf_level(pairs.into_iter(), target_utilization, jitter_range, || ());
         let root_node = construct_tree_from_leaves(leaves, target_utilization, jitter_range);
 
         // This mirrors what both bulk_load functions do after constructing the tree.
@@ -339,7 +370,7 @@ mod tests {
                 .swap(root_node, Ordering::Release)
                 .unwrap();
             OwnedNodeRef::drop_immediately(
-                OwnedNodeRef::<i32, String, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                OwnedNodeRef::<i32, String, (), marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                     old_leaf,
                 )
                 .assert_leaf(),

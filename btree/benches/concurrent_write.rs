@@ -78,7 +78,7 @@ fn mixed_operations_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads:
                     for i in 0..NUM_OPERATIONS / 10 {
                         pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{i}"))));
                     }
-                    let tree = BTree::bulk_load(pairs);
+                    let tree: BTree<usize, str> = BTree::bulk_load(pairs);
 
                     let start = std::time::Instant::now();
                     thread::scope(|s| {
@@ -149,7 +149,7 @@ fn read_heavy_benchmark(c: &mut BenchmarkGroup<'_, WallTime>, num_threads: usize
                     for i in 0..NUM_OPERATIONS / 10 {
                         pairs.push((QsArc::new(i), QsOwned::new_from_str(&format!("value{i}"))));
                     }
-                    let tree = BTree::bulk_load(pairs);
+                    let tree: BTree<usize, str> = BTree::bulk_load(pairs);
 
                     let start = std::time::Instant::now();
 

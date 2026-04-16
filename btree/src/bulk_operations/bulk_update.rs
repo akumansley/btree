@@ -1,13 +1,18 @@
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use thin::{QsArc, QsOwned};
 
+use crate::leaf_metadata::LeafMetadata;
 use crate::tree::ModifyDecision;
 use crate::{array_types::ORDER, BTree, BTreeKey, BTreeValue};
 use qsbr::{qsbr_pool, qsbr_reclaimer};
 
-pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
+pub fn bulk_update_from_sorted_kv_pairs_parallel<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata,
+>(
     sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
-    tree: &BTree<K, V>,
+    tree: &BTree<K, V, LM>,
 ) {
     let pool = qsbr_pool();
     pool.install(|| {
@@ -30,13 +35,14 @@ pub fn bulk_update_from_sorted_kv_pairs_parallel<K: BTreeKey + ?Sized, V: BTreeV
 pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    LM: LeafMetadata,
     T,
     E,
     F: Fn(QsOwned<V>, QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)> + Send + Sync,
 >(
     sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>,
     update_fn: &F,
-    tree: &BTree<K, V>,
+    tree: &BTree<K, V, LM>,
 ) {
     let pool = qsbr_pool();
     pool.install(|| {
@@ -46,7 +52,12 @@ pub fn bulk_insert_or_update_from_sorted_kv_pairs_parallel<
             .for_each(|chunk| {
                 let mut cursor = tree.cursor_mut();
                 for (key, value) in chunk {
-                    cursor.insert_or_modify_if(key, value, |_| ModifyDecision::Modify, update_fn);
+                    cursor.insert_or_modify_if(
+                        key,
+                        value,
+                        |_, _| ModifyDecision::Modify,
+                        update_fn,
+                    );
                 }
             });
     });

@@ -11,6 +11,7 @@ use crate::cursor::Cursor;
 use crate::cursor::CursorMut;
 use crate::cursor::NonLockingCursor;
 use crate::iter::{BTreeIterator, BackwardBTreeIterator, ForwardBTreeIterator};
+use crate::leaf_metadata::{LeafMetadata, NoMetadata};
 use crate::pointers::node_ref::{marker, SharedDiscriminatedNode};
 use crate::pointers::SharedNodeRef;
 use crate::reference::Ref;
@@ -28,6 +29,7 @@ use crate::splitting::{
 use crate::sync::Ordering;
 use std::borrow::Borrow;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use thin::{QsOwned, QsShared};
 
 /// A monotonic prefix of a key's sort order, packed into a u64.
@@ -143,40 +145,23 @@ impl<V: Debug + Send + Pointable + ?Sized + 'static> BTreeValue for V {}
 //   cargo bench
 
 /// Concurrent B+Tree
-pub struct BTree<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    pub root: RootNode<K, V>,
+pub struct BTree<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata = NoMetadata> {
+    pub root: RootNode<K, V, LM::M>,
+    _policy: PhantomData<LM>,
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Default for BTree<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> Default for BTree<K, V, LM> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> BTree<K, V, LM> {
     pub fn new() -> Self {
         BTree {
-            root: RootNode::new(),
+            root: RootNode::new_with_metadata(LM::new_leaf()),
+            _policy: PhantomData,
         }
-    }
-
-    pub fn bulk_load(sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>) -> Self {
-        bulk_load_from_sorted_kv_pairs(sorted_kv_pairs)
-    }
-    pub fn bulk_load_parallel(sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>) -> Self {
-        bulk_load_from_sorted_kv_pairs_parallel(sorted_kv_pairs)
-    }
-    pub fn bulk_update_parallel(&self, updates: Vec<(QsArc<K>, QsOwned<V>)>) {
-        bulk_update_from_sorted_kv_pairs_parallel(updates, self)
-    }
-    pub fn bulk_insert_or_update_parallel<T, E, F>(
-        &self,
-        entries: Vec<(QsArc<K>, QsOwned<V>)>,
-        update_fn: &F,
-    ) where
-        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)> + Send + Sync,
-    {
-        bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
 
     pub fn get<Q>(&self, search_key: &Q) -> Option<Ref<V>>
@@ -235,15 +220,6 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         };
         closure(value);
         leaf_node_exclusive.unlock_exclusive();
-    }
-
-    pub fn scan_parallel(
-        &self,
-        start_key: QsWeak<K>,
-        end_key: QsWeak<K>,
-        predicate: impl Fn(&V) -> bool + Sync,
-    ) -> Vec<QsShared<V>> {
-        scan_parallel(Some(start_key), Some(end_key), predicate, self)
     }
 
     pub fn len(&self) -> usize {
@@ -307,51 +283,11 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
                 });
                 return;
             } else {
-                insert_into_leaf_after_splitting(search_stack, key, value);
+                insert_into_leaf_after_splitting::<K, V, LM::M, LM>(search_stack, key, value);
             }
         }
         self.root.len.fetch_add(1, Ordering::Relaxed);
         debug_println!("top-level insert done");
-    }
-
-    pub fn get_or_insert(
-        &self,
-        key: QsArc<K>,
-        value: impl Into<QsOwned<V>>,
-    ) -> CursorMut<'_, K, V> {
-        let value: QsOwned<V> = value.into();
-
-        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
-            self.root.as_node_ref(),
-            &key,
-        );
-        let search_result = optimistic_leaf.binary_search_key(&key);
-
-        // case 1: key already exists
-        if let Ok(index) = search_result {
-            return CursorMut::new_from_leaf_and_index(self, optimistic_leaf, index);
-        }
-
-        // case 2: key doesn't exist, but we have capacity to insert
-        if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion) {
-            let index = search_result.unwrap_err();
-            optimistic_leaf.insert_new_value_at_index(key, value, index);
-            // Increment the tree length since we inserted a new key
-            self.root.len.fetch_add(1, Ordering::Relaxed);
-            return CursorMut::new_from_leaf_and_index(self, optimistic_leaf, index);
-        }
-        // unlock the leaf so we can restart our search
-        optimistic_leaf.unlock_exclusive();
-
-        // case 3: key doesn't exist, and we need to split
-        let (entry_location, result) = self.get_or_insert_pessimistic(key, value);
-
-        // Increment the tree length if a new key was inserted
-        if matches!(result, GetOrInsertResult::Inserted) {
-            self.root.len.fetch_add(1, Ordering::Relaxed);
-        }
-
-        CursorMut::new_from_location(self, entry_location)
     }
 
     // returns the passed in value if it wasn't inserted
@@ -360,7 +296,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         &self,
         key: QsArc<K>,
         value: QsOwned<V>,
-    ) -> (EntryLocation<K, V>, GetOrInsertResult<V>) {
+    ) -> (EntryLocation<K, V, LM::M>, GetOrInsertResult<V>) {
         let mut search_stack = get_leaf_exclusively_using_exclusive_search(
             self.root.as_node_ref().lock_exclusive_with_backoff(),
             &key,
@@ -400,18 +336,19 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             );
         }
 
-        let entry_location = insert_into_leaf_after_splitting_returning_leaf_with_new_entry(
-            search_stack,
-            key,
-            value,
-        );
+        let entry_location = insert_into_leaf_after_splitting_returning_leaf_with_new_entry::<
+            K,
+            V,
+            LM::M,
+            LM,
+        >(search_stack, key, value);
         (entry_location, GetOrInsertResult::Inserted)
     }
 
     pub fn remove_or_modify_if<Q, T, E>(
         &self,
         key: &Q,
-        decider: impl Fn(QsShared<V>) -> RemoveOrModifyDecision<E>,
+        decider: impl Fn(QsShared<V>, &LM::M) -> RemoveOrModifyDecision<E>,
         modify_fn: impl FnOnce(QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)>,
     ) -> RemoveOrModifyIfResult<T, E>
     where
@@ -429,7 +366,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
                 return RemoveOrModifyIfResult::DidNothing;
             } // nothing to remove
         };
-        let decision = decider(optimistic_leaf.storage.get_value(index));
+        let decision = decider(
+            optimistic_leaf.storage.get_value(index),
+            &optimistic_leaf.metadata,
+        );
 
         // Handle non-remove cases immediately (no structural changes possible)
         match decision {
@@ -468,7 +408,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         );
         let mut pessimistic_leaf = search_stack.peek_lowest().assert_leaf().assert_exclusive();
 
-        let unlock_stack = |mut s: SearchDequeue<K, V>| {
+        let unlock_stack = |mut s: SearchDequeue<K, V, LM::M>| {
             s.drain().for_each(|n| {
                 n.assert_exclusive().unlock_exclusive();
             });
@@ -481,7 +421,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
         // Now we've locked the necessary path to the leaf,
         // but everything could've changed so we need to re-evaluate
-        match decider(pessimistic_leaf.storage.get_value(index)) {
+        match decider(
+            pessimistic_leaf.storage.get_value(index),
+            &pessimistic_leaf.metadata,
+        ) {
             RemoveOrModifyDecision::DoNothing => {
                 unlock_stack(search_stack);
                 RemoveOrModifyIfResult::DidNothing
@@ -502,7 +445,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
                 pessimistic_leaf.remove_at_index(index);
                 self.root.len.fetch_sub(1, Ordering::Relaxed);
                 if pessimistic_leaf.num_keys() < MIN_KEYS_PER_NODE {
-                    coalesce_or_redistribute_leaf_node(search_stack);
+                    coalesce_or_redistribute_leaf_node::<K, V, LM::M, LM>(search_stack);
                 } else {
                     unlock_stack(search_stack);
                 }
@@ -513,10 +456,10 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
 
     pub fn remove(&self, key: &K) {
         debug_println!("top-level remove {:?}", key);
-        self.remove_if(key, |_| true);
+        self.remove_if(key, |_, _| true);
     }
 
-    pub fn remove_if(&self, key: &K, predicate: impl Fn(QsShared<V>) -> bool) -> bool {
+    pub fn remove_if(&self, key: &K, predicate: impl Fn(QsShared<V>, &LM::M) -> bool) -> bool {
         debug_println!("top-level remove {:?}", key);
 
         let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
@@ -531,7 +474,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
             } // nothing to remove
         };
         let value = optimistic_leaf.storage.get_value(index);
-        if !predicate(value) {
+        if !predicate(value, &optimistic_leaf.metadata) {
             optimistic_leaf.unlock_exclusive();
             return false;
         }
@@ -559,13 +502,13 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         match search_result {
             Ok(index) => {
                 let value = leaf_node_exclusive.storage.get_value(index);
-                if predicate(value) {
+                if predicate(value, &leaf_node_exclusive.metadata) {
                     leaf_node_exclusive.remove_at_index(search_result.unwrap());
                     self.root.len.fetch_sub(1, Ordering::Relaxed);
                     removed = true;
 
                     if leaf_node_exclusive.num_keys() < MIN_KEYS_PER_NODE {
-                        coalesce_or_redistribute_leaf_node(search_stack);
+                        coalesce_or_redistribute_leaf_node::<K, V, LM::M, LM>(search_stack);
                         return true;
                     }
                 }
@@ -580,39 +523,13 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         removed
     }
 
-    pub fn modify_if<T, E>(
-        &self,
-        key: &K,
-        predicate: impl Fn(&V) -> ModifyDecision<E>,
-        modify_fn: impl FnOnce(QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)>,
-    ) -> ModifyIfResult<T, E> {
-        debug_println!("top-level modify_if {:?}", key);
-
-        let mut cursor = self.cursor_mut();
-        let found = cursor.seek(key);
-        if !found {
-            return ModifyIfResult::NotFound;
-        }
-        let entry = cursor.current().unwrap();
-        let value = entry.value();
-        match predicate(value) {
-            ModifyDecision::Modify => {}
-            ModifyDecision::DoNothing => return ModifyIfResult::DidNothing,
-            ModifyDecision::Error(e) => return ModifyIfResult::Error(e),
-        }
-        match cursor.modify_value(modify_fn) {
-            Ok(t) => ModifyIfResult::Modified(t),
-            Err(e) => ModifyIfResult::Error(e),
-        }
-    }
-
     pub fn print_tree(&self) {
         let root = self.root.as_node_ref().lock_shared();
         println!("BTree:");
         println!("+----------------------+");
         println!("| Tree length: {}      |", self.len());
         println!("+----------------------+");
-        match SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+        match SharedNodeRef::<K, V, LM::M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
             root.top_of_tree(),
         )
         .assume_unlocked()
@@ -636,7 +553,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
     pub fn check_invariants(&self) {
         debug_println!("checking invariants");
         let root = self.root.as_node_ref().lock_shared();
-        match SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+        match SharedNodeRef::<K, V, LM::M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
             root.top_of_tree(),
         )
         .assume_unlocked()
@@ -657,15 +574,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         root.unlock_shared();
     }
 
-    pub fn iter(&self) -> ForwardBTreeIterator<'_, K, V> {
-        BTreeIterator::new(self)
-    }
-
-    pub fn iter_rev(&self) -> BackwardBTreeIterator<'_, K, V> {
-        BTreeIterator::new(self)
-    }
-
-    pub fn cursor(&self) -> Cursor<'_, K, V> {
+    pub fn cursor(&self) -> Cursor<'_, K, V, LM> {
         Cursor {
             tree: self,
             current_leaf: None,
@@ -674,17 +583,126 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> BTree<K, V> {
         }
     }
 
-    pub fn cursor_mut(&self) -> CursorMut<'_, K, V> {
+    pub fn cursor_mut(&self) -> CursorMut<'_, K, V, LM> {
         CursorMut::new(self)
     }
 
-    pub fn non_locking_cursor(&self) -> NonLockingCursor<'_, K, V> {
+    pub fn non_locking_cursor(&self) -> NonLockingCursor<'_, K, V, LM> {
         NonLockingCursor::new(self)
+    }
+
+    pub fn iter(&self) -> ForwardBTreeIterator<'_, K, V, LM> {
+        BTreeIterator::new(self)
+    }
+
+    pub fn iter_rev(&self) -> BackwardBTreeIterator<'_, K, V, LM> {
+        BTreeIterator::new(self)
+    }
+
+    pub fn get_or_insert(
+        &self,
+        key: QsArc<K>,
+        value: impl Into<QsOwned<V>>,
+    ) -> CursorMut<'_, K, V, LM> {
+        let value: QsOwned<V> = value.into();
+
+        let mut optimistic_leaf = get_leaf_exclusively_using_optimistic_search_with_fallback(
+            self.root.as_node_ref(),
+            &key,
+        );
+        let search_result = optimistic_leaf.binary_search_key(&key);
+
+        // case 1: key already exists
+        if let Ok(index) = search_result {
+            return CursorMut::new_from_leaf_and_index(self, optimistic_leaf, index);
+        }
+
+        // case 2: key doesn't exist, but we have capacity to insert
+        if optimistic_leaf.has_capacity_for_modification(ModificationType::Insertion) {
+            let index = search_result.unwrap_err();
+            optimistic_leaf.insert_new_value_at_index(key, value, index);
+            // Increment the tree length since we inserted a new key
+            self.root.len.fetch_add(1, Ordering::Relaxed);
+            return CursorMut::new_from_leaf_and_index(self, optimistic_leaf, index);
+        }
+        // unlock the leaf so we can restart our search
+        optimistic_leaf.unlock_exclusive();
+
+        // case 3: key doesn't exist, and we need to split
+        let (entry_location, result) = self.get_or_insert_pessimistic(key, value);
+
+        // Increment the tree length if a new key was inserted
+        if matches!(result, GetOrInsertResult::Inserted) {
+            self.root.len.fetch_add(1, Ordering::Relaxed);
+        }
+
+        CursorMut::new_from_location(self, entry_location)
+    }
+
+    pub fn modify_if<T, E>(
+        &self,
+        key: &K,
+        predicate: impl Fn(&V, &LM::M) -> ModifyDecision<E>,
+        modify_fn: impl FnOnce(QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)>,
+    ) -> ModifyIfResult<T, E> {
+        debug_println!("top-level modify_if {:?}", key);
+
+        let mut cursor = self.cursor_mut();
+        let found = cursor.seek(key);
+        if !found {
+            return ModifyIfResult::NotFound;
+        }
+        let metadata = cursor.leaf_metadata().unwrap();
+        let entry = cursor.current().unwrap();
+        let value = entry.value();
+        match predicate(value, metadata) {
+            ModifyDecision::Modify => {}
+            ModifyDecision::DoNothing => return ModifyIfResult::DidNothing,
+            ModifyDecision::Error(e) => return ModifyIfResult::Error(e),
+        }
+        match cursor.modify_value(modify_fn) {
+            Ok(t) => ModifyIfResult::Modified(t),
+            Err(e) => ModifyIfResult::Error(e),
+        }
+    }
+
+    pub fn scan_parallel(
+        &self,
+        start_key: QsWeak<K>,
+        end_key: QsWeak<K>,
+        predicate: impl Fn(&V) -> bool + Sync,
+    ) -> Vec<QsShared<V>> {
+        scan_parallel(Some(start_key), Some(end_key), predicate, self)
+    }
+
+    pub fn bulk_load(sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>) -> Self {
+        bulk_load_from_sorted_kv_pairs(sorted_kv_pairs)
+    }
+    pub fn bulk_load_parallel(sorted_kv_pairs: Vec<(QsArc<K>, QsOwned<V>)>) -> Self {
+        bulk_load_from_sorted_kv_pairs_parallel(sorted_kv_pairs)
+    }
+    pub fn bulk_update_parallel(&self, updates: Vec<(QsArc<K>, QsOwned<V>)>) {
+        bulk_update_from_sorted_kv_pairs_parallel(updates, self)
+    }
+    pub fn bulk_insert_or_update_parallel<T, E, F>(
+        &self,
+        entries: Vec<(QsArc<K>, QsOwned<V>)>,
+        update_fn: &F,
+    ) where
+        F: Fn(QsOwned<V>, QsOwned<V>) -> Result<(QsOwned<V>, T), (QsOwned<V>, E)> + Send + Sync,
+    {
+        bulk_insert_or_update_from_sorted_kv_pairs_parallel(entries, update_fn, self)
     }
 }
 
-unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Send for BTree<K, V> {}
-unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Sync for BTree<K, V> {}
+unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> Send
+    for BTree<K, V, LM>
+{
+}
+unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> Sync
+    for BTree<K, V, LM>
+{
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ModificationType {
@@ -1147,7 +1165,7 @@ mod tests {
 
         // Test 1: Remove only even numbers
         for i in 0..n {
-            tree.remove_if(&i, |v| v.parse::<usize>().unwrap() % 2 == 0);
+            tree.remove_if(&i, |v, _| v.parse::<usize>().unwrap() % 2 == 0);
         }
 
         // Verify: Even numbers should be removed, odd numbers should remain
@@ -1164,7 +1182,7 @@ mod tests {
 
         // Test 2: Try to remove with a predicate that always returns false
         for i in 0..n {
-            tree.remove_if(&i, |_| false);
+            tree.remove_if(&i, |_, _| false);
         }
         // Verify: No elements should be removed
         cursor.seek_to_start();
@@ -1180,7 +1198,7 @@ mod tests {
         for i in (0..n).step_by(2) {
             if i % 4 == 1 {
                 // Remove every fourth element
-                tree.remove_if(&i, |v| v.contains('1')); // Only remove values containing '1'
+                tree.remove_if(&i, |v, _| v.contains('1')); // Only remove values containing '1'
             }
         }
         tree.check_invariants();
@@ -1205,7 +1223,7 @@ mod tests {
         for i in (0..n).step_by(2) {
             let result = tree.remove_or_modify_if::<_, (), ()>(
                 &i,
-                |_| RemoveOrModifyDecision::Remove,
+                |_, _| RemoveOrModifyDecision::Remove,
                 |v| Ok((v, ())),
             );
             assert_eq!(result, RemoveOrModifyIfResult::Removed);
@@ -1241,7 +1259,7 @@ mod tests {
         for i in 0..100 {
             let result = tree.remove_or_modify_if::<_, (), ()>(
                 &i,
-                |_| match i % 4 {
+                |_, _| match i % 4 {
                     0 => RemoveOrModifyDecision::Remove,
                     1 => RemoveOrModifyDecision::Modify,
                     2 => RemoveOrModifyDecision::DoNothing,
@@ -1279,21 +1297,21 @@ mod tests {
 
         let result = tree.remove_or_modify_if::<_, (), ()>(
             &1,
-            |_| RemoveOrModifyDecision::Remove,
+            |_, _| RemoveOrModifyDecision::Remove,
             |v| Ok((v, ())),
         );
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
         let result = tree.remove_or_modify_if::<_, (), ()>(
             &1,
-            |_| RemoveOrModifyDecision::Modify,
+            |_, _| RemoveOrModifyDecision::Modify,
             |v| Ok((v, ())),
         );
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
 
         let result = tree.remove_or_modify_if::<_, (), ()>(
             &1,
-            |_| RemoveOrModifyDecision::DoNothing,
+            |_, _| RemoveOrModifyDecision::DoNothing,
             |v| Ok((v, ())),
         );
         assert_eq!(result, RemoveOrModifyIfResult::DidNothing);
@@ -1481,7 +1499,7 @@ mod tests {
             for i in 0..100 {
                 pairs.push((QsArc::new(i), QsOwned::new(format!("value{i}"))));
             }
-            let tree = BTree::bulk_load(pairs);
+            let tree: BTree<i32, String> = BTree::bulk_load(pairs);
             assert_eq!(tree.len(), 100, "Tree length should be 100 after bulk_load");
             drop(tree);
         }
@@ -1493,7 +1511,7 @@ mod tests {
             for i in 0..100 {
                 pairs.push((QsArc::new(i), QsOwned::new(format!("value{i}"))));
             }
-            let tree = BTree::bulk_load_parallel(pairs);
+            let tree: BTree<i32, String> = BTree::bulk_load_parallel(pairs);
             assert_eq!(
                 tree.len(),
                 100,
@@ -1630,7 +1648,7 @@ mod tests {
         // Test 1: Modify with predicate that returns Modify
         let _ = tree.modify_if::<(), ()>(
             &5,
-            |v| {
+            |v, _| {
                 if v.contains("value") {
                     ModifyDecision::Modify
                 } else {
@@ -1644,7 +1662,7 @@ mod tests {
         // Test 2: Try to modify with predicate that returns DoNothing (should not modify)
         let _ = tree.modify_if::<(), ()>(
             &5,
-            |v| {
+            |v, _| {
                 if v.contains("nonexistent") {
                     ModifyDecision::Modify
                 } else {
@@ -1662,7 +1680,7 @@ mod tests {
         // Test 3: Modify based on existing value
         let _ = tree.modify_if::<(), ()>(
             &3,
-            |_| ModifyDecision::Modify,
+            |_, _| ModifyDecision::Modify,
             |old_val| Ok((QsOwned::new(format!("updated_{}", old_val.deref())), ())),
         );
         assert_eq!(tree.get(&3).as_deref(), Some(&"updated_value3".to_string()));
@@ -1670,7 +1688,7 @@ mod tests {
         // Test 4: Try to modify non-existent key (should do nothing)
         let _ = tree.modify_if::<(), ()>(
             &999,
-            |_| ModifyDecision::Modify,
+            |_, _| ModifyDecision::Modify,
             |_| Ok((QsOwned::new("should_not_insert".to_string()), ())),
         );
         assert_eq!(tree.get(&999), None, "Non-existent key should remain None");
@@ -1679,7 +1697,7 @@ mod tests {
         for i in 0..10 {
             let _ = tree.modify_if::<(), ()>(
                 &i,
-                |v| {
+                |v, _| {
                     if v.starts_with("value") {
                         ModifyDecision::Modify
                     } else {

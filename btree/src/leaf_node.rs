@@ -15,67 +15,84 @@ use std::{fmt, ptr};
 use thin::{QsArc, QsOwned, QsShared, QsWeak};
 
 #[repr(C)]
-pub struct LeafNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+pub struct LeafNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static = ()> {
     header: NodeHeader,
-    pub inner: UnsafeCell<LeafNodeInner<K, V>>,
+    pub inner: UnsafeCell<LeafNodeInner<K, V, M>>,
 }
 
-unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Send for LeafNode<K, V> {}
-unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Sync for LeafNode<K, V> {}
+unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Send
+    for LeafNode<K, V, M>
+{
+}
+unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Sync
+    for LeafNode<K, V, M>
+{
+}
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> PartialEq for LeafNode<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> PartialEq
+    for LeafNode<K, V, M>
+{
     fn eq(&self, other: &Self) -> bool {
         ptr::eq(self as *const _, other as *const _)
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Eq for LeafNode<K, V> {}
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> fmt::Debug for LeafNode<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Eq
+    for LeafNode<K, V, M>
+{
+}
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> fmt::Debug
+    for LeafNode<K, V, M>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "LeafNode({self:p})")
     }
 }
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for LeafNode<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Drop
+    for LeafNode<K, V, M>
+{
     fn drop(&mut self) {
         assert!(matches!(self.header.height(), Height::Leaf));
     }
 }
 
-pub struct LeafNodeInner<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+pub struct LeafNodeInner<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static = (),
+> {
     pub storage: LeafNodeStorageArray<K, V>,
-    pub next_leaf: SharedThinAtomicPtr<LeafNode<K, V>>,
-    pub prev_leaf: SharedThinAtomicPtr<LeafNode<K, V>>,
+    pub next_leaf: SharedThinAtomicPtr<LeafNode<K, V, M>>,
+    pub prev_leaf: SharedThinAtomicPtr<LeafNode<K, V, M>>,
+    pub metadata: M,
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Default for LeafNode<K, V> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNode<K, V> {
-    pub fn new() -> Self {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> LeafNode<K, V, M> {
+    pub fn new(metadata: M) -> Self {
         LeafNode {
             header: NodeHeader::new(Height::Leaf),
             inner: UnsafeCell::new(LeafNodeInner {
                 storage: LeafNodeStorageArray::new(),
                 next_leaf: SharedThinAtomicPtr::null(),
                 prev_leaf: SharedThinAtomicPtr::null(),
+                metadata,
             }),
         }
     }
 
-    pub unsafe fn get_inner(&self) -> &LeafNodeInner<K, V> {
+    pub unsafe fn get_inner(&self) -> &LeafNodeInner<K, V, M> {
         unsafe { &*self.inner.get() }
     }
 }
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
-    pub fn next_leaf(&self) -> Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static>
+    LeafNodeInner<K, V, M>
+{
+    pub fn next_leaf(&self) -> Option<SharedNodeRef<K, V, M, marker::Unlocked, marker::Leaf>> {
         let next_leaf_ptr = self.next_leaf.load_shared(Ordering::Acquire);
         next_leaf_ptr.map(|next_leaf| SharedNodeRef::from_leaf_ptr(next_leaf).assume_unlocked())
     }
-    pub fn prev_leaf(&self) -> Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>> {
+    pub fn prev_leaf(&self) -> Option<SharedNodeRef<K, V, M, marker::Unlocked, marker::Leaf>> {
         let prev_leaf_ptr = self.prev_leaf.load_shared(Ordering::Acquire);
         prev_leaf_ptr.map(|prev_leaf| SharedNodeRef::from_leaf_ptr(prev_leaf).assume_unlocked())
     }
@@ -204,9 +221,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     }
 
     pub(crate) fn move_from_right_neighbor_into_left_node(
-        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
-        from: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-        to: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
+        mut parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
+        from: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+        to: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
     ) {
         // update sibling pointers
         if let Some(right_neighbor_next_leaf) = from.next_leaf() {
@@ -228,7 +245,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
         to.storage.extend(from.storage.drain());
         let (key, from_owned) = parent.remove_child(from.into_ptr());
         let from_owned =
-            OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+            OwnedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
                 from_owned,
             )
             .assert_leaf()
@@ -242,9 +259,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     }
 
     pub fn move_last_to_front_of(
-        left: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-        right: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+        left: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+        right: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+        mut parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
     ) {
         debug_println!("LeafNode move_last_to_front_of");
 
@@ -260,9 +277,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> LeafNodeInner<K, V> {
     }
 
     pub fn move_first_to_end_of(
-        right: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-        left: SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>,
-        mut parent: SharedNodeRef<K, V, marker::LockedExclusive, marker::Internal>,
+        right: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+        left: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>,
+        mut parent: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Internal>,
     ) {
         debug_println!("LeafNode move_first_to_end_of ");
         let (first_key, first_value) = right.storage.remove(0);

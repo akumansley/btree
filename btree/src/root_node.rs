@@ -13,44 +13,48 @@ use std::cell::UnsafeCell;
 use thin::QsShared;
 
 #[repr(C)]
-pub struct RootNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+pub struct RootNode<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static = ()> {
     pub header: NodeHeader,
-    pub inner: UnsafeCell<RootNodeInner<K, V>>,
+    pub inner: UnsafeCell<RootNodeInner<K, V, M>>,
     // this is updated atomically after insert/remove, so it's not perfectly consistent
     // but that lets us avoid some extra locking -- otherwise we'd need to hold a lock during any
     // insert/remove for the duration of the operation
     pub len: AtomicUsize,
 }
 
-pub struct RootNodeInner<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+pub struct RootNodeInner<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static = (),
+> {
     pub top_of_tree: OwnedThinAtomicPtr<NodeHeader>,
-    phantom: PhantomData<(*const K, *const V)>,
+    phantom: PhantomData<(*const K, *const V, M)>,
 }
 
-unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Send for RootNode<K, V> {}
+unsafe impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Send
+    for RootNode<K, V, M>
+{
+}
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Drop for RootNodeInner<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> Drop
+    for RootNodeInner<K, V, M>
+{
     fn drop(&mut self) {
         let top_of_tree_ref =
-            OwnedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(unsafe {
-                self.top_of_tree.load_owned(Ordering::Acquire).unwrap()
-            });
+            OwnedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+                unsafe { self.top_of_tree.load_owned(Ordering::Acquire).unwrap() },
+            );
         OwnedNodeRef::drop_immediately(top_of_tree_ref);
     }
 }
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> Default for RootNode<K, V> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
-    pub fn new() -> Self {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static> RootNode<K, V, M> {
+    pub fn new_with_metadata(metadata: M) -> Self {
         RootNode {
             header: NodeHeader::new(Height::Root),
             inner: UnsafeCell::new(RootNodeInner {
                 top_of_tree: OwnedThinAtomicPtr::new(unsafe {
-                    QsOwned::new(LeafNode::<K, V>::new()).cast::<NodeHeader>()
+                    QsOwned::new(LeafNode::<K, V, M>::new(metadata)).cast::<NodeHeader>()
                 }),
                 phantom: PhantomData,
             }),
@@ -58,7 +62,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
         }
     }
 
-    pub fn as_node_ref(&self) -> SharedNodeRef<K, V, marker::Unlocked, marker::Root> {
+    pub fn as_node_ref(&self) -> SharedNodeRef<K, V, M, marker::Unlocked, marker::Root> {
         let root_ptr = unsafe { QsShared::from_ptr(self as *const _ as *mut ()) };
         SharedNodeRef::from_root_ptr(root_ptr).assume_unlocked()
     }
@@ -69,7 +73,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
         println!("+----------------------+");
         println!("| Tree length: {}      |", self.len.load(Ordering::Relaxed));
         println!("+----------------------+");
-        match SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+        match SharedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
             root.top_of_tree.load_shared(Ordering::Relaxed).unwrap(),
         )
         .assume_unlocked()
@@ -93,7 +97,7 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
     pub fn check_invariants(&self) {
         debug_println!("checking invariants");
         let root = self.as_node_ref().lock_shared();
-        match SharedNodeRef::<K, V, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
+        match SharedNodeRef::<K, V, M, marker::Unknown, marker::Unknown>::from_unknown_node_ptr(
             root.top_of_tree.load_shared(Ordering::Relaxed).unwrap(),
         )
         .assume_unlocked()
@@ -114,7 +118,9 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNode<K, V> {
         root.unlock_shared();
     }
 }
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> RootNodeInner<K, V> {
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, M: Send + Sync + 'static>
+    RootNodeInner<K, V, M>
+{
     pub fn top_of_tree(&self) -> QsShared<NodeHeader> {
         self.top_of_tree.load_shared(Ordering::Relaxed).unwrap()
     }

@@ -2,27 +2,32 @@ use std::cmp::Ordering;
 use std::marker::PhantomData;
 
 use crate::cursor::Cursor;
+use crate::leaf_metadata::{LeafMetadata, NoMetadata};
 use crate::reference::ValueRef;
 use crate::tree::{BTreeKey, BTreeValue};
 use crate::BTree;
 
-pub trait IterDirection<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    fn advance(cursor: &mut Cursor<K, V>);
-    fn start(cursor: &mut Cursor<K, V>);
+pub trait IterDirection<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> {
+    fn advance(cursor: &mut Cursor<K, V, LM>);
+    fn start(cursor: &mut Cursor<K, V, LM>);
     fn compare_key(current_cursor_key: &K, boundary_key: &K) -> Ordering;
 }
 
-pub struct ForwardIterDirection<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    phantom: PhantomData<(*mut K, *mut V)>,
+pub struct ForwardIterDirection<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata = NoMetadata,
+> {
+    phantom: PhantomData<(*mut K, *mut V, LM)>,
 }
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> IterDirection<K, V>
-    for ForwardIterDirection<K, V>
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> IterDirection<K, V, LM>
+    for ForwardIterDirection<K, V, LM>
 {
-    fn advance(cursor: &mut Cursor<K, V>) {
+    fn advance(cursor: &mut Cursor<K, V, LM>) {
         cursor.move_next();
     }
 
-    fn start(cursor: &mut Cursor<K, V>) {
+    fn start(cursor: &mut Cursor<K, V, LM>) {
         cursor.seek_to_start();
     }
 
@@ -30,17 +35,21 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> IterDirection<K, V>
         current_cursor_key.cmp(boundary_key)
     }
 }
-pub struct BackwardIterDirection<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
-    phantom: PhantomData<(*mut K, *mut V)>,
+pub struct BackwardIterDirection<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata = NoMetadata,
+> {
+    phantom: PhantomData<(*mut K, *mut V, LM)>,
 }
-impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> IterDirection<K, V>
-    for BackwardIterDirection<K, V>
+impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LM: LeafMetadata> IterDirection<K, V, LM>
+    for BackwardIterDirection<K, V, LM>
 {
-    fn advance(cursor: &mut Cursor<K, V>) {
+    fn advance(cursor: &mut Cursor<K, V, LM>) {
         cursor.move_prev();
     }
 
-    fn start(cursor: &mut Cursor<K, V>) {
+    fn start(cursor: &mut Cursor<K, V, LM>) {
         cursor.seek_to_end();
     }
 
@@ -49,16 +58,27 @@ impl<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> IterDirection<K, V>
     }
 }
 
-pub struct BTreeIterator<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, D: IterDirection<K, V>> {
-    cursor: Option<Cursor<'a, K, V>>,
-    tree: &'a BTree<K, V>,
+pub struct BTreeIterator<
+    'a,
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    LM: LeafMetadata,
+    D: IterDirection<K, V, LM>,
+> {
+    cursor: Option<Cursor<'a, K, V, LM>>,
+    tree: &'a BTree<K, V, LM>,
     phantom: PhantomData<D>,
 }
 
-impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, D: IterDirection<K, V>>
-    BTreeIterator<'a, K, V, D>
+impl<
+        'a,
+        K: BTreeKey + ?Sized,
+        V: BTreeValue + ?Sized,
+        LM: LeafMetadata,
+        D: IterDirection<K, V, LM>,
+    > BTreeIterator<'a, K, V, LM, D>
 {
-    pub fn new(tree: &'a BTree<K, V>) -> Self {
+    pub fn new(tree: &'a BTree<K, V, LM>) -> Self {
         BTreeIterator {
             cursor: None,
             tree,
@@ -67,11 +87,13 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, D: IterDirection<K, V>>
     }
 }
 
-pub type ForwardBTreeIterator<'a, K, V> = BTreeIterator<'a, K, V, ForwardIterDirection<K, V>>;
-pub type BackwardBTreeIterator<'a, K, V> = BTreeIterator<'a, K, V, BackwardIterDirection<K, V>>;
+pub type ForwardBTreeIterator<'a, K, V, LM = NoMetadata> =
+    BTreeIterator<'a, K, V, LM, ForwardIterDirection<K, V, LM>>;
+pub type BackwardBTreeIterator<'a, K, V, LM = NoMetadata> =
+    BTreeIterator<'a, K, V, LM, BackwardIterDirection<K, V, LM>>;
 
-impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
-    for BTreeIterator<'a, K, V, D>
+impl<'a, K: BTreeKey, V: BTreeValue, LM: LeafMetadata, D: IterDirection<K, V, LM>> Iterator
+    for BTreeIterator<'a, K, V, LM, D>
 {
     type Item = ValueRef<V>;
 
@@ -90,17 +112,25 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
 }
 
 #[cfg(test)]
-pub struct RangeBTreeIterator<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> {
+pub struct RangeBTreeIterator<
+    'a,
+    K: BTreeKey,
+    V: BTreeValue,
+    LM: LeafMetadata,
+    D: IterDirection<K, V, LM>,
+> {
     start: Option<&'a K>,
     end: Option<&'a K>,
-    tree: &'a BTree<K, V>,
+    tree: &'a BTree<K, V, LM>,
     direction: PhantomData<D>,
-    cursor: Option<Cursor<'a, K, V>>,
+    cursor: Option<Cursor<'a, K, V, LM>>,
 }
 
 #[cfg(test)]
-impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> RangeBTreeIterator<'a, K, V, D> {
-    pub fn new(tree: &'a BTree<K, V>, start: Option<&'a K>, end: Option<&'a K>) -> Self {
+impl<'a, K: BTreeKey, V: BTreeValue, LM: LeafMetadata, D: IterDirection<K, V, LM>>
+    RangeBTreeIterator<'a, K, V, LM, D>
+{
+    pub fn new(tree: &'a BTree<K, V, LM>, start: Option<&'a K>, end: Option<&'a K>) -> Self {
         RangeBTreeIterator {
             start,
             end,
@@ -112,8 +142,8 @@ impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> RangeBTreeIterator<
 }
 
 #[cfg(test)]
-impl<'a, K: BTreeKey, V: BTreeValue, D: IterDirection<K, V>> Iterator
-    for RangeBTreeIterator<'a, K, V, D>
+impl<'a, K: BTreeKey, V: BTreeValue, LM: LeafMetadata, D: IterDirection<K, V, LM>> Iterator
+    for RangeBTreeIterator<'a, K, V, LM, D>
 {
     type Item = ValueRef<V>;
 
@@ -209,7 +239,7 @@ mod tests {
         let end = 2 * n / 3;
 
         // Test with both bounds
-        let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+        let mut iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
             &tree,
             Some(&start),
             Some(&end),
@@ -221,8 +251,11 @@ mod tests {
         assert_eq!(iter.next(), None);
 
         // Test with only start bound
-        let mut iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&start), None);
+        let mut iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
+            &tree,
+            Some(&start),
+            None,
+        );
         for i in start..n {
             let value = iter.next().unwrap();
             assert_eq!(*value, format!("value{i}"));
@@ -231,7 +264,7 @@ mod tests {
 
         // Test with only end bound
         let mut iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, None, Some(&end));
+            RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(&tree, None, Some(&end));
         for i in 0..end {
             let value = iter.next().unwrap();
             assert_eq!(*value, format!("value{i}"));
@@ -254,7 +287,7 @@ mod tests {
         let end = 2 * n / 3;
 
         // Test with both bounds
-        let mut iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
+        let mut iter = RangeBTreeIterator::<_, _, _, BackwardIterDirection<_, _>>::new(
             &tree,
             Some(&end),
             Some(&start),
@@ -266,8 +299,11 @@ mod tests {
         assert_eq!(iter.next(), None);
 
         // Test with only start bound
-        let mut iter =
-            RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(&tree, Some(&start), None);
+        let mut iter = RangeBTreeIterator::<_, _, _, BackwardIterDirection<_, _>>::new(
+            &tree,
+            Some(&start),
+            None,
+        );
         for i in (0..=start).rev() {
             let value = iter.next().unwrap();
             assert_eq!(*value, format!("value{i}"));
@@ -275,8 +311,11 @@ mod tests {
         assert_eq!(iter.next(), None);
 
         // Test with only end bound
-        let mut iter =
-            RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(&tree, None, Some(&end));
+        let mut iter = RangeBTreeIterator::<_, _, _, BackwardIterDirection<_, _>>::new(
+            &tree,
+            None,
+            Some(&end),
+        );
         for i in (end + 1..n).rev() {
             let value = iter.next().unwrap();
             assert_eq!(*value, format!("value{i}"));
@@ -292,11 +331,14 @@ mod tests {
         assert_eq!(tree.iter().next(), None);
         assert_eq!(tree.iter_rev().next(), None);
 
-        let mut range_iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&0), Some(&10));
+        let mut range_iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
+            &tree,
+            Some(&0),
+            Some(&10),
+        );
         assert_eq!(range_iter.next(), None);
 
-        let mut range_iter = RangeBTreeIterator::<_, _, BackwardIterDirection<_, _>>::new(
+        let mut range_iter = RangeBTreeIterator::<_, _, _, BackwardIterDirection<_, _>>::new(
             &tree,
             Some(&0),
             Some(&10),
@@ -320,14 +362,20 @@ mod tests {
         assert_eq!(iter.next(), None);
 
         // Test range iterator with bounds including the element
-        let mut range_iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&0), Some(&2));
+        let mut range_iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
+            &tree,
+            Some(&0),
+            Some(&2),
+        );
         assert_eq!(*range_iter.next().unwrap(), "value1");
         assert_eq!(range_iter.next(), None);
 
         // Test range iterator with bounds excluding the element
-        let mut range_iter =
-            RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(&tree, Some(&2), Some(&3));
+        let mut range_iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
+            &tree,
+            Some(&2),
+            Some(&3),
+        );
         assert_eq!(range_iter.next(), None);
     }
 
@@ -417,7 +465,7 @@ mod tests {
         // Test range with start > end
         let start = n / 2;
         let end = n / 4;
-        let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+        let mut iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
             &tree,
             Some(&start),
             Some(&end),
@@ -426,7 +474,7 @@ mod tests {
 
         // Test range with start == end
         let mid = n / 2;
-        let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+        let mut iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
             &tree,
             Some(&mid),
             Some(&mid),
@@ -435,7 +483,7 @@ mod tests {
 
         // Test range with start > max value
         let too_large = n + 1;
-        let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+        let mut iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
             &tree,
             Some(&too_large),
             None,
@@ -444,7 +492,7 @@ mod tests {
 
         // Test range with end < min value
         let too_small = 0;
-        let mut iter = RangeBTreeIterator::<_, _, ForwardIterDirection<_, _>>::new(
+        let mut iter = RangeBTreeIterator::<_, _, _, ForwardIterDirection<_, _>>::new(
             &tree,
             None,
             Some(&too_small),

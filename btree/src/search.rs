@@ -10,9 +10,10 @@ use crate::util::retry;
 pub fn get_last_leaf_shared_using_optimistic_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> Result<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>, ()> {
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> Result<SharedNodeRef<K, V, M, marker::LockedShared, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
@@ -20,9 +21,13 @@ pub fn get_last_leaf_shared_using_optimistic_search<
         |node| node.unlock_shared(),
     )
 }
-pub fn get_last_leaf_shared_using_shared_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> SharedNodeRef<K, V, marker::LockedShared, marker::Leaf> {
+pub fn get_last_leaf_shared_using_shared_search<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> SharedNodeRef<K, V, M, marker::LockedShared, marker::Leaf> {
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
@@ -33,9 +38,10 @@ pub fn get_last_leaf_shared_using_shared_search<K: BTreeKey + ?Sized, V: BTreeVa
 pub fn get_first_leaf_shared_using_optimistic_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> Result<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>, ()> {
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> Result<SharedNodeRef<K, V, M, marker::LockedShared, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
@@ -44,9 +50,13 @@ pub fn get_first_leaf_shared_using_optimistic_search<
     )
 }
 
-pub fn get_first_leaf_shared_using_shared_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized>(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> SharedNodeRef<K, V, marker::LockedShared, marker::Leaf> {
+pub fn get_first_leaf_shared_using_shared_search<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+>(
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> SharedNodeRef<K, V, M, marker::LockedShared, marker::Leaf> {
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
@@ -58,10 +68,11 @@ fn get_leaf_shared_using_optimistic_search<
     K: BTreeKey + ?Sized + Borrow<Q>,
     Q: ?Sized + BTreeSearchKey,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     search_key: &Q,
-) -> Result<SharedNodeRef<K, V, marker::LockedShared, marker::Leaf>, ()> {
+) -> Result<SharedNodeRef<K, V, M, marker::LockedShared, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
@@ -74,10 +85,11 @@ pub fn get_leaf_shared_using_optimistic_search_with_fallback<
     K: BTreeKey + ?Sized + Borrow<Q>,
     Q: ?Sized + BTreeSearchKey,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     search_key: &Q,
-) -> SharedNodeRef<K, V, marker::LockedShared, marker::Leaf> {
+) -> SharedNodeRef<K, V, M, marker::LockedShared, marker::Leaf> {
     match get_leaf_shared_using_optimistic_search(root, search_key) {
         Ok(leaf) => leaf,
         Err(_) => get_leaf_shared_using_shared_search(root, search_key),
@@ -87,19 +99,20 @@ pub fn get_leaf_shared_using_optimistic_search_with_fallback<
 pub fn do_optimistic_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
     LeafLockState: LockState,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     descend: impl Fn(
-        SharedNodeRef<K, V, marker::Optimistic, marker::Internal>,
-    ) -> SharedNodeRef<K, V, marker::Unlocked, marker::Unknown>,
+        SharedNodeRef<K, V, M, marker::Optimistic, marker::Internal>,
+    ) -> SharedNodeRef<K, V, M, marker::Unlocked, marker::Unknown>,
     lock_leaf: impl Fn(
-        SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>,
-    ) -> Result<SharedNodeRef<K, V, LeafLockState, marker::Leaf>, LockError>,
+        SharedNodeRef<K, V, M, marker::Unlocked, marker::Leaf>,
+    ) -> Result<SharedNodeRef<K, V, M, LeafLockState, marker::Leaf>, LockError>,
     unlock_leaf: impl Fn(
-        SharedNodeRef<K, V, LeafLockState, marker::Leaf>,
-    ) -> SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>,
-) -> Result<SharedNodeRef<K, V, LeafLockState, marker::Leaf>, ()> {
+        SharedNodeRef<K, V, M, LeafLockState, marker::Leaf>,
+    ) -> SharedNodeRef<K, V, M, marker::Unlocked, marker::Leaf>,
+) -> Result<SharedNodeRef<K, V, M, LeafLockState, marker::Leaf>, ()> {
     retry::<_, _, _, 3>(|| {
         let locked_root = root.lock_optimistic()?;
         let top_of_tree =
@@ -124,15 +137,20 @@ pub fn do_optimistic_search<
     })
 }
 
-fn do_shared_search<K: BTreeKey + ?Sized, V: BTreeValue + ?Sized, LeafLockState: LockState>(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+fn do_shared_search<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
+    LeafLockState: LockState,
+>(
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     descend: impl Fn(
-        SharedNodeRef<K, V, marker::LockedShared, marker::Internal>,
-    ) -> SharedNodeRef<K, V, marker::Unlocked, marker::Unknown>,
+        SharedNodeRef<K, V, M, marker::LockedShared, marker::Internal>,
+    ) -> SharedNodeRef<K, V, M, marker::Unlocked, marker::Unknown>,
     lock_leaf: impl Fn(
-        SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>,
-    ) -> SharedNodeRef<K, V, LeafLockState, marker::Leaf>,
-) -> SharedNodeRef<K, V, LeafLockState, marker::Leaf> {
+        SharedNodeRef<K, V, M, marker::Unlocked, marker::Leaf>,
+    ) -> SharedNodeRef<K, V, M, LeafLockState, marker::Leaf>,
+) -> SharedNodeRef<K, V, M, LeafLockState, marker::Leaf> {
     let locked_root = root.lock_shared();
     let top_of_tree =
         SharedNodeRef::from_unknown_node_ptr(locked_root.top_of_tree()).assume_unlocked();
@@ -153,10 +171,11 @@ pub fn get_leaf_shared_using_shared_search<
     K: BTreeKey + ?Sized + Borrow<Q>,
     Q: ?Sized + BTreeSearchKey,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     search_key: &Q,
-) -> SharedNodeRef<K, V, marker::LockedShared, marker::Leaf> {
+) -> SharedNodeRef<K, V, M, marker::LockedShared, marker::Leaf> {
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
@@ -168,10 +187,11 @@ fn get_leaf_exclusively_using_optimistic_search<
     K: BTreeKey + ?Sized + Borrow<Q>,
     Q: ?Sized + BTreeSearchKey,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     search_key: &Q,
-) -> Result<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>, ()> {
+) -> Result<SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
@@ -184,10 +204,11 @@ fn get_leaf_exclusively_using_shared_search<
     K: BTreeKey + ?Sized + Borrow<Q>,
     Q: ?Sized + BTreeSearchKey,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     search_key: &Q,
-) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
+) -> SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf> {
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
@@ -199,10 +220,11 @@ pub fn get_leaf_exclusively_using_optimistic_search_with_fallback<
     K: BTreeKey + ?Sized + Borrow<Q>,
     Q: ?Sized + BTreeSearchKey,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
     search_key: &Q,
-) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
+) -> SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf> {
     match get_leaf_exclusively_using_optimistic_search(root, search_key) {
         Ok(leaf) => leaf,
         Err(_) => get_leaf_exclusively_using_shared_search(root, search_key),
@@ -213,11 +235,12 @@ pub fn get_leaf_exclusively_using_exclusive_search<
     K: BTreeKey + ?Sized + Borrow<Q>,
     Q: ?Sized + BTreeSearchKey,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    locked_root: SharedNodeRef<K, V, marker::LockedExclusive, marker::Root>,
+    locked_root: SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Root>,
     search_key: &Q,
     modification_type: ModificationType,
-) -> SearchDequeue<K, V> {
+) -> SearchDequeue<K, V, M> {
     let mut search = SearchDequeue::new();
 
     search.push_node_on_bottom(locked_root);
@@ -295,9 +318,10 @@ pub fn get_leaf_exclusively_using_exclusive_search<
 pub fn get_first_leaf_exclusively_using_optimistic_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> Result<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>, ()> {
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> Result<SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
@@ -309,9 +333,10 @@ pub fn get_first_leaf_exclusively_using_optimistic_search<
 pub fn get_first_leaf_exclusively_using_shared_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf> {
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
@@ -322,9 +347,10 @@ pub fn get_first_leaf_exclusively_using_shared_search<
 pub fn get_last_leaf_exclusively_using_optimistic_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> Result<SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf>, ()> {
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> Result<SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf>, ()> {
     do_optimistic_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
@@ -336,9 +362,10 @@ pub fn get_last_leaf_exclusively_using_optimistic_search<
 pub fn get_last_leaf_exclusively_using_shared_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
+    M: Send + Sync + 'static,
 >(
-    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
-) -> SharedNodeRef<K, V, marker::LockedExclusive, marker::Leaf> {
+    root: SharedNodeRef<K, V, M, marker::Unlocked, marker::Root>,
+) -> SharedNodeRef<K, V, M, marker::LockedExclusive, marker::Leaf> {
     do_shared_search(
         root,
         |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
