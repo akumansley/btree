@@ -8,6 +8,7 @@ MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test -p qsbr
 MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test -p thin
 MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test -p btree -- \
   pointers::atomic::tests \
+  pointers::qs_atomic::tests \
   cursor::tests::test_interaction_between_mut_cursor_and_non_locking_cursor \
   cursor::tests::test_interaction_between_mut_cursor_and_shared_cursor \
   tree::tests::test_random_inserts_gets_and_removes_with_seed_multi_threaded \

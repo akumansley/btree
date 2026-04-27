@@ -35,7 +35,7 @@ mod tree;
 mod util;
 pub use cursor::{Cursor, CursorMut, NonLockingCursor};
 pub use iter::{BackwardBTreeIterator, ForwardBTreeIterator};
-pub use pointers::OwnedThinAtomicPtr;
+pub use pointers::{OwnedThinAtomicPtr, QsAtomic};
 pub use qsbr::{qsbr_reclaimer, MemoryReclaimer};
 pub use reference::{Entry, Ref};
 pub use tree::{

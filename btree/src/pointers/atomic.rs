@@ -94,7 +94,7 @@ impl<T: ?Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
     }
 }
 
-impl<T: Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
+impl<T: ?Sized + Pointable + Send + 'static> OwnedThinAtomicPtr<T> {
     pub fn new(ptr: QsOwned<T>) -> Self {
         Self {
             ptr: AtomicPtr::new(ptr.into_ptr()),
