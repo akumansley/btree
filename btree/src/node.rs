@@ -101,11 +101,11 @@ impl NodeHeader {
         self.lock.lock_optimistic()
     }
     pub fn validate_optimistic(&self, version: LockInfo) -> Result<(), ()> {
-        if self.lock.validate_optimistic_read(version) {
-            Ok(())
-        } else {
-            Err(())
-        }
+        self.lock.validate_optimistic_read(version).map_err(|_| ())
+    }
+
+    pub fn validate_or_reacquire(&self, version: LockInfo) -> Result<(), Option<LockInfo>> {
+        self.lock.validate_optimistic_read(version)
     }
 
     pub fn retire(&self) {

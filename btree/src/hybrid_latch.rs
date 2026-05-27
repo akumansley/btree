@@ -200,11 +200,21 @@ impl HybridLatch {
         Ok(lock_info)
     }
 
-    pub fn validate_optimistic_read(&self, version: LockInfo) -> bool {
+    /// Validate that the version hasn't changed since the optimistic lock.
+    /// Returns:
+    /// - `Ok(())` if the version matches (data was consistent)
+    /// - `Err(Some(new_version))` if not exclusively locked but version changed
+    /// - `Err(None)` if exclusively locked (version unavailable)
+    pub fn validate_optimistic_read(&self, version: LockInfo) -> Result<(), Option<LockInfo>> {
         if self.rw_lock.is_locked_exclusive() {
-            return false;
+            return Err(None);
         }
-        self.version.load(Ordering::Acquire) == version.0
+        let current = self.version.load(Ordering::Acquire);
+        if current == version.0 {
+            Ok(())
+        } else {
+            Err(Some(LockInfo::from_version(current)))
+        }
     }
 }
 

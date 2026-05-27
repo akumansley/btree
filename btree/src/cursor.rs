@@ -1,6 +1,7 @@
 use std::borrow::Borrow;
 use std::ops::Deref;
 
+use crate::hybrid_latch::LockInfo;
 use crate::pointers::node_ref::{marker, SharedNodeRef};
 use crate::reference::Entry;
 use crate::search::get_leaf_exclusively_using_optimistic_search_with_fallback;
@@ -11,6 +12,10 @@ use crate::search::{
     get_first_leaf_shared_using_shared_search, get_last_leaf_exclusively_using_optimistic_search,
     get_last_leaf_exclusively_using_shared_search, get_last_leaf_shared_using_optimistic_search,
     get_last_leaf_shared_using_shared_search,
+};
+use crate::search::{
+    get_first_leaf_optimistic_using_optimistic_search,
+    get_last_leaf_optimistic_using_optimistic_search, get_leaf_optimistic_using_optimistic_search,
 };
 use crate::splitting::EntryLocation;
 use crate::tree::{
@@ -848,6 +853,357 @@ impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> NonLockingCursor<'a, K, V
     }
 }
 
+pub struct OptimisticCursor<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> {
+    tree: &'a BTree<K, V>,
+    unlocked_leaf: Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>>,
+    current_index: usize,
+    remembered_key: Option<QsWeak<K>>,
+    remembered_version: u64,
+}
+
+impl<'a, K: BTreeKey + ?Sized, V: BTreeValue + ?Sized> OptimisticCursor<'a, K, V> {
+    pub(crate) fn new(tree: &'a BTree<K, V>) -> Self {
+        Self {
+            tree,
+            unlocked_leaf: None,
+            current_index: 0,
+            remembered_key: None,
+            remembered_version: 0,
+        }
+    }
+
+    fn clear_position(&mut self) {
+        self.unlocked_leaf = None;
+        self.current_index = 0;
+        self.remembered_key = None;
+        self.remembered_version = 0;
+    }
+
+    fn remember_validated_position(
+        &mut self,
+        leaf: SharedNodeRef<K, V, marker::Optimistic, marker::Leaf>,
+        index: usize,
+        key: Option<QsWeak<K>>,
+    ) {
+        self.current_index = index;
+        self.remembered_key = key;
+        self.remembered_version = leaf.lock_info().0;
+        self.unlocked_leaf = Some(leaf.erase().assume_unlocked().assert_leaf());
+    }
+
+    /// Validate that nothing has changed since our last visit by checking the
+    /// remembered version. This is cheaper than validating the lock_optimistic
+    /// version because it also confirms our remembered index is still correct.
+    fn validate_remembered(
+        &self,
+        leaf: SharedNodeRef<K, V, marker::Optimistic, marker::Leaf>,
+    ) -> Result<(), ()> {
+        leaf.header()
+            .validate_optimistic(LockInfo::from_version(self.remembered_version))
+    }
+
+    /// Re-seek from root using the remembered key. Returns true if a re-seek
+    /// was performed (caller should `continue`), false if there is no
+    /// remembered key (caller should stop iteration).
+    fn reseek(&mut self) -> bool {
+        match self.remembered_key {
+            Some(key) => {
+                self.seek_from_top(&*key);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Try to lock and land on a neighbor leaf. Returns:
+    /// - `Some(true)` if we successfully moved to the neighbor
+    /// - `Some(false)` if there is no neighbor (end/start of tree)
+    /// - `None` if the neighbor couldn't be locked or validated (caller retries)
+    fn cross_to_neighbor(
+        &mut self,
+        neighbor: Option<SharedNodeRef<K, V, marker::Unlocked, marker::Leaf>>,
+        pick_index: impl Fn(usize) -> usize,
+    ) -> Option<bool> {
+        let neighbor = match neighbor {
+            Some(n) => n,
+            None => {
+                self.clear_position();
+                return Some(false);
+            }
+        };
+        let locked = neighbor.lock_optimistic().ok()?;
+        let n = locked.num_keys();
+        if n == 0 {
+            return None;
+        }
+        let idx = pick_index(n);
+        let key = locked.storage.get_key(idx);
+        locked.validate_lock().ok()?;
+        self.remember_validated_position(locked, idx, Some(key));
+        Some(true)
+    }
+
+    pub fn seek_to_start(&mut self) {
+        loop {
+            let leaf = match get_first_leaf_optimistic_using_optimistic_search(
+                self.tree.root.as_node_ref(),
+            ) {
+                Ok(leaf) => leaf,
+                Err(()) => continue,
+            };
+
+            let key = if leaf.num_keys() > 0 {
+                Some(leaf.storage.get_key(0))
+            } else {
+                None
+            };
+
+            if leaf.validate_lock().is_err() {
+                continue;
+            }
+
+            self.remember_validated_position(leaf, 0, key);
+            return;
+        }
+    }
+
+    pub fn seek_to_end(&mut self) {
+        loop {
+            let leaf = match get_last_leaf_optimistic_using_optimistic_search(
+                self.tree.root.as_node_ref(),
+            ) {
+                Ok(leaf) => leaf,
+                Err(()) => continue,
+            };
+
+            let num_keys = leaf.num_keys();
+            let index = num_keys.saturating_sub(1);
+            let key = if num_keys > 0 {
+                Some(leaf.storage.get_key(index))
+            } else {
+                None
+            };
+
+            if leaf.validate_lock().is_err() {
+                continue;
+            }
+
+            self.remember_validated_position(leaf, index, key);
+            return;
+        }
+    }
+
+    pub fn seek<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + BTreeSearchKey,
+    {
+        // Optimistically try the current leaf
+        if let Some(unlocked_leaf) = self.unlocked_leaf {
+            if let Ok(leaf) = unlocked_leaf.lock_optimistic() {
+                let index = leaf.binary_search_key(key).unwrap_either();
+                if index < leaf.num_keys() {
+                    let leaf_key = leaf.storage.get_key(index);
+                    if leaf_key.deref().borrow() == key && leaf.validate_lock().is_ok() {
+                        self.remember_validated_position(leaf, index, Some(leaf_key));
+                        return true;
+                    }
+                }
+            }
+        }
+        self.seek_from_top(key)
+    }
+
+    fn seek_from_top<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + BTreeSearchKey,
+    {
+        loop {
+            let leaf = match get_leaf_optimistic_using_optimistic_search(
+                self.tree.root.as_node_ref(),
+                key,
+            ) {
+                Ok(leaf) => leaf,
+                Err(()) => continue,
+            };
+
+            let result = leaf.binary_search_key(key);
+            let index = result.unwrap_either();
+            let num_keys = leaf.num_keys();
+
+            // If insertion point is past the end of this leaf, advance to next leaf
+            // to maintain "points at element" semantics
+            if result.is_err() && index >= num_keys {
+                let maybe_next = leaf.next_leaf();
+
+                if leaf.validate_lock().is_err() {
+                    continue;
+                }
+
+                if let Some(next_leaf_ref) = maybe_next {
+                    match next_leaf_ref.lock_optimistic() {
+                        Ok(next_leaf) => {
+                            let next_key = if next_leaf.num_keys() > 0 {
+                                Some(next_leaf.storage.get_key(0))
+                            } else {
+                                None
+                            };
+
+                            if next_leaf.validate_lock().is_err() {
+                                continue;
+                            }
+
+                            self.remember_validated_position(next_leaf, 0, next_key);
+                            return false;
+                        }
+                        Err(()) => continue,
+                    }
+                }
+                // No next leaf - past end of tree
+            }
+
+            let found_key = if index < num_keys {
+                Some(leaf.storage.get_key(index))
+            } else {
+                None
+            };
+
+            if leaf.validate_lock().is_err() {
+                continue;
+            }
+
+            self.remember_validated_position(leaf, index, found_key);
+            return result.is_ok();
+        }
+    }
+
+    /// Calls `f` with the current entry under optimistic locking.
+    ///
+    /// Assumes the remembered index is still correct and only validates on the
+    /// way out. If the version changed since our last visit, validation fails
+    /// and we re-seek. The closure is `Fn` (not `FnOnce`) because it may be
+    /// retried. Returns `None` if the cursor is not positioned at a valid entry.
+    pub fn current_and<R>(&mut self, f: impl Fn(&Entry<K, V>) -> R) -> Option<R> {
+        loop {
+            let leaf = self
+                .unlocked_leaf?
+                .assume_optimistic(LockInfo::from_version(self.remembered_version));
+
+            if self.current_index >= leaf.num_keys() {
+                if self.validate_remembered(leaf).is_ok() {
+                    return None;
+                }
+                if !self.reseek() {
+                    return None;
+                }
+                continue;
+            }
+
+            let entry = Entry::new(
+                leaf.storage.get_key(self.current_index),
+                leaf.storage.get_value(self.current_index),
+            );
+
+            if self.validate_remembered(leaf).is_err() {
+                if !self.reseek() {
+                    return None;
+                }
+                continue;
+            }
+
+            return Some(f(&entry));
+        }
+    }
+
+    pub fn move_next(&mut self) -> bool {
+        loop {
+            let unlocked_leaf = match self.unlocked_leaf {
+                Some(leaf) => leaf,
+                None => return false,
+            };
+
+            let leaf =
+                unlocked_leaf.assume_optimistic(LockInfo::from_version(self.remembered_version));
+            let num_keys = leaf.num_keys();
+
+            if self.current_index < num_keys.saturating_sub(1) {
+                let new_index = self.current_index + 1;
+                let new_key = leaf.storage.get_key(new_index);
+                if self.validate_remembered(leaf).is_err() {
+                    if !self.reseek() {
+                        return false;
+                    }
+                    continue;
+                }
+                self.current_index = new_index;
+                self.remembered_key = Some(new_key);
+                return true;
+            }
+
+            let next = leaf.next_leaf();
+            if self.validate_remembered(leaf).is_err() {
+                if !self.reseek() {
+                    return false;
+                }
+                continue;
+            }
+            match self.cross_to_neighbor(next, |_| 0) {
+                Some(result) => return result,
+                None => {
+                    if !self.reseek() {
+                        return false;
+                    }
+                    continue;
+                }
+            }
+        }
+    }
+
+    pub fn move_prev(&mut self) -> bool {
+        loop {
+            let unlocked_leaf = match self.unlocked_leaf {
+                Some(leaf) => leaf,
+                None => return false,
+            };
+
+            let leaf =
+                unlocked_leaf.assume_optimistic(LockInfo::from_version(self.remembered_version));
+
+            if self.current_index > 0 {
+                let new_index = self.current_index - 1;
+                let new_key = leaf.storage.get_key(new_index);
+                if self.validate_remembered(leaf).is_err() {
+                    if !self.reseek() {
+                        return false;
+                    }
+                    continue;
+                }
+                self.current_index = new_index;
+                self.remembered_key = Some(new_key);
+                return true;
+            }
+
+            let prev = leaf.prev_leaf();
+            if self.validate_remembered(leaf).is_err() {
+                if !self.reseek() {
+                    return false;
+                }
+                continue;
+            }
+            match self.cross_to_neighbor(prev, |n| n - 1) {
+                Some(result) => return result,
+                None => {
+                    if !self.reseek() {
+                        return false;
+                    }
+                    continue;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use btree_macros::qsbr_test;
@@ -1613,6 +1969,172 @@ mod tests {
                             *cursor.current().unwrap().value(),
                             format!("value{expected}")
                         );
+                        if !cursor.move_next() {
+                            break;
+                        }
+                        expected += 1;
+                        std::thread::yield_now();
+                    }
+                    assert_eq!(expected, n - 1);
+                }
+            });
+        });
+    }
+
+    #[qsbr_test]
+    fn test_optimistic_cursor() {
+        let tree = BTree::<usize, String>::new();
+
+        for i in 0..10 {
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
+        }
+
+        // Test forward traversal
+        let mut cursor = tree.optimistic_cursor();
+        cursor.seek_to_start();
+        for i in 0..10 {
+            let value = cursor.current_and(|entry| entry.value().clone()).unwrap();
+            assert_eq!(value, format!("value{i}"));
+            cursor.move_next();
+        }
+        assert!(cursor.current_and(|entry| entry.value().clone()).is_none());
+
+        // Test backward traversal
+        cursor.seek_to_end();
+        for i in (0..10).rev() {
+            let value = cursor.current_and(|entry| entry.value().clone()).unwrap();
+            assert_eq!(value, format!("value{i}"));
+            cursor.move_prev();
+        }
+        assert!(cursor.current_and(|entry| entry.value().clone()).is_none());
+
+        // Test mixed traversal
+        cursor.seek_to_start();
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value0");
+        cursor.move_next();
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value1");
+        cursor.move_next();
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value2");
+        cursor.move_prev();
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value1");
+        cursor.move_prev();
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value0");
+        cursor.move_next();
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value1");
+
+        // Test seeking
+        cursor.seek(&5);
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value5");
+        cursor.seek(&7);
+        assert_eq!(cursor.current_and(|e| e.value().clone()).unwrap(), "value7");
+    }
+
+    #[qsbr_test]
+    fn test_optimistic_cursor_leaf_boundaries() {
+        let tree = BTree::<usize, String>::new();
+
+        let n = ORDER * 2;
+        for i in 0..n {
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
+            tree.check_invariants();
+        }
+
+        // Test forward traversal across leaves
+        let mut cursor = tree.optimistic_cursor();
+        cursor.seek_to_start();
+        for i in 0..n {
+            let value = cursor.current_and(|entry| entry.value().clone()).unwrap();
+            assert_eq!(value, format!("value{i}"));
+            cursor.move_next();
+        }
+        assert!(cursor.current_and(|entry| entry.value().clone()).is_none());
+
+        // Test backward traversal across leaves
+        cursor.seek_to_end();
+        for i in (0..n).rev() {
+            let value = cursor.current_and(|entry| entry.value().clone()).unwrap();
+            assert_eq!(value, format!("value{i}"));
+            cursor.move_prev();
+        }
+        assert!(cursor.current_and(|entry| entry.value().clone()).is_none());
+
+        // Test seeking across leaves
+        cursor.seek(&(ORDER - 1));
+        assert_eq!(
+            cursor.current_and(|e| e.value().clone()).unwrap(),
+            format!("value{}", ORDER - 1)
+        );
+        cursor.move_next();
+        assert_eq!(
+            cursor.current_and(|e| e.value().clone()).unwrap(),
+            format!("value{ORDER}")
+        );
+
+        cursor.seek(&ORDER);
+        cursor.move_prev();
+        assert_eq!(
+            cursor.current_and(|e| e.value().clone()).unwrap(),
+            format!("value{}", ORDER - 1)
+        );
+    }
+
+    #[qsbr_test]
+    fn test_optimistic_cursor_concurrent_with_writer() {
+        let tree = BTree::<usize, String>::new();
+
+        #[cfg(not(miri))]
+        let n = ORDER * 3;
+        #[cfg(miri)]
+        let n = ORDER + 2;
+        for i in 0..n {
+            tree.insert(QsArc::new(i), QsOwned::new(format!("value{i}")));
+        }
+
+        let barrier = Barrier::new(2);
+
+        std::thread::scope(|s| {
+            // Writer thread: exclusive cursor moving backwards
+            let tree_ref = &tree;
+            let barrier_ref = &barrier;
+            s.spawn(move || {
+                let _guard = qsbr_reclaimer().guard();
+                {
+                    let mut cursor_mut = tree_ref.cursor_mut();
+                    cursor_mut.seek_to_end();
+
+                    barrier_ref.wait();
+
+                    let mut expected = n - 1;
+                    loop {
+                        assert_eq!(
+                            *cursor_mut.current().unwrap().value(),
+                            format!("value{expected}")
+                        );
+                        if !cursor_mut.move_prev() {
+                            break;
+                        }
+                        expected -= 1;
+                        std::thread::yield_now();
+                    }
+                    assert_eq!(expected, 0);
+                }
+            });
+
+            // Reader thread: optimistic cursor moving forwards
+            let tree_ref = &tree;
+            let barrier_ref = &barrier;
+            s.spawn(move || {
+                let _guard = qsbr_reclaimer().guard();
+                {
+                    let mut cursor = tree_ref.optimistic_cursor();
+                    cursor.seek_to_start();
+
+                    barrier_ref.wait();
+
+                    let mut expected = 0;
+                    loop {
+                        let value = cursor.current_and(|entry| entry.value().clone()).unwrap();
+                        assert_eq!(value, format!("value{expected}"));
                         if !cursor.move_next() {
                             break;
                         }

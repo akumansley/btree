@@ -84,6 +84,50 @@ pub fn get_leaf_shared_using_optimistic_search_with_fallback<
     }
 }
 
+pub fn get_leaf_optimistic_using_optimistic_search<
+    K: BTreeKey + ?Sized + Borrow<Q>,
+    Q: ?Sized + BTreeSearchKey,
+    V: BTreeValue + ?Sized,
+>(
+    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+    search_key: &Q,
+) -> Result<SharedNodeRef<K, V, marker::Optimistic, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| SharedNodeRef::from_unknown_node_ptr(node.find_child(search_key)).assume_unlocked(),
+        |node| node.lock_optimistic().map_err(|_| LockError::Retired),
+        |node| node.unlock_without_validating(),
+    )
+}
+
+pub fn get_first_leaf_optimistic_using_optimistic_search<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+>(
+    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> Result<SharedNodeRef<K, V, marker::Optimistic, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| SharedNodeRef::from_unknown_node_ptr(node.get_first_child()).assume_unlocked(),
+        |node| node.lock_optimistic().map_err(|_| LockError::Retired),
+        |node| node.unlock_without_validating(),
+    )
+}
+
+pub fn get_last_leaf_optimistic_using_optimistic_search<
+    K: BTreeKey + ?Sized,
+    V: BTreeValue + ?Sized,
+>(
+    root: SharedNodeRef<K, V, marker::Unlocked, marker::Root>,
+) -> Result<SharedNodeRef<K, V, marker::Optimistic, marker::Leaf>, ()> {
+    do_optimistic_search(
+        root,
+        |node| SharedNodeRef::from_unknown_node_ptr(node.get_last_child()).assume_unlocked(),
+        |node| node.lock_optimistic().map_err(|_| LockError::Retired),
+        |node| node.unlock_without_validating(),
+    )
+}
+
 pub fn do_optimistic_search<
     K: BTreeKey + ?Sized,
     V: BTreeValue + ?Sized,
